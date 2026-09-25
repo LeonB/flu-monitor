@@ -223,6 +223,12 @@ button:
       - script.execute:
           id: log_to_sheets
           event: "fire_out"
+  - platform: template
+    name: "Stove Off"
+    on_press:
+      - script.execute:
+          id: log_to_sheets
+          event: "stove_off"
 
 # Logs sensor readings to a Google Sheet via a Google Apps Script webhook.
 # See google-sheets-logger/README.md for how to set that webhook up; the two

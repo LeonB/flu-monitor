@@ -4,6 +4,54 @@ ESPHome firmware for an Adafruit ESP32 Feather V2 with a BMP581 (pressure/temper
 and an MCP9601 (K-type thermocouple amp) over STEMMA QT/I2C. See `README.md` for
 day-to-day flash/log commands and the hardware pinout table.
 
+## Project goal (bigger than the code in this repo suggests)
+
+This is the **sidecar module** of a DIY wood stove flue temperature monitor
+(inspired by the "Oru" product). The end goal: an ambient light display you
+can glance at to know if the stove is running too cold (creosote risk), in
+the good zone, or too hot (overfire risk), including catching a fast
+temperature spike, not just an absolute reading.
+
+Full intended system:
+- **Sense**: a K-type thermocouple (eventually a washer-style probe,
+  magnetically/mechanically clamped to the stovepipe — currently still a bare-wire
+  stand-in, see the I2C gotchas below) measures stovepipe surface temperature.
+- **Read**: the MCP9601 in this repo's hardware converts that to a clean digital
+  reading.
+- **Process (this repo)**: this ESP32 sidecar reads it over I2C, and currently
+  just logs it (see "Woodstove data-gathering logging" below) — it doesn't yet
+  track rate-of-change or make any zone/alert decision.
+- **Display — not built yet, a separate physical device**: a standalone,
+  screen-less ambient light box (or several — "koppelen display boxes" was the
+  original idea), placed wherever you'd actually glance at it, not necessarily
+  next to the stove. Diffuses a color gradient (cool blue -> amber -> red) and
+  pulses faster when temperature is rising quickly. Receives zone/color/pulse
+  state wirelessly from the sidecar — ESP-NOW vs MQTT is still an open decision
+  (ESP-NOW: lightweight, no router/broker; MQTT: more setup, plays nicer with
+  Home Assistant).
+- **Alert**: push a phone notification if things cross into dangerous territory
+  — not built yet.
+- Also still undecided: whether the sidecar's WiFi/logic layer stays ESPHome
+  (as now) or becomes a custom build (webserver, REST API, WebSockets).
+
+**Current phase is data-gathering, nothing else.** The event buttons (Cold
+Start, Opened Stove, Added Wood, Damper Up/Down, Burning Optimally, Stove
+Roaring, Dying Down, Fire Out, Stove Off) exist so a couple of weeks of real
+burns can be correlated against flue temperature, to *derive* the zone
+boundaries and a normal-operation rate-of-change baseline before writing any
+actual classification/alert logic. Two things worth remembering when that
+next phase starts:
+- There won't be real overfire examples in the data (nobody should deliberately
+  overfire a stove to collect a data point), so the dangerous-end threshold will
+  have to come from a mix of the empirical normal-operation ceiling plus
+  external stovepipe-safety reference values, not pure curve-fitting like the
+  cold/good boundaries can be.
+- Thresholds derived from data collected with the current bare-wire stand-in
+  probe are calibrated to *that* probe's response. Once the final washer-style
+  clamp probe is mounted on the real stovepipe, expect to need a light
+  recalibration pass (different thermal mass/contact/lag) even though the
+  overall shape of the analysis should carry over.
+
 ## Local ESPHome environment
 
 ESPHome is installed via **pipx with Homebrew's Python 3.13**, not the system/pyenv
@@ -46,21 +94,24 @@ PIP_INDEX_URL=https://pypi.org/simple esphome run flu-monitor.yaml ...
   85kHz was fine for the BMP581 too in testing, so this is a fleet-wide setting, not
   a per-device one.
 
-- **Even at 85kHz with `scan: false`, the MCP9600 still occasionally returns an
-  outright garbage reading** — observed 709.3°C and 891.2°C from a probe sitting at
-  room temperature, logged to the woodstove data-gathering sheet. Decoded back to raw
-  register bytes (`0x2C55` and `0x37B3`), neither matches the specific "duplicate
-  byte" pattern the documented errata describes, so this looks more like general
-  bus-noise corruption (plausible given the bare-wire, unshielded thermocouple probe
-  currently in use) than that exact erratum recurring — but either way, occasional
-  corruption should be assumed possible and guarded against, not treated as solved.
-  `flu-monitor.yaml`'s logging interval has a sanity clamp (reject readings outside
-  roughly -40°C..600°C, a stovepipe has no business reading outside that) that
-  filters this at the logging layer. That clamp only catches *wildly* wrong values,
-  though — a corrupted reading that happens to land inside the plausible range would
-  sail through. Any future safety-critical alert logic (the actual overfire
-  detection) should not trust a single sample; require at least two consecutive
-  consistent readings before treating a spike as real.
+- **A bare-wire thermocouple can produce wildly implausible readings if the
+  leads get bridged by a conductive liquid** — observed 709.3°C and 891.2°C
+  logged to the woodstove data-gathering sheet; confirmed cause was the probe
+  briefly dunked in beer. That's an *analog* front-end disturbance (the tiny
+  thermocouple EMF itself gets corrupted before the MCP9600 ever digitizes it),
+  not digital I2C corruption — the two mechanisms produce the same symptom
+  (implausible reading) for different reasons, and both are possible with this
+  hardware, so don't assume one explains every future occurrence just because it
+  explained this one. This specific failure mode should go away once the final
+  insulated/sealed washer-style probe replaces the bare-wire stand-in on the real
+  stovepipe. `flu-monitor.yaml`'s logging interval has a sanity clamp (reject
+  readings outside roughly -40°C..600°C, a stovepipe has no business reading
+  outside that) that filters this at the logging layer regardless of root cause.
+  That clamp only catches *wildly* wrong values, though — a corrupted reading
+  that happens to land inside the plausible range would sail through. Any future
+  safety-critical alert logic (the actual overfire detection) should not trust a
+  single sample; require at least two consecutive consistent readings before
+  treating a spike as real.
 
 - **`GPIO2` (STEMMA QT power) needs `setup_priority: 1200`** on its switch, higher
   than the i2c bus's own priority (`BUS = 1000`). Without this, the sensors are
