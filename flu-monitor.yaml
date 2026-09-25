@@ -11,6 +11,12 @@
 #     ESPHome's stock 'mcp9600' component (it supports both MCP9600 and
 #     MCP9601 device IDs). No patched/local component needed.
 
+# Pulled into a lambda below via ${...} text substitution -- !secret alone
+# can't reach inside a lambda's raw C++ source, substitutions can.
+substitutions:
+  google_sheets_webhook_url: !secret google_sheets_webhook_url
+  google_sheets_secret: !secret google_sheets_secret
+
 esphome:
   name: flu-monitor
   friendly_name: Flu Monitor
@@ -88,10 +94,12 @@ sensor:
     address: 0x47
     update_interval: 30s
     temperature:
+      id: bmp581_temperature
       name: "Temperature"
       oversampling: 8x
       iir_filter: 4x
     pressure:
+      id: bmp581_pressure
       name: "Pressure"
       oversampling: 16x
       iir_filter: 4x
@@ -101,8 +109,10 @@ sensor:
     thermocouple_type: K
     update_interval: 30s
     hot_junction:
+      id: thermocouple_temperature
       name: "Thermocouple Temperature"
     cold_junction:
+      id: thermocouple_cold_junction
       name: "Thermocouple Cold Junction"
 
   - platform: wifi_signal
@@ -115,3 +125,34 @@ sensor:
 button:
   - platform: restart
     name: "Restart"
+
+# Logs sensor readings to a Google Sheet via a Google Apps Script webhook.
+# See google-sheets-logger/README.md for how to set that webhook up; the two
+# secrets below come from that setup.
+http_request:
+  # Defaults (verify_ssl: true) already pull in ESPHome's common-CA bundle,
+  # which covers Google's certificate -- no extra esp32 cert bundle config
+  # needed for script.google.com.
+  useragent: flu-monitor
+  # The default 512B tx buffer isn't enough for Google's long deployment-ID
+  # URL plus query string and headers; that showed up as an intermittent
+  # "HTTP_CLIENT: Out of buffer" / esp_http_client_open ESP_FAIL.
+  buffer_size_tx: 1024
+
+interval:
+  - interval: 5min
+    then:
+      # GET, not POST: Apps Script Web Apps always redirect to a
+      # script.googleusercontent.com URL that only accepts GET, and the
+      # ESP32's HTTP client preserves the original method across that
+      # redirect (unlike browsers/curl, which downgrade to GET). A POST
+      # here fails with HTTP 405 even though it can look fine when tested
+      # from a browser. See google-sheets-logger/README.md.
+      - http_request.get:
+          url: !lambda |-
+            return (std::string) "${google_sheets_webhook_url}"
+              + "?secret=${google_sheets_secret}"
+              + "&temperature=" + str_sprintf("%.1f", id(bmp581_temperature).state)
+              + "&pressure=" + str_sprintf("%.1f", id(bmp581_pressure).state)
+              + "&thermocouple=" + str_sprintf("%.1f", id(thermocouple_temperature).state)
+              + "&cold_junction=" + str_sprintf("%.1f", id(thermocouple_cold_junction).state);
