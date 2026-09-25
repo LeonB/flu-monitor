@@ -138,6 +138,65 @@ button:
   - platform: restart
     name: "Restart"
 
+  # Woodstove event annotations -- each logs an immediate sensor snapshot
+  # alongside a short event label, so temperature behavior can be correlated
+  # with what was actually happening at the stove. Visible on the
+  # http://flu-monitor.local dashboard; tap from a phone while standing there.
+  - platform: template
+    name: "Cold Start"
+    on_press:
+      - script.execute:
+          id: log_to_sheets
+          event: "cold_start"
+  - platform: template
+    name: "Opened Stove"
+    on_press:
+      - script.execute:
+          id: log_to_sheets
+          event: "opened_stove"
+  - platform: template
+    name: "Added Wood"
+    on_press:
+      - script.execute:
+          id: log_to_sheets
+          event: "added_wood"
+  - platform: template
+    name: "Damper Up"
+    on_press:
+      - script.execute:
+          id: log_to_sheets
+          event: "damper_up"
+  - platform: template
+    name: "Damper Down"
+    on_press:
+      - script.execute:
+          id: log_to_sheets
+          event: "damper_down"
+  - platform: template
+    name: "Burning Optimally"
+    on_press:
+      - script.execute:
+          id: log_to_sheets
+          event: "burning_optimally"
+  - platform: template
+    name: "Stove Roaring"
+    on_press:
+      - script.execute:
+          id: log_to_sheets
+          event: "roaring"
+  - platform: template
+    name: "Dying Down"
+    on_press:
+      - script.execute:
+          id: log_to_sheets
+          event: "dying_down"
+  - platform: template
+    name: "Fire Out"
+    on_press:
+      - script.execute:
+          id: log_to_sheets
+          event: "fire_out"
+
 # Logs sensor readings to a Google Sheet via a Google Apps Script webhook.
 # See google-sheets-logger/README.md for how to set that webhook up; the two
 # secrets below come from that setup.
@@ -159,8 +218,13 @@ http_request_async:
   timeout: 30s
   redirect_limit: 6
 
-interval:
-  - interval: 5min
+# Shared by both the periodic log (event left blank) and the event buttons
+# below (event set to a short label) -- keeps the URL-building logic in one
+# place instead of five copies.
+script:
+  - id: log_to_sheets
+    parameters:
+      event: string
     then:
       # GET, not POST: Apps Script Web Apps always redirect to a
       # script.googleusercontent.com URL that only accepts GET, and the
@@ -175,9 +239,20 @@ interval:
               + "&temperature=" + str_sprintf("%.1f", id(bmp581_temperature).state)
               + "&pressure=" + str_sprintf("%.0f", id(bmp581_pressure).state)
               + "&thermocouple=" + str_sprintf("%.1f", id(thermocouple_temperature).state)
-              + "&cold_junction=" + str_sprintf("%.1f", id(thermocouple_cold_junction).state);
+              + "&cold_junction=" + str_sprintf("%.1f", id(thermocouple_cold_junction).state)
+              + "&event=" + event;
           on_error:
             then:
               - logger.log:
                   format: "Google Sheets post failed (cosmetic -- the row usually still lands; see google-sheets-logger/README.md)"
                   level: WARN
+
+interval:
+  # Woodstove data-gathering phase: logging every 30s (was 5min) so a fast
+  # temperature rise/fall actually shows up as more than one flat point.
+  - interval: 30s
+    then:
+      - script.execute:
+          id: log_to_sheets
+          event: ""
+

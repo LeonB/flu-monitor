@@ -21,6 +21,7 @@
 // redirects to GET regardless of the client's redirect-method policy.
 const SHARED_SECRET = "REPLACE_ME_WITH_A_RANDOM_STRING";
 const SHEET_NAME = "Sensor Log";
+const HEADER_ROW = ["Timestamp", "Temperature (C)", "Pressure (Pa)", "Thermocouple (C)", "Cold Junction (C)", "Event"];
 
 function doGet(e) {
   const p = e.parameter;
@@ -33,7 +34,10 @@ function doGet(e) {
     || SpreadsheetApp.getActiveSpreadsheet().insertSheet(SHEET_NAME);
 
   if (sheet.getLastRow() === 0) {
-    sheet.appendRow(["Timestamp", "Temperature (C)", "Pressure (Pa)", "Thermocouple (C)", "Cold Junction (C)"]);
+    sheet.appendRow(HEADER_ROW);
+  } else if (sheet.getRange(1, HEADER_ROW.length).getValue() !== HEADER_ROW[HEADER_ROW.length - 1]) {
+    // Sheet predates the Event column (added later) -- backfill just the header cell.
+    sheet.getRange(1, HEADER_ROW.length).setValue(HEADER_ROW[HEADER_ROW.length - 1]);
   }
 
   sheet.appendRow([
@@ -42,6 +46,7 @@ function doGet(e) {
     Number(p.pressure),
     Number(p.thermocouple),
     Number(p.cold_junction),
+    p.event || "",
   ]);
 
   return ContentService.createTextOutput("ok").setMimeType(ContentService.MimeType.TEXT);
