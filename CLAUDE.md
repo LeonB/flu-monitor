@@ -46,6 +46,22 @@ PIP_INDEX_URL=https://pypi.org/simple esphome run flu-monitor.yaml ...
   85kHz was fine for the BMP581 too in testing, so this is a fleet-wide setting, not
   a per-device one.
 
+- **Even at 85kHz with `scan: false`, the MCP9600 still occasionally returns an
+  outright garbage reading** — observed 709.3°C and 891.2°C from a probe sitting at
+  room temperature, logged to the woodstove data-gathering sheet. Decoded back to raw
+  register bytes (`0x2C55` and `0x37B3`), neither matches the specific "duplicate
+  byte" pattern the documented errata describes, so this looks more like general
+  bus-noise corruption (plausible given the bare-wire, unshielded thermocouple probe
+  currently in use) than that exact erratum recurring — but either way, occasional
+  corruption should be assumed possible and guarded against, not treated as solved.
+  `flu-monitor.yaml`'s logging interval has a sanity clamp (reject readings outside
+  roughly -40°C..600°C, a stovepipe has no business reading outside that) that
+  filters this at the logging layer. That clamp only catches *wildly* wrong values,
+  though — a corrupted reading that happens to land inside the plausible range would
+  sail through. Any future safety-critical alert logic (the actual overfire
+  detection) should not trust a single sample; require at least two consecutive
+  consistent readings before treating a spike as real.
+
 - **`GPIO2` (STEMMA QT power) needs `setup_priority: 1200`** on its switch, higher
   than the i2c bus's own priority (`BUS = 1000`). Without this, the sensors are
   unpowered when the i2c bus initializes and you'll see `SCL is held LOW on the bus`
@@ -135,6 +151,30 @@ cost real debugging time and are easy to accidentally reintroduce:
   see google-sheets-logger/README.md for the trust trade-off and how to
   revert to the stock component if that ever matters more than the
   blocking behavior it fixes.
+
+## Woodstove data-gathering logging
+
+The periodic (non-button) log to Sheets is gated, not unconditional every tick:
+
+- `thermocouple_deadband_c` and `log_heartbeat_min` (both `substitutions:`) control
+  it -- only actually posts when the thermocouple has moved past the deadband since
+  the last point logged, or the heartbeat interval has elapsed, whichever first.
+  Currently 5°C / 15min; deliberately conservative during data-gathering so real
+  transitions aren't blurred out. Tune up once the real noise floor and what counts
+  as signal is clearer.
+- Every periodic log's Event column gets tagged `temp_change` or `heartbeat` (via
+  the `log_reason` global, set as a side effect of the interval's condition lambda)
+  so you can tell a real-temperature-driven row from a routine keep-alive one at a
+  glance. Button-press events aren't gated by any of this -- they always log
+  immediately with their own label, since those are deliberate annotations.
+- The deadband compares against `last_logged_thermocouple_c` (last value actually
+  *sent*, not last raw reading), which is exactly why the corrupted-reading sanity
+  clamp above has to run first and skip the tick entirely on failure -- if a garbage
+  value ever got logged, it would become the new baseline and make every subsequent
+  *real* reading look like a huge jump, cascading into a burst of bogus logs. This
+  happened once before the clamp was added (four `temp_change` rows in under two
+  minutes off of one bad reading) -- if that pattern reappears, suspect the clamp's
+  range needs adjusting, not the deadband logic itself.
 
 ## Other notes
 
