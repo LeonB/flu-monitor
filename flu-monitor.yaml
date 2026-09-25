@@ -21,6 +21,18 @@ esphome:
   name: flu-monitor
   friendly_name: Flu Monitor
 
+# Third-party, low-adoption component (see google-sheets-logger/README.md for
+# why this is here instead of the stock http_request): runs HTTP requests on
+# a separate FreeRTOS task so a slow Google Apps Script response doesn't
+# block the whole device's main loop. Pinned to a tag, not `main`, so a
+# future upstream change can't silently alter this build.
+external_components:
+  - source:
+      type: git
+      url: https://github.com/Vaarlion/esphome-http-request-async.git
+      ref: esphome-2026.8
+    components: [http_request_async]
+
 esp32:
   board: adafruit_feather_esp32_v2
   flash_size: 8MB
@@ -129,7 +141,8 @@ button:
 # Logs sensor readings to a Google Sheet via a Google Apps Script webhook.
 # See google-sheets-logger/README.md for how to set that webhook up; the two
 # secrets below come from that setup.
-http_request:
+http_request_async:
+  id: sheets_http_client
   # Defaults (verify_ssl: true) already pull in ESPHome's common-CA bundle,
   # which covers Google's certificate -- no extra esp32 cert bundle config
   # needed for script.google.com.
@@ -138,6 +151,13 @@ http_request:
   # URL plus query string and headers; that showed up as an intermittent
   # "HTTP_CLIENT: Out of buffer" / esp_http_client_open ESP_FAIL.
   buffer_size_tx: 1024
+  # Apps Script's redirect chain (exec -> googleusercontent echo -> back to
+  # exec) occasionally loops before resolving -- observed taking as long as
+  # ~40s in direct curl testing, entirely on Google's end (this is a known
+  # Apps Script Web App latency characteristic, not device-specific). Since
+  # requests now run off the main loop, a generous timeout costs nothing.
+  timeout: 30s
+  redirect_limit: 6
 
 interval:
   - interval: 5min
@@ -148,11 +168,16 @@ interval:
       # redirect (unlike browsers/curl, which downgrade to GET). A POST
       # here fails with HTTP 405 even though it can look fine when tested
       # from a browser. See google-sheets-logger/README.md.
-      - http_request.get:
+      - http_request_async.get:
           url: !lambda |-
             return (std::string) "${google_sheets_webhook_url}"
               + "?secret=${google_sheets_secret}"
               + "&temperature=" + str_sprintf("%.1f", id(bmp581_temperature).state)
-              + "&pressure=" + str_sprintf("%.1f", id(bmp581_pressure).state)
+              + "&pressure=" + str_sprintf("%.0f", id(bmp581_pressure).state)
               + "&thermocouple=" + str_sprintf("%.1f", id(thermocouple_temperature).state)
               + "&cold_junction=" + str_sprintf("%.1f", id(thermocouple_cold_junction).state);
+          on_error:
+            then:
+              - logger.log:
+                  format: "Google Sheets post failed (cosmetic -- the row usually still lands; see google-sheets-logger/README.md)"
+                  level: WARN

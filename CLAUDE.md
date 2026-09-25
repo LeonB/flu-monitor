@@ -81,10 +81,64 @@ PIP_INDEX_URL=https://pypi.org/simple esphome run flu-monitor.yaml ...
   `DEBUG` — they don't show at `INFO` even though `INFO` is a "lower" verbosity
   in casual terms. This tripped up early debugging more than once.
 
+## Google Sheets logging gotchas
+
+See `google-sheets-logger/README.md` for the actual setup steps. Two things that
+cost real debugging time and are easy to accidentally reintroduce:
+
+- **Use `http_request.get`, never `.post`, against a Google Apps Script Web App.**
+  These always respond with a redirect to a `script.googleusercontent.com` URL
+  that only accepts GET. Browsers and curl's default behavior downgrade the
+  method to GET when following that redirect, so a POST can look like it works
+  fine when hand-tested — but the ESP32's HTTP client (ESP-IDF's
+  `esp_http_client`) preserves the original method across the redirect instead,
+  so a POST fails on-device with HTTP 405 even though the exact same webhook
+  tests fine from a browser or `curl -L`. Sending a GET with the data as query
+  parameters (which is what's in `flu-monitor.yaml` now) sidesteps this
+  entirely, since GET always redirects to GET regardless of the client's
+  redirect-method policy.
+- **`!secret` can't be used inside a lambda's raw C++ text** — it only resolves
+  when it's the *entire* value of a YAML node, not textually inside a bigger
+  string. To get a secret into a lambda (e.g. to build a URL with dynamic
+  sensor data appended), pull it in via `substitutions:` instead —
+  substitutions do raw `${...}` text replacement across the whole parsed
+  config, lambda bodies included, and a substitution's value can itself come
+  from `!secret`.
+- `http_request:`'s default 512B `buffer_size_tx` isn't enough for a long
+  Apps Script URL (deployment ID + query string); undersized shows up as an
+  intermittent `HTTP_CLIENT: Out of buffer` / `esp_http_client_open ESP_FAIL`,
+  not a clean error pointing at the buffer. Bumped to 1024B here.
+- When an Apps Script Web App looks broken after editing the code, check
+  whether the deployment was actually redeployed as a **New version** — the
+  "Deploy" button in the edit-deployment dialog silently no-ops if the Version
+  dropdown is still left on the old version. "Deployment successfully updated"
+  does not mean your new code is live.
+- A redirect loop between the `/exec` URL and its `script.googleusercontent.com`
+  echo URL happened once and resolved itself on retry a few seconds later —
+  treat it as transient Google-side flakiness, not a config problem, unless it
+  repeats.
+- **Apps Script Web App latency is genuinely bad and not fixable from our
+  side.** Direct `curl` timing against the deployed webhook (not the ESP32,
+  a fast machine on a fast connection) showed round trips from 1.5s to 40+
+  seconds across 8 back-to-back calls, 2 of those 8 essentially timed out.
+  This is a documented characteristic of "Anyone"-access Web Apps, not
+  something our config controls, and "Anyone" access is required here since
+  the ESP32 has no way to do a Google login. Because Apps Script executes
+  the handler and writes to the sheet *before* sending the client a
+  response, a logged client-side failure usually still means the row landed
+  — confirmed twice by checking the sheet directly after a logged failure.
+- **We use a third-party `http_request_async` fork instead of ESPHome's
+  stock `http_request`**, specifically so one of these slow/failed Google
+  calls doesn't block the whole device's main loop (sensors, dashboard,
+  everything) for the duration. It's pinned to a tag
+  (`ref: esphome-2026.8`), not `main`. It's low-adoption and AI-written —
+  see google-sheets-logger/README.md for the trust trade-off and how to
+  revert to the stock component if that ever matters more than the
+  blocking behavior it fixes.
+
 ## Other notes
 
-- `secrets.yaml` and `.esphome/` are git-ignored. Nothing has been committed yet —
-  worth doing once the config is in a state you're happy with.
+- `secrets.yaml` and `.esphome/` are git-ignored.
 - `web_server`'s own OTA endpoint is explicitly disabled (`ota: false` under
   `web_server:`) since the encrypted `ota:` platform already covers updates, and
   the web one would otherwise accept plaintext firmware uploads.
