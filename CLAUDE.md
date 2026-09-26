@@ -255,14 +255,42 @@ The periodic (non-button) log to Sheets is gated, not unconditional every tick:
 
 ## flu-display (plain ESP-IDF, not ESPHome -- see `flu-display/`)
 
-Status: **Milestones 1 (WiFi + captive portal) and 2 (poll `flu-monitor`'s
-JSON API) verified working end-to-end on real hardware.** Milestone 1:
-captive portal auto-popped on a real client (confirmed via screenshot), form
-submission saved credentials to NVS, device rebooted and joined the real
-network, stayed connected. Milestone 2: once connected, the device resolves
-`flu-monitor.local`, polls its thermocouple sensor every `POLL_INTERVAL_MS`,
-and logs the parsed, sanity-clamped reading plus rate-of-change to serial.
-Milestone 3 (drive the LED ring) not started yet.
+Status: **All three milestones (WiFi + captive portal, poll `flu-monitor`'s
+JSON API, drive the LED ring) verified working end-to-end on real hardware.**
+Milestone 1: captive portal auto-popped on a real client (confirmed via
+screenshot), form submission saved credentials to NVS, device rebooted and
+joined the real network, stayed connected. Milestone 2: once connected, the
+device resolves `flu-monitor`, polls its thermocouple sensor every
+`POLL_INTERVAL_MS`, and logs the parsed, sanity-clamped reading plus
+rate-of-change to serial. Milestone 3: the 24-LED SK6812 RGBW ring (wired to
+GPIO13, not GPIO25 -- see below) renders the polled reading as a
+blue/amber/red gradient with a breathing pulse, confirmed by camera to light
+up solid blue at room temperature as expected.
+
+- **Plain `.local` resolution turned out unreliable in practice, contrary to
+  Milestone 2's first clean test run.** A later boot got consistent
+  `ESP_ERR_HTTP_CONNECT` / `getaddrinfo() returns 202` failures on every
+  single poll, *while the Mac resolved and pinged the same hostname fine at
+  the same time* (confirmed with `dns-sd -B` and `ping`) -- so the sidecar's
+  own mDNS responder was healthy; the failure was specific to the ESP32
+  client's implicit resolution path. Switched to the fallback the original
+  plan had already flagged as a contingency: an explicit `mdns_query_a()`
+  call in `flue_poll.c`, building the request URL from the resolved IP
+  (`IPSTR`/`IP2STR`) instead of handing `esp_http_client` a `.local`
+  hostname directly.
+- **Even the explicit `mdns_query_a()` call was itself flaky poll-to-poll**
+  on this network -- observed RSSI swinging -38 to -62 across boots,
+  plausibly lossy multicast rather than a code bug, since a single mDNS
+  query has no built-in retry across that kind of loss. Fix: `flue_poll.c`
+  now resolves once and caches the IP (`s_cached_ip`/`s_have_ip`), reusing
+  it on every subsequent poll, and only triggers a fresh `mdns_query_a()`
+  call when an actual HTTP request against the cached IP fails -- this
+  turned "resolve via multicast every 3 seconds, hope it lands" into
+  "resolve once, keep working off it," and a 60-second live test afterward
+  showed zero failures. If `flu-monitor`'s IP ever changes via DHCP without
+  its own connection dropping, this cache could go stale; not handled
+  specially since a DHCP reassignment independent of a reconnect is rare on
+  a home network and would just self-correct on the next HTTP failure.
 
 - **`espressif/mdns` is a managed component fetched via the component
   manager** (`main/idf_component.yml`), not bundled in ESP-IDF core the way
@@ -272,12 +300,13 @@ Milestone 3 (drive the LED ring) not started yet.
   manager's install directory) and pins the resolved version in
   `dependencies.lock` (committed, for reproducible builds -- same idea as a
   lockfile in any other package manager).
-- **Plain `.local` hostnames resolve automatically once `mdns_init()` has
-  run** -- confirmed empirically on real hardware, so the plan's fallback
-  (an explicit `mdns_query_a()` lookup before building the request URL)
-  turned out to be unnecessary. `esp_http_client_init()` was simply given
-  `http://flu-monitor.local/sensor/...` directly and it resolved and
-  connected with no extra code.
+- **Plain `.local` hostnames resolving automatically via `esp_http_client`
+  once `mdns_init()` has run is NOT reliable enough to depend on** --
+  Milestone 2's first test run made it look like it "just worked" with no
+  extra code, but a later boot got consistent resolution failures under the
+  exact same firmware. See the mDNS bullets above (Milestone 3 section) for
+  what actually ended up robust: an explicit `mdns_query_a()` call, with its
+  result cached and reused across polls rather than re-queried every time.
 - **The sidecar's `web_server` JSON API is keyed by the sensor's exact
   entity name, URL-encoded, not its `object_id`** -- reuses the same URL
   format verified against the live sidecar earlier in this project:
@@ -291,6 +320,40 @@ Milestone 3 (drive the LED ring) not started yet.
   not the raw poll cadence -- so one bad/rejected reading can't skew the rate
   calculation, and a poll/parse failure just returns `valid=false` rather
   than a stale or guessed value.
+- **LED ring data line is on GPIO13, not the originally-planned GPIO25.**
+  GPIO25 was chosen on the (wrong, for this board) assumption that GPIO12-15
+  form the D32 Pro's onboard TF-card SPI bus, the ESP32's generic HSPI
+  default pins -- checked afterward and the D32 Pro's SD card/TFT header
+  actually shares *VSPI* (GPIO18/19/23, CS on 4/14) instead, so GPIO13 has no
+  onboard conflict. GPIO25's only distinguishing feature turned out to be
+  that it's one of the chip's two DAC-capable pins, irrelevant here since
+  it's driven as a plain digital RMT output either way.
+- **`espressif/led_strip`'s current API doesn't have a `led_pixel_format`
+  field** (older tutorials/examples online do -- check the version actually
+  fetched, not just search results). This version's `led_strip_config_t`
+  instead has `color_component_format`, set via a helper macro like
+  `LED_STRIP_COLOR_COMPONENT_FMT_GRBW` -- read
+  `managed_components/espressif__led_strip/include/led_strip_types.h`
+  directly rather than trust a remembered/guessed struct layout when the
+  component gets bumped.
+- **`led_display.c` runs its own ~30ms-tick FreeRTOS task** independent of
+  the 3-second poll cadence, so the breathing pulse animates smoothly
+  between polls. It reads the latest reading via a small
+  `portENTER_CRITICAL`/`portEXIT_CRITICAL`-guarded shared state struct that
+  `main.c` writes into after each poll -- not a queue/mutex, since it's a
+  handful of plain scalars and the render task only ever needs the latest
+  value, never a history.
+- **Camera-based visual verification of the ring worked without any
+  browser/artifact plumbing**: macOS exposes a plugged-in webcam (here, a
+  Logitech C920) directly to `ffmpeg` via `-f avfoundation`, so
+  `ffmpeg -f avfoundation -i "0" -frames:v 1 -update 1 out.jpg` grabs a
+  single still frame straight from the command line. `-update 1` is
+  required for the `image2` muxer to write one plain file instead of
+  demanding a sequence pattern like `%03d.jpg`. The camera app (here iTerm,
+  under System Settings -> Privacy & Security -> Camera) needs prior OS
+  permission; an `Input/output error` opening the device despite the format
+  probe succeeding is the symptom either of that permission being denied,
+  or of another app already holding the camera open.
 
 - **Toolchain: reuse ESPHome's cached ESP-IDF, don't reinstall it.** ESPHome
   already has a full ESP-IDF v5.5.5 checkout at
