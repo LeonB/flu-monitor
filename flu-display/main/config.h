@@ -29,5 +29,5 @@
 #define ZONE_GOOD_MAX_C         280.0f
 #define FAST_RISE_C_PER_MIN     20.0f
 
-#define LED_GPIO                25
+#define LED_GPIO                13
 #define LED_COUNT               24
