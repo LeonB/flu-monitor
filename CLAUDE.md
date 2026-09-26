@@ -21,18 +21,21 @@ Full intended system:
 - **Process (this repo)**: this ESP32 sidecar reads it over I2C, and currently
   just logs it (see "Woodstove data-gathering logging" below) — it doesn't yet
   track rate-of-change or make any zone/alert decision.
-- **Display — not built yet, a separate physical device**: a standalone,
-  screen-less ambient light box (or several — "koppelen display boxes" was the
-  original idea), placed wherever you'd actually glance at it, not necessarily
-  next to the stove. Diffuses a color gradient (cool blue -> amber -> red) and
-  pulses faster when temperature is rising quickly. Receives zone/color/pulse
-  state wirelessly from the sidecar — ESP-NOW vs MQTT is still an open decision
-  (ESP-NOW: lightweight, no router/broker; MQTT: more setup, plays nicer with
-  Home Assistant).
+- **Display — `flu-display/`, a separate physical device (Lolin D32 Pro +
+  24-LED SK6812 RGBW ring)**: in progress, see `flu-display/README.md` (or its
+  own section below) for status. Screen-less ambient light box, placed
+  wherever you'd actually glance at it, not necessarily next to the stove.
+  Diffuses a color gradient (cool blue -> amber -> red) and pulses faster when
+  temperature is rising quickly. Polls this sidecar's existing `web_server:`
+  JSON API over WiFi (decided against ESP-NOW/MQTT/a from-scratch native-API
+  client — see `flu-display`'s own notes below for why) — not MQTT, not
+  ESP-NOW, that's settled now, not still open.
 - **Alert**: push a phone notification if things cross into dangerous territory
   — not built yet.
-- Also still undecided: whether the sidecar's WiFi/logic layer stays ESPHome
-  (as now) or becomes a custom build (webserver, REST API, WebSockets).
+- The sidecar's own WiFi/logic layer stays ESPHome (settled, not still open)
+  — `flu-display` is plain ESP-IDF instead, a deliberate difference: it has no
+  sensors to expose and no Home Assistant integration need, so ESPHome would
+  have been overkill there specifically.
 
 **Current phase is data-gathering, nothing else.** The event buttons (Cold
 Start, Opened Stove, Added Wood, Damper Up/Down, Burning Optimally, Stove
@@ -249,6 +252,75 @@ The periodic (non-button) log to Sheets is gated, not unconditional every tick:
   happened once before the clamp was added (four `temp_change` rows in under two
   minutes off of one bad reading) -- if that pattern reappears, suspect the clamp's
   range needs adjusting, not the deadband logic itself.
+
+## flu-display (plain ESP-IDF, not ESPHome -- see `flu-display/`)
+
+Status: **Milestone 1 (WiFi + captive portal) verified working end-to-end on
+real hardware** -- captive portal auto-popped on a real client (confirmed via
+screenshot), form submission saved credentials to NVS, device rebooted and
+joined the real network, stayed connected. Milestones 2 (poll `flu-monitor`'s
+JSON API) and 3 (drive the LED ring) not started yet.
+
+- **Toolchain: reuse ESPHome's cached ESP-IDF, don't reinstall it.** ESPHome
+  already has a full ESP-IDF v5.5.5 checkout at
+  `~/Library/Caches/esphome/idf/frameworks/5.5.5/` plus the Xtensa toolchain
+  and Ninja under `~/Library/Caches/esphome/idf/tools/` -- multiple GB,
+  already paid for. Only the IDF-native Python venv is missing (ESPHome
+  manages its own venv separately, under a different naming convention than
+  `idf.py`'s own `python_env/idf5.5_py3.14_env` expectation). One-time setup,
+  scoped to just the `esp32` target to avoid pulling RISC-V toolchains for
+  chip variants this project doesn't use:
+  ```sh
+  export IDF_TOOLS_PATH=~/Library/Caches/esphome/idf
+  export IDF_PATH="$IDF_TOOLS_PATH/frameworks/5.5.5"
+  PIP_INDEX_URL=https://pypi.org/simple "$IDF_PATH/install.sh" esp32
+  ```
+  (the `PIP_INDEX_URL` override is the same broken-corporate-pip-index
+  workaround as the ESPHome setup above.) After that one-time step, every
+  session just needs `flu-display/activate-idf.sh` sourced (not executed) in
+  whatever command also needs `idf.py` -- Bash tool calls don't persist shell
+  state between calls, so this has to happen in the *same* command as the
+  `idf.py` invocation that follows it: `. ./activate-idf.sh && idf.py build`.
+
+- **Captive portal is adapted from Espressif's own bundled example**
+  (`$IDF_PATH/examples/protocols/http_server/captive_portal/`), not a
+  third-party library, deliberately, per the "stay in the Espressif ecosystem"
+  preference. That example only serves a static page with no way to actually
+  submit/save credentials; `components/captive_portal/` adds the real
+  `POST /save` handler (NVS-backed credential storage, then `esp_restart()` to
+  retry STA with them) on top of it. `components/dns_server/` is copied
+  near-verbatim from that same example.
+
+- **`wifi_setup` had to become its own component**, not live inside `main/`
+  as originally sketched -- `components/captive_portal/` also needs
+  `wifi_creds_save()`, and a non-`main` component can't cleanly reach into
+  `main/`'s private headers without `main` explicitly exposing them (and
+  `main` itself depends on `captive_portal`, so that path risks circularity
+  anyway). A small sibling component both can depend on is the clean fix.
+
+- **`httpd_query_key_value()` does NOT URL-decode.** Its own doc comment in
+  `esp_http_server.h` says so explicitly: keys/values from a
+  `x-www-form-urlencoded` POST body come back with `+` and `%XX` still
+  literal. `captive_portal.c`'s `url_decode()` handles this -- don't assume
+  the extracted SSID/password are ready to use as-is.
+
+- **One of the two D32 Pro boards on hand needed the manual BOOT+RST bootloader
+  sequence** (`esptool`'s auto-reset via DTR/RTS failed with "No serial data
+  received"); the other board's auto-reset worked fine over the same cable
+  and command. Treat this as a per-board/cable hardware quirk to check for
+  first, not a sign anything in the build or flash command is wrong.
+
+- **Testing the captive portal from this Mac is subtle because it's
+  multi-homed** (wired Ethernet as the default route, WiFi separate and not
+  the default route). Plain command-line tools (`curl`, `dig`) resolve DNS via
+  the *system* default resolver, which stayed on Ethernet even while joined to
+  the ESP32's SoftAP -- so `dig @<ap-ip> some-hostname` timing out, or
+  `curl http://captive.apple.com/...` returning Apple's real page instead of
+  the redirect, does NOT mean the DNS hijack is broken. macOS's own Captive
+  Network Assistant (the thing that actually pops the setup window) evidently
+  probes through the specific just-joined WiFi interface directly, bypassing
+  the system default resolver -- that popup actually appearing is the real
+  signal to trust, not a `dig`/`curl` test run from the same dual-homed Mac.
 
 ## Other notes
 
