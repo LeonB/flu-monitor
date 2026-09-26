@@ -1,5 +1,6 @@
-// flu-display: Milestone 1 -- WiFi (with stored credentials) + captive
-// portal fallback only. No polling or LED logic yet (Milestones 2-3).
+// flu-display: Milestone 1 (WiFi with stored credentials + captive portal
+// fallback) plus Milestone 2 (poll flu-monitor's JSON API, log the parsed
+// reading). No LED logic yet (Milestone 3).
 // See CLAUDE.md's "Project goal" section for the full project context, and
 // the plan this was built from for the architecture rationale (ESPHome vs.
 // Arduino vs. plain ESP-IDF, why plain ESP-IDF was chosen).
@@ -15,6 +16,7 @@
 
 #include "captive_portal.h"
 #include "config.h"
+#include "flue_poll.h"
 #include "wifi_setup.h"
 
 static const char *TAG = "main";
@@ -46,13 +48,16 @@ void app_main(void) {
   }
 
   if (connected) {
-    ESP_LOGI(TAG, "Connected. Milestone 1 stops here -- polling/LED logic comes in Milestones 2-3.");
-    // Nothing else to do yet; app_main returning is fine, FreeRTOS keeps
-    // running (WiFi's own tasks, etc.) -- this idle loop just keeps a
-    // visible heartbeat in the serial log for this milestone's testing.
+    ESP_LOGI(TAG, "Connected. Starting flu-monitor polling (Milestone 2). LED logic comes in Milestone 3.");
+    flue_poll_init();
     while (true) {
-      vTaskDelay(pdMS_TO_TICKS(10000));
-      ESP_LOGI(TAG, "(still connected, idling -- Milestone 1)");
+      flue_reading_t reading = flue_poll_once();
+      if (reading.valid) {
+        ESP_LOGI(TAG, "Thermocouple: %.1f C (rate %.2f C/min)", reading.temperature_c, reading.rate_c_per_min);
+      } else {
+        ESP_LOGW(TAG, "Poll failed or reading rejected -- see flue_poll warnings above");
+      }
+      vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
     }
   } else {
     ESP_LOGW(TAG, "Not connected -- starting setup access point + captive portal");

@@ -255,11 +255,42 @@ The periodic (non-button) log to Sheets is gated, not unconditional every tick:
 
 ## flu-display (plain ESP-IDF, not ESPHome -- see `flu-display/`)
 
-Status: **Milestone 1 (WiFi + captive portal) verified working end-to-end on
-real hardware** -- captive portal auto-popped on a real client (confirmed via
-screenshot), form submission saved credentials to NVS, device rebooted and
-joined the real network, stayed connected. Milestones 2 (poll `flu-monitor`'s
-JSON API) and 3 (drive the LED ring) not started yet.
+Status: **Milestones 1 (WiFi + captive portal) and 2 (poll `flu-monitor`'s
+JSON API) verified working end-to-end on real hardware.** Milestone 1:
+captive portal auto-popped on a real client (confirmed via screenshot), form
+submission saved credentials to NVS, device rebooted and joined the real
+network, stayed connected. Milestone 2: once connected, the device resolves
+`flu-monitor.local`, polls its thermocouple sensor every `POLL_INTERVAL_MS`,
+and logs the parsed, sanity-clamped reading plus rate-of-change to serial.
+Milestone 3 (drive the LED ring) not started yet.
+
+- **`espressif/mdns` is a managed component fetched via the component
+  manager** (`main/idf_component.yml`), not bundled in ESP-IDF core the way
+  it was in older IDF versions -- confirmed by searching the cached
+  v5.5.5 checkout and finding no `mdns` component there at all. `idf.py
+  build` fetches it into `managed_components/` (git-ignored, like a package
+  manager's install directory) and pins the resolved version in
+  `dependencies.lock` (committed, for reproducible builds -- same idea as a
+  lockfile in any other package manager).
+- **Plain `.local` hostnames resolve automatically once `mdns_init()` has
+  run** -- confirmed empirically on real hardware, so the plan's fallback
+  (an explicit `mdns_query_a()` lookup before building the request URL)
+  turned out to be unnecessary. `esp_http_client_init()` was simply given
+  `http://flu-monitor.local/sensor/...` directly and it resolved and
+  connected with no extra code.
+- **The sidecar's `web_server` JSON API is keyed by the sensor's exact
+  entity name, URL-encoded, not its `object_id`** -- reuses the same URL
+  format verified against the live sidecar earlier in this project:
+  `GET http://flu-monitor.local/sensor/Thermocouple%20Temperature` ->
+  `{"id":"sensor/Thermocouple Temperature","value":25,"state":"25.0 °C"}`.
+  `main/flue_poll.c` parses the `"value"` field.
+- **`flue_poll.c` reuses the sidecar's own defensive pattern**: a
+  -40..600°C sanity clamp (same range and rationale as `flu-monitor.yaml`'s,
+  see above) before a reading is accepted, and rate-of-change computed from
+  the last *accepted* reading and its timestamp (via `esp_timer_get_time()`),
+  not the raw poll cadence -- so one bad/rejected reading can't skew the rate
+  calculation, and a poll/parse failure just returns `valid=false` rather
+  than a stale or guessed value.
 
 - **Toolchain: reuse ESPHome's cached ESP-IDF, don't reinstall it.** ESPHome
   already has a full ESP-IDF v5.5.5 checkout at
