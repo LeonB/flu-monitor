@@ -73,6 +73,24 @@ static rgb_t temperature_to_color(float temperature_c) {
   return lerp_rgb(COLOR_GOOD, COLOR_HOT, (temperature_c - t_good) / (t_hot - t_good));
 }
 
+// The pure zone color one step toward the trend direction -- used only for
+// the pulse's bright-peak hue. A partial RGB blend between two colors this
+// far apart (e.g. 65% of the way from amber to blue) comes out as a muddy,
+// desaturated mix that reads as washed-out white at high brightness rather
+// than "leaning toward the next color" -- a clean swap between the two pure
+// endpoints reads far better than any partial blend does. A stable reading
+// (rate 0) gets no shift at all, same color as the trough.
+static rgb_t trend_neighbor_color(float temperature_c, float rate_c_per_min) {
+  float t_good = good_anchor_c();
+  if (rate_c_per_min > 0.0f) {
+    return (temperature_c <= t_good) ? COLOR_GOOD : COLOR_HOT;
+  }
+  if (rate_c_per_min < 0.0f) {
+    return (temperature_c <= t_good) ? COLOR_COLD : COLOR_GOOD;
+  }
+  return temperature_to_color(temperature_c);
+}
+
 // Maps a rate of rise to a breathing-pulse period: idle pace normally,
 // speeding up toward FAST_PULSE_PERIOD_MS as the rate approaches
 // FAST_RISE_C_PER_MIN. A falling/stable reading (rate <= 0) is clamped to
@@ -105,7 +123,15 @@ static void render_task(void *arg) {
     uint8_t brightness = (uint8_t) lerpf((float) PULSE_BRIGHTNESS_MIN, (float) PULSE_BRIGHTNESS_MAX, envelope);
 
     if (valid) {
-      rgb_t color = temperature_to_color(temperature_c);
+      // The dim trough always shows the true current-zone color, so the
+      // reading stays honestly readable at a glance; the bright peak swaps
+      // to the pure neighboring zone's color in the trend direction. A
+      // stable reading (rate 0) has no shift, so it stays one solid color
+      // through the whole pulse, same as before this was added.
+      rgb_t trough_color = temperature_to_color(temperature_c);
+      rgb_t peak_color = trend_neighbor_color(temperature_c, rate_c_per_min);
+      float color_t = powf(envelope, COLOR_TRANSITION_EXPONENT);
+      rgb_t color = lerp_rgb(trough_color, peak_color, color_t);
       uint32_t r = (uint32_t) color.r * brightness / 255;
       uint32_t g = (uint32_t) color.g * brightness / 255;
       uint32_t b = (uint32_t) color.b * brightness / 255;
