@@ -40,6 +40,17 @@ function doGet(e) {
     sheet.getRange(1, HEADER_ROW.length).setValue(HEADER_ROW[HEADER_ROW.length - 1]);
   }
 
+  // Numeric columns default to Sheets' "Automatic" format, which drops
+  // insignificant trailing zeros (26.0 displays as 26) even though the
+  // stored value is unchanged -- fix the display once per sheet rather than
+  // relying on whoever's reading it to notice and reformat manually.
+  if (sheet.getRange("B2").getNumberFormat() !== "0.0") {
+    sheet.getRange("B2:B").setNumberFormat("0.0"); // Temperature (C)
+    sheet.getRange("C2:C").setNumberFormat("0");   // Pressure (Pa)
+    sheet.getRange("D2:D").setNumberFormat("0.0"); // Thermocouple (C)
+    sheet.getRange("E2:E").setNumberFormat("0.0"); // Cold Junction (C)
+  }
+
   sheet.appendRow([
     new Date(),
     Number(p.temperature),

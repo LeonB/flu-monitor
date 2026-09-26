@@ -202,6 +202,26 @@ cost real debugging time and are easy to accidentally reintroduce:
   see google-sheets-logger/README.md for the trust trade-off and how to
   revert to the stock component if that ever matters more than the
   blocking behavior it fixes.
+- **Numeric cells show 26 instead of 26.0 by default.** `Number(p.temperature)`
+  turns the string `"26.0"` the ESP32 sends into the plain JS number `26` --
+  there's no such thing as a trailing zero on a number type -- and Sheets'
+  default "Automatic" cell format then drops it on display. The stored value
+  is correct either way; it's purely cosmetic. `Code.gs` now sets an explicit
+  number format (`0.0` for the three temperature columns, `0` for pressure) the
+  first time it touches a sheet that doesn't have it yet, self-healing an
+  existing sheet on its very next write after redeploy -- but it won't
+  retroactively reformat rows already written before that fix landed.
+- **Sheet row timestamps come from Apps Script's own `new Date()` at
+  write/processing time, not anything the ESP32 sends.** Combined with the
+  latency variability above, this means row order/spacing in the sheet
+  reflects when Google got around to processing each request, not necessarily
+  the order the device actually triggered them in. Observed once: a
+  `heartbeat` row landing only 21s after the previous one, which looked like a
+  scheduling bug -- but the row *after* that was exactly 15:00 after the one
+  *before* the odd one, confirming the device's internal schedule was never
+  wrong, just delayed/out-of-order arrival at Google's end. Don't chase this
+  as a device-side bug without checking whether the surrounding rows still
+  add up to the expected interval once the odd one is skipped.
 
 ## Woodstove data-gathering logging
 
@@ -217,7 +237,10 @@ The periodic (non-button) log to Sheets is gated, not unconditional every tick:
   the `log_reason` global, set as a side effect of the interval's condition lambda)
   so you can tell a real-temperature-driven row from a routine keep-alive one at a
   glance. Button-press events aren't gated by any of this -- they always log
-  immediately with their own label, since those are deliberate annotations.
+  immediately with their own label, since those are deliberate annotations. This
+  also means **button presses don't reset the heartbeat clock** -- they call
+  `log_to_sheets` directly and never touch `last_log_millis`, so pressing a
+  button doesn't delay or restart the next scheduled heartbeat/deadband check.
 - The deadband compares against `last_logged_thermocouple_c` (last value actually
   *sent*, not last raw reading), which is exactly why the corrupted-reading sanity
   clamp above has to run first and skip the tick entirely on failure -- if a garbage
