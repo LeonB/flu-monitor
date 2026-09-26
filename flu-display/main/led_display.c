@@ -31,7 +31,7 @@ static float good_anchor_c(void) { return (ZONE_COLD_MAX_C + ZONE_GOOD_MAX_C) / 
 static float hot_anchor_c(void) { return ZONE_GOOD_MAX_C + (ZONE_GOOD_MAX_C - ZONE_COLD_MAX_C) / 2.0f; }
 
 static const rgb_t COLOR_COLD = {0, 60, 255};
-static const rgb_t COLOR_GOOD = {255, 120, 0};
+static const rgb_t COLOR_GOOD = {255, 55, 0};
 static const rgb_t COLOR_HOT = {255, 0, 0};
 
 static float lerpf(float a, float b, float t) {
