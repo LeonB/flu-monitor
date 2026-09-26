@@ -265,7 +265,66 @@ device resolves `flu-monitor`, polls its thermocouple sensor every
 rate-of-change to serial. Milestone 3: the 24-LED SK6812 RGBW ring (wired to
 GPIO13, not GPIO25 -- see below) renders the polled reading as a
 blue/amber/red gradient with a breathing pulse, confirmed by camera to light
-up solid blue at room temperature as expected.
+up solid blue at room temperature as expected. Since then, live in-person
+tuning (see below) landed on: a less yellow-green, more amber good-zone
+color; the pulse's bright peak also swapping toward the neighboring zone's
+color to hint at heating/cooling direction; and slower pulse paces overall.
+
+- **RGB color choices for the gradient need to be judged live on the real
+  ring, not from a camera photo or from first-principles RGB values.** Two
+  separate incidents: (1) `COLOR_GOOD` was originally `{255, 120, 0}` --
+  looks like a reasonable amber in the abstract, but on the actual hardware
+  it read as yellow-green, not amber; dropping green to `55` fixed it.
+  (2) A camera photo of the ring lit solid blue came out with an obvious
+  blue color-cast even on a supposedly-neutral scene, confirming the
+  webcam's own auto white balance cannot be trusted to judge subtle color
+  correctness either -- only the user's own eyes on the physical hardware
+  can validate a color tuning here.
+- **Blending directly in RGB between two hues that are far apart (e.g. the
+  gradient's blue and amber) passes through a muddy, desaturated middle,
+  not a perceptually "in-between" color.** Tried twice, both confirmed by
+  eye on real hardware: first as a constant ~40% extrapolated-temperature
+  blend, which looked like an unrelated purple tint rather than "blue
+  leaning warm"; then as a pulse-peak blend capped around 65% of the way to
+  blue, which looked washed-out white at high brightness rather than
+  "bluer." The fix that actually worked: never hold a partial RGB blend --
+  swap cleanly to the *other pure endpoint color* instead (see
+  `trend_neighbor_color()` in `led_display.c`), and if a gradual-looking
+  transition is wanted, vary *when* the swap happens (e.g. envelope-shaped
+  via `COLOR_TRANSITION_EXPONENT`) rather than blending the color itself
+  partway.
+- **The LED ring's pulse/color design is now the honest-trough,
+  trend-peak pattern**: the dim point of each breathing pulse always shows
+  the true current-zone color (so a glance during the dim phase is never
+  misleading), and only the bright peak swaps to the neighboring zone's
+  pure color in the direction of the trend (cooling swaps toward the cooler
+  zone's color, heating toward the warmer one, stable has no swap at all).
+  `COLOR_TRANSITION_EXPONENT` (currently 11) shapes *when in the pulse* that
+  swap happens, biased so it stays near the trough color for most of the
+  cycle and only swings to the peak color in a quick ramp right at the top
+  -- tuned up live from an initial guess of 3, through 6 and 9, based on
+  the user wanting a longer amber hold and a quicker ramp.
+- **Iterating on LED look-and-feel is fastest with a temporary
+  `#if LED_TEST_PATTERN` block in `main.c`** that calls `led_display_init()`
+  and holds `led_display_set_reading()` on one fixed (temperature, rate)
+  pair indefinitely (skipping WiFi/polling entirely), rebuilding and
+  reflashing after each tweak -- much faster to iterate than waiting for a
+  real thermocouple reading to reach the state being tuned. Never commit
+  this block; revert `main.c` back to the real polling loop (`git checkout
+  -- flu-display/main/main.c`) once a tuning session is done, and rebuild
+  the real firmware so the device goes back to actually polling
+  `flu-monitor` before finishing up.
+- **Correlate photo/log captures against the live serial log's own
+  timestamps, not host-side `sleep` arithmetic.** A batch of test-pattern
+  photos taken via pre-computed `sleep N` delays between camera captures
+  drifted out of sync partway through (confirmed by two consecutive photos
+  showing the same color when they were meant to be different scenarios) --
+  `ffmpeg`'s own camera-open overhead isn't perfectly consistent call to
+  call, and small per-capture delays compound over a multi-step sequence.
+  The reliable fix: run `idf.py monitor` in the background (redirecting to
+  a log file; attaching resets the board), and gate each capture on
+  `grep -c` actually seeing that scenario's log line increment, rather than
+  timing it from the outside.
 
 - **Plain `.local` resolution turned out unreliable in practice, contrary to
   Milestone 2's first clean test run.** A later boot got consistent
