@@ -26,6 +26,16 @@ substitutions:
   # ...but always log at least this often even if nothing crossed the
   # deadband, so a long quiet period doesn't go completely dark.
   log_heartbeat_min: "15"
+  # Zone/rate boundaries for the "Thermocouple Zone"/"Thermocouple Rate"
+  # sensors below -- placeholders, same as flu-display's own copies of these
+  # numbers (flu-display/main/config.h), pending flu-monitor's multi-week
+  # data-gathering run giving real cold/good/hot boundaries (see the repo
+  # root CLAUDE.md's "Project goal"). flu-display still needs its own copies
+  # for its smooth in-zone color gradient (a discrete zone label alone isn't
+  # enough for that), so keep both in sync by hand until real values land.
+  zone_cold_max_c: "150.0"
+  zone_good_max_c: "280.0"
+  fast_rise_c_per_min: "20.0"
 
 esphome:
   name: flu-monitor
@@ -47,6 +57,30 @@ globals:
     type: std::string
     restore_value: false
     initial_value: '""'
+
+  # Rolling window feeding the "Thermocouple Rate" sensor below -- a
+  # least-squares slope over several real sensor updates (not a raw
+  # two-point delta) so ordinary reading-to-reading noise gets averaged out
+  # instead of directly driving the computed rate. 6 samples at the
+  # mcp9600's own 30s update_interval is ~3 minutes of history, which costs
+  # nothing in real responsiveness given a stovepipe changes over minutes,
+  # not seconds.
+  - id: thermocouple_history_c
+    type: float[6]
+    restore_value: false
+    initial_value: "{0,0,0,0,0,0}"
+  - id: thermocouple_history_ms
+    type: uint32_t[6]
+    restore_value: false
+    initial_value: "{0,0,0,0,0,0}"
+  - id: thermocouple_history_count
+    type: uint8_t
+    restore_value: false
+    initial_value: "0"
+  - id: thermocouple_rate_c_per_min
+    type: float
+    restore_value: false
+    initial_value: "0.0"
 
 # Third-party, low-adoption component (see google-sheets-logger/README.md for
 # why this is here instead of the stock http_request): runs HTTP requests on
@@ -150,9 +184,82 @@ sensor:
     hot_junction:
       id: thermocouple_temperature
       name: "Thermocouple Temperature"
+      # Fires exactly once per real sensor update (every 30s, matching
+      # update_interval above) -- feeds the rolling window that "Thermocouple
+      # Rate" is computed from, and classifies "Thermocouple Zone". Doing
+      # this off the sensor's own real update, rather than some external
+      # poller's assumed cadence, is exactly what avoids the rate-inflation
+      # bug flu-display's own polling-based rate calc was vulnerable to (see
+      # flu-display/CLAUDE.md): a value that only actually changes once per
+      # 30s, but gets timestamped as if every reader's own poll interval was
+      # the real sample period, makes any real delta look many times faster
+      # than it is.
+      on_value:
+        then:
+          - lambda: |-
+              // Same sanity clamp as the Sheets-logging tick below: a
+              // glitched reading must not enter the regression window, since
+              // it would corrupt the rate for the entire window's duration
+              // (minutes), not just one sample.
+              if (x < -40.0f || x > 600.0f) {
+                ESP_LOGW("main", "Ignoring implausible thermocouple reading for rate/zone: %.1f C", x);
+                return;
+              }
+
+              // Shift the window and append the new sample.
+              for (int i = 0; i < 5; i++) {
+                id(thermocouple_history_c)[i] = id(thermocouple_history_c)[i + 1];
+                id(thermocouple_history_ms)[i] = id(thermocouple_history_ms)[i + 1];
+              }
+              id(thermocouple_history_c)[5] = x;
+              id(thermocouple_history_ms)[5] = millis();
+              if (id(thermocouple_history_count) < 6) {
+                id(thermocouple_history_count) += 1;
+              }
+
+              // Least-squares slope (degrees C per minute) over whichever
+              // samples are currently populated.
+              uint8_t n = id(thermocouple_history_count);
+              float rate = 0.0f;
+              if (n >= 2) {
+                uint8_t start = 6 - n;
+                uint32_t base_ms = id(thermocouple_history_ms)[start];
+                double sum_x = 0, sum_y = 0, sum_xy = 0, sum_xx = 0;
+                for (uint8_t i = start; i < 6; i++) {
+                  double xi = (double) (id(thermocouple_history_ms)[i] - base_ms) / 60000.0;
+                  double yi = id(thermocouple_history_c)[i];
+                  sum_x += xi;
+                  sum_y += yi;
+                  sum_xy += xi * yi;
+                  sum_xx += xi * xi;
+                }
+                double denom = (double) n * sum_xx - sum_x * sum_x;
+                if (denom != 0.0) {
+                  rate = (float) (((double) n * sum_xy - sum_x * sum_y) / denom);
+                }
+              }
+              id(thermocouple_rate_c_per_min) = rate;
+              id(thermocouple_rate).publish_state(rate);
+
+              std::string zone;
+              if (x <= ${zone_cold_max_c}) {
+                zone = "cold";
+              } else if (x <= ${zone_good_max_c}) {
+                zone = "good";
+              } else {
+                zone = "hot";
+              }
+              id(thermocouple_zone).publish_state(zone);
     cold_junction:
       id: thermocouple_cold_junction
       name: "Thermocouple Cold Junction"
+
+  - platform: template
+    id: thermocouple_rate
+    name: "Thermocouple Rate"
+    unit_of_measurement: "°C/min"
+    accuracy_decimals: 2
+    update_interval: never
 
   - platform: wifi_signal
     name: "WiFi Signal"
@@ -160,6 +267,12 @@ sensor:
 
   - platform: uptime
     name: "Uptime"
+
+text_sensor:
+  - platform: template
+    id: thermocouple_zone
+    name: "Thermocouple Zone"
+    update_interval: never
 
 button:
   - platform: restart
@@ -273,6 +386,8 @@ script:
               + "&pressure=" + str_sprintf("%.0f", id(bmp581_pressure).state)
               + "&thermocouple=" + str_sprintf("%.1f", id(thermocouple_temperature).state)
               + "&cold_junction=" + str_sprintf("%.1f", id(thermocouple_cold_junction).state)
+              + "&rate=" + str_sprintf("%.2f", id(thermocouple_rate_c_per_min))
+              + "&zone=" + id(thermocouple_zone).state
               + "&event=" + event;
           on_error:
             then:

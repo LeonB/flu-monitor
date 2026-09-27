@@ -21,7 +21,7 @@
 // redirects to GET regardless of the client's redirect-method policy.
 const SHARED_SECRET = "REPLACE_ME_WITH_A_RANDOM_STRING";
 const SHEET_NAME = "Sensor Log";
-const HEADER_ROW = ["Timestamp", "Temperature (C)", "Pressure (Pa)", "Thermocouple (C)", "Cold Junction (C)", "Event"];
+const HEADER_ROW = ["Timestamp", "Temperature (C)", "Pressure (Pa)", "Thermocouple (C)", "Cold Junction (C)", "Event", "Rate (C/min)", "Zone"];
 
 function doGet(e) {
   const p = e.parameter;
@@ -35,9 +35,14 @@ function doGet(e) {
 
   if (sheet.getLastRow() === 0) {
     sheet.appendRow(HEADER_ROW);
-  } else if (sheet.getRange(1, HEADER_ROW.length).getValue() !== HEADER_ROW[HEADER_ROW.length - 1]) {
-    // Sheet predates the Event column (added later) -- backfill just the header cell.
-    sheet.getRange(1, HEADER_ROW.length).setValue(HEADER_ROW[HEADER_ROW.length - 1]);
+  } else {
+    // Sheet predates one or more trailing columns added later (Event, then
+    // Rate/Zone) -- backfill whichever header cells are still missing,
+    // generalized to any number of newly-added trailing columns rather than
+    // just the one most recently added.
+    for (let col = sheet.getLastColumn() + 1; col <= HEADER_ROW.length; col++) {
+      sheet.getRange(1, col).setValue(HEADER_ROW[col - 1]);
+    }
   }
 
   // Numeric columns default to Sheets' "Automatic" format, which drops
@@ -49,6 +54,7 @@ function doGet(e) {
     sheet.getRange("C2:C").setNumberFormat("0");   // Pressure (Pa)
     sheet.getRange("D2:D").setNumberFormat("0.0"); // Thermocouple (C)
     sheet.getRange("E2:E").setNumberFormat("0.0"); // Cold Junction (C)
+    sheet.getRange("G2:G").setNumberFormat("0.00"); // Rate (C/min)
   }
 
   sheet.appendRow([
@@ -58,6 +64,8 @@ function doGet(e) {
     Number(p.thermocouple),
     Number(p.cold_junction),
     p.event || "",
+    Number(p.rate),
+    p.zone || "",
   ]);
 
   return ContentService.createTextOutput("ok").setMimeType(ContentService.MimeType.TEXT);
