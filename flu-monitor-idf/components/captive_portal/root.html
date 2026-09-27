@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Flu Monitor Setup</title>
+<link rel="stylesheet" href="/styles.css">
+<style>
+  body { margin: 0; padding: 20px; min-height: 100vh; box-sizing: border-box; }
+  .screen { max-width: 420px; margin: 0 auto; display: flex; flex-direction: column; gap: var(--space-4); min-height: calc(100vh - 40px); }
+  .net-list { display: flex; flex-direction: column; gap: 2px; border-radius: var(--radius-lg); overflow: hidden; background: var(--color-surface); }
+  .net-row { display: flex; align-items: center; gap: 12px; padding: 14px 16px; cursor: pointer; background: var(--color-surface); border: none; width: 100%; text-align: left; font: inherit; color: inherit; }
+  .net-row:hover { background: color-mix(in srgb, var(--color-text) 6%, var(--color-surface)); }
+  .net-name { flex: 1; font-size: 16px; font-weight: 600; }
+  .net-meta { font-size: 12px; color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+  .spinner { width: 64px; height: 64px; border-radius: 50%; border: 6px solid var(--color-accent-200); border-top-color: var(--color-accent); animation: spin 0.9s linear infinite; margin: 0 auto; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .banner { padding: 16px 18px; border-radius: var(--radius-lg); background: var(--color-accent-200); color: var(--color-accent-900); display: flex; gap: 12px; align-items: flex-start; }
+  .footer-note { font-size: 13px; color: color-mix(in srgb, var(--color-text) 55%, transparent); text-align: center; margin-top: auto; }
+</style>
+</head>
+<body x-data="setupApp()" x-init="init()">
+
+  <div class="screen">
+    <div>
+      <h2 style="margin:0 0 4px">Flu Monitor Setup</h2>
+      <p class="text-muted" style="margin:0" x-show="step !== 'failure'">Pick your home WiFi. I'll remember it from now on.</p>
+    </div>
+
+    <!-- Failure state: shown when the previous boot's attempt didn't take -->
+    <template x-if="step === 'failure'">
+      <div style="display:flex;flex-direction:column;gap:var(--space-4)">
+        <div class="banner">
+          <div>
+            <div style="font-family:var(--font-heading);font-size:19px;margin-bottom:4px">That didn't take</div>
+            <div style="font-size:14px">Couldn't join <b x-text="failedSsid"></b> within 15 seconds. Most often it's a typo in the password.</div>
+          </div>
+        </div>
+        <ul style="margin:0;padding-left:22px;font-size:14px;color:var(--color-text);display:flex;flex-direction:column;gap:6px">
+          <li>Check the password, it's case-sensitive</li>
+          <li>Is it a 2.4 GHz network? This device can't see 5 GHz.</li>
+          <li>Move the device closer to the router</li>
+        </ul>
+        <button class="btn btn-primary btn-block" style="height:56px;font-size:17px" @click="retryFailed()">Try again</button>
+        <button class="btn btn-ghost btn-block" @click="step = 'list'; failed = false; scan()">Pick a different network</button>
+      </div>
+    </template>
+
+    <!-- Network list -->
+    <template x-if="step === 'list'">
+      <div style="display:flex;flex-direction:column;gap:var(--space-4)">
+        <div class="net-list">
+          <template x-for="net in networks" :key="net.ssid">
+            <button class="net-row" @click="selectNetwork(net.ssid)">
+              <span class="net-name" x-text="net.ssid"></span>
+              <span class="net-meta" x-text="net.secured ? '🔒' : 'Open'"></span>
+              <span class="net-meta" x-text="net.rssi + ' dBm'"></span>
+            </button>
+          </template>
+          <p x-show="scanning" style="padding:14px 16px;margin:0;font-size:14px" class="text-muted">Scanning&hellip;</p>
+          <p x-show="!scanning && networks.length === 0" style="padding:14px 16px;margin:0;font-size:14px" class="text-muted">No networks found.</p>
+        </div>
+        <p class="footer-note" style="margin-top:0">2.4 GHz networks only.</p>
+        <div style="display:flex;gap:10px">
+          <button class="btn btn-secondary" style="flex:1;height:52px" @click="scan()">Scan again</button>
+          <button class="btn btn-secondary" style="flex:1;height:52px" @click="selectNetwork('')">Type a name</button>
+        </div>
+      </div>
+    </template>
+
+    <!-- Password entry -->
+    <template x-if="step === 'password'">
+      <div style="display:flex;flex-direction:column;gap:var(--space-4)">
+        <div class="field">
+          <label x-show="ssid === ''">Network name</label>
+          <input class="input" x-show="ssid === ''" x-model="ssid" placeholder="Network name" style="height:52px;font-size:16px">
+          <h3 x-show="ssid !== ''" x-text="ssid" style="margin:0 0 10px"></h3>
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <input class="input" type="password" x-model="password" placeholder="Leave blank for an open network" style="height:52px;font-size:16px">
+        </div>
+        <div class="banner" x-show="error" style="margin:0">
+          <div style="font-size:14px">Couldn't join <b x-text="ssid"></b> &mdash; check the password and try again.</div>
+        </div>
+        <p class="text-muted" style="font-size:13px">I'll try connecting first (up to 15 seconds) before saving anything. If it works, the device restarts to join for good; if not, you'll see an error right here.</p>
+        <button class="btn btn-primary btn-block" style="height:56px;font-size:17px" :disabled="ssid === '' || testing" @click="save()">Save &amp; connect</button>
+        <button class="btn btn-ghost btn-block" @click="step = 'list'">Back</button>
+      </div>
+    </template>
+
+    <!-- Testing the password live, AP/portal still up -->
+    <template x-if="step === 'testing'">
+      <div style="display:flex;flex-direction:column;gap:var(--space-6);align-items:center;text-align:center;margin-top:40px">
+        <div class="spinner"></div>
+        <div>
+          <h3 style="margin:0 0 8px">Trying <span x-text="ssid"></span>&hellip;</h3>
+          <p class="text-muted" style="margin:0">Up to 15 seconds. This page stays up either way.</p>
+        </div>
+      </div>
+    </template>
+
+    <!-- It worked, rebooting to join for real -->
+    <template x-if="step === 'connecting'">
+      <div style="display:flex;flex-direction:column;gap:var(--space-6);align-items:center;text-align:center;margin-top:40px">
+        <div class="spinner"></div>
+        <div>
+          <h3 style="margin:0 0 8px">Saved! Joining <span x-text="ssid"></span>&hellip;</h3>
+          <p class="text-muted" style="margin:0">Restarting, about 15 seconds.</p>
+        </div>
+        <p class="text-muted" style="font-size:13px;max-width:320px">A steady slow breath on the device means it's in. If this setup network comes back, it didn't take, and I'll tell you why.</p>
+      </div>
+    </template>
+
+    <p class="footer-note" x-show="step === 'list'">flu-monitor</p>
+  </div>
+
+<script src="/alpine.min.js" defer></script>
+<script>
+function setupApp() {
+  return {
+    step: 'list',
+    networks: [],
+    scanning: false,
+    ssid: '',
+    password: '',
+    failedSsid: '',
+    testing: false,
+    error: false,
+
+    async init() {
+      try {
+        const res = await fetch('/status');
+        const status = await res.json();
+        if (status.failed) {
+          this.failedSsid = status.failed_ssid;
+          this.step = 'failure';
+          return;
+        }
+      } catch (e) { /* no /status yet -- treat as no failure recorded */ }
+      this.scan();
+    },
+
+    async scan() {
+      this.scanning = true;
+      this.networks = [];
+      try {
+        const res = await fetch('/scan');
+        this.networks = await res.json();
+      } catch (e) {
+        this.networks = [];
+      }
+      this.scanning = false;
+    },
+
+    selectNetwork(ssid) {
+      this.ssid = ssid;
+      this.password = '';
+      this.error = false;
+      this.step = 'password';
+    },
+
+    retryFailed() {
+      this.ssid = this.failedSsid;
+      this.password = '';
+      this.error = false;
+      this.step = 'password';
+    },
+
+    async save() {
+      const body = 'ssid=' + encodeURIComponent(this.ssid) + '&password=' + encodeURIComponent(this.password);
+      this.error = false;
+      this.testing = true;
+      this.step = 'testing';
+      try {
+        const res = await fetch('/save', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+        const result = await res.json();
+        if (result.success) {
+          // The device is about to reboot to join for real -- this screen
+          // just stays up until the setup AP disappears.
+          this.step = 'connecting';
+        } else {
+          this.testing = false;
+          this.error = true;
+          this.step = 'password';
+        }
+      } catch (e) {
+        // The AP/portal stay up for a failed test, so a genuine network
+        // error here (not just "test failed") is unexpected -- treat it
+        // the same as a failed test rather than leaving the spinner stuck.
+        this.testing = false;
+        this.error = true;
+        this.step = 'password';
+      }
+    },
+  };
+}
+</script>
+</body>
+</html>
