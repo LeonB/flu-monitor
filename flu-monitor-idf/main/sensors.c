@@ -9,12 +9,119 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "config.h"
+#include "settings.h"
 
 static const char *TAG = "sensors";
+
+const char *thermocouple_zone_name(thermocouple_zone_t zone) {
+  switch (zone) {
+    case THERMOCOUPLE_ZONE_COLD:
+      return "cold";
+    case THERMOCOUPLE_ZONE_GOOD:
+      return "good";
+    case THERMOCOUPLE_ZONE_HOT:
+      return "hot";
+    case THERMOCOUPLE_ZONE_UNKNOWN:
+    default:
+      return "unknown";
+  }
+}
+
+// A stovepipe surface has no business reading outside roughly this range --
+// same clamp as the ESPHome sidecar's own (both here and in its separate
+// Sheets-logging gate), guarding against a probe glitch (observed: 709C/891C
+// from a probe at room temperature) poisoning the regression window for its
+// whole ~3-minute span, not just one sample.
+static bool thermocouple_reading_plausible(float c) {
+  return c >= -40.0f && c <= 600.0f;
+}
+
+// Rolling window feeding the rate regression below -- ported 1:1 from the
+// ESPHome sidecar's own `thermocouple_history_c`/`_ms`/`_count` globals. 6
+// samples at the sensor's own ~30s update cadence is ~3 minutes of history;
+// a stovepipe changes over minutes, not seconds, so this costs nothing in
+// real responsiveness.
+#define THERMOCOUPLE_HISTORY_LEN 6
+static float s_tc_history_c[THERMOCOUPLE_HISTORY_LEN] = {0};
+static int64_t s_tc_history_ms[THERMOCOUPLE_HISTORY_LEN] = {0};
+static uint8_t s_tc_history_count = 0;
+
+// Last-known-good rate/zone -- an implausible reading leaves these
+// untouched rather than resetting them, matching the ESPHome lambda's own
+// `return;`-on-glitch behavior exactly.
+static float s_tc_rate_c_per_min = 0.0f;
+static thermocouple_zone_t s_tc_zone = THERMOCOUPLE_ZONE_UNKNOWN;
+
+// Least-squares slope (degrees C per minute) over whichever samples are
+// currently populated -- same math as the ESPHome lambda, transliterated
+// from C++ to C.
+static float compute_thermocouple_rate_c_per_min(void) {
+  uint8_t n = s_tc_history_count;
+  if (n < 2) {
+    return 0.0f;
+  }
+  uint8_t start = THERMOCOUPLE_HISTORY_LEN - n;
+  int64_t base_ms = s_tc_history_ms[start];
+  double sum_x = 0, sum_y = 0, sum_xy = 0, sum_xx = 0;
+  for (uint8_t i = start; i < THERMOCOUPLE_HISTORY_LEN; i++) {
+    double xi = (double) (s_tc_history_ms[i] - base_ms) / 60000.0;
+    double yi = s_tc_history_c[i];
+    sum_x += xi;
+    sum_y += yi;
+    sum_xy += xi * yi;
+    sum_xx += xi * xi;
+  }
+  double denom = (double) n * sum_xx - sum_x * sum_x;
+  if (denom == 0.0) {
+    return 0.0f;
+  }
+  return (float) (((double) n * sum_xy - sum_x * sum_y) / denom);
+}
+
+static thermocouple_zone_t classify_zone(float c) {
+  settings_t s;
+  settings_get(&s);
+  if (c <= s.zone_cold_max_c) {
+    return THERMOCOUPLE_ZONE_COLD;
+  }
+  if (c <= s.zone_good_max_c) {
+    return THERMOCOUPLE_ZONE_GOOD;
+  }
+  return THERMOCOUPLE_ZONE_HOT;
+}
+
+// Admits a new thermocouple sample into the regression window and updates
+// the last-known-good rate/zone -- called once per sensors_read(), which
+// itself must only be called on the sensor's own true update cadence (see
+// sensors.h's own doc comment on sensors_read()).
+static void thermocouple_update_regression(float c) {
+  if (!thermocouple_reading_plausible(c)) {
+    ESP_LOGW(TAG, "Ignoring implausible thermocouple reading for rate/zone: %.1f C", c);
+    return;
+  }
+
+  for (int i = 0; i < THERMOCOUPLE_HISTORY_LEN - 1; i++) {
+    s_tc_history_c[i] = s_tc_history_c[i + 1];
+    s_tc_history_ms[i] = s_tc_history_ms[i + 1];
+  }
+  s_tc_history_c[THERMOCOUPLE_HISTORY_LEN - 1] = c;
+  s_tc_history_ms[THERMOCOUPLE_HISTORY_LEN - 1] = esp_timer_get_time() / 1000;
+  if (s_tc_history_count < THERMOCOUPLE_HISTORY_LEN) {
+    s_tc_history_count++;
+  }
+
+  s_tc_rate_c_per_min = compute_thermocouple_rate_c_per_min();
+  s_tc_zone = classify_zone(c);
+}
+
+static sensor_reading_t s_last_reading;
+static SemaphoreHandle_t s_last_reading_mutex;
 
 // If a device was left holding the bus (e.g. SCL/SDA still low mid-transaction
 // from an earlier reset/reflash), the new i2c_master driver's own bus/device
@@ -147,10 +254,24 @@ static esp_err_t init_mcp9601(void) {
   // earlier debugging on this exact chip (before the STEMMA QT power fix)
   // involved I2C writes attempted while the bus was stuck low, and this
   // register is otherwise never touched, so its actual state shouldn't be
-  // assumed -- this is what was making the first one or two readings after
-  // boot come back frozen at 0.00 instead of a real conversion.
-  return mcp960x_set_device_config(&s_mcp, MCP960X_MODE_NORMAL, MCP960X_SAMPLES_1, MCP960X_ADC_RES_18,
-                                   MCP960X_TC_RES_0_0625);
+  // assumed -- this was what was making some early readings after boot come
+  // back frozen at 0.00 instead of a real conversion.
+  err = mcp960x_set_device_config(&s_mcp, MCP960X_MODE_NORMAL, MCP960X_SAMPLES_1, MCP960X_ADC_RES_18,
+                                  MCP960X_TC_RES_0_0625);
+  if (err != ESP_OK) {
+    return err;
+  }
+
+  // The 18-bit ADC resolution just configured above needs ~320ms for its
+  // first real conversion (Microchip's own datasheet figure). Without this,
+  // the very first sensors_read() call -- which can follow just tens of ms
+  // after this function returns -- reads back the register's pre-conversion
+  // 0x0000 default. That reading passes the plausibility clamp fine (0.00C
+  // is well inside -40..600), so it was getting admitted into the rate
+  // regression window as if it were real, producing a wildly wrong initial
+  // rate once a genuine second sample arrived 30s later.
+  vTaskDelay(pdMS_TO_TICKS(400));
+  return ESP_OK;
 }
 
 static esp_err_t init_bmp581(void) {
@@ -214,6 +335,8 @@ static esp_err_t init_bmp581(void) {
 }
 
 esp_err_t sensors_init(void) {
+  s_last_reading_mutex = xSemaphoreCreateMutex();
+
   // The Feather V2's STEMMA QT connector (both sensors) is unpowered until
   // this is driven high -- see config.h's STEMMA_QT_POWER_GPIO comment. Must
   // happen before anything else here touches the bus.
@@ -298,4 +421,20 @@ void sensors_read(sensor_reading_t *out) {
   memset(out, 0, sizeof(*out));
   out->bmp581_ok = read_bmp581(&out->bmp581_temperature_c, &out->bmp581_pressure_pa);
   out->thermocouple_ok = read_mcp9601(&out->thermocouple_c, &out->cold_junction_c);
+
+  if (out->thermocouple_ok) {
+    thermocouple_update_regression(out->thermocouple_c);
+  }
+  out->thermocouple_rate_c_per_min = s_tc_rate_c_per_min;
+  out->thermocouple_zone = s_tc_zone;
+
+  xSemaphoreTake(s_last_reading_mutex, portMAX_DELAY);
+  s_last_reading = *out;
+  xSemaphoreGive(s_last_reading_mutex);
+}
+
+void sensors_get_last_reading(sensor_reading_t *out) {
+  xSemaphoreTake(s_last_reading_mutex, portMAX_DELAY);
+  *out = s_last_reading;
+  xSemaphoreGive(s_last_reading_mutex);
 }

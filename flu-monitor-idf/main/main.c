@@ -1,10 +1,10 @@
 // flu-monitor-idf: Milestone 1 -- WiFi (with stored credentials) + captive
 // portal fallback (with network scan and a "last attempt failed" state) +
-// mDNS + OTA. Milestone 2 -- BMP581 + MCP9601 sensors, logged over serial
-// for a side-by-side comparison against the existing ESPHome sidecar; no
-// REST API, regression, or zone logic yet (Milestone 3). See the repo root
-// CLAUDE.md and the approved project plan for the full context and
-// architecture rationale.
+// mDNS + OTA. Milestone 2 -- BMP581 + MCP9601 sensors. Milestone 3 --
+// NVS-backed settings, rate/zone regression, and a REST API (GET
+// /api/reading, GET+POST /api/settings) once connected to real WiFi. See
+// the repo root CLAUDE.md and the approved project plan for the full
+// context and architecture rationale.
 
 #include <stdbool.h>
 
@@ -20,16 +20,17 @@
 #include "captive_portal.h"
 #include "config.h"
 #include "ota_server.h"
+#include "rest_api.h"
 #include "sensors.h"
+#include "settings.h"
 #include "wifi_setup.h"
 
 static const char *TAG = "main";
 
 // Runs independent of WiFi state (both the connected idle loop and the
-// captive-portal branch below keep this alive) -- Milestone 2 is just
-// "prove the sensors work on real hardware," verified by eyeballing this
-// log against the existing ESPHome sidecar's readings, not by anything
-// reachable over the network yet.
+// captive-portal branch below keep this alive) -- verified by eyeballing
+// this log against the existing ESPHome sidecar's readings, not by anything
+// reachable over the network until WiFi connects and rest_api_start() runs.
 static void sensor_log_task(void *arg) {
   (void) arg;
   while (true) {
@@ -43,8 +44,9 @@ static void sensor_log_task(void *arg) {
     }
 
     if (reading.thermocouple_ok) {
-      ESP_LOGI(TAG, "MCP9601: thermocouple %.2f C, cold junction %.2f C", reading.thermocouple_c,
-               reading.cold_junction_c);
+      ESP_LOGI(TAG, "MCP9601: thermocouple %.2f C, cold junction %.2f C, rate %.2f C/min, zone %s",
+               reading.thermocouple_c, reading.cold_junction_c, reading.thermocouple_rate_c_per_min,
+               thermocouple_zone_name(reading.thermocouple_zone));
     } else {
       ESP_LOGW(TAG, "MCP9601: read failed");
     }
@@ -72,6 +74,7 @@ static void start_mdns(void) {
 
 void app_main(void) {
   init_nvs();
+  settings_init();
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
 
@@ -107,7 +110,8 @@ void app_main(void) {
     wifi_clear_attempt_failed();
 
     start_mdns();
-    ota_server_start();
+    httpd_handle_t server = rest_api_start();
+    ota_server_register(server);
 
     while (true) {
       vTaskDelay(pdMS_TO_TICKS(10000));

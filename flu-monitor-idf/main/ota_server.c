@@ -112,12 +112,6 @@ static const httpd_uri_t ota_uri = {
     .handler = ota_post_handler,
 };
 
-void ota_server_start(void) {
-  httpd_handle_t server = NULL;
-  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  config.stack_size = 8192;  // esp_ota_* calls + logging need more than the 4096 default
-
-  ESP_LOGI(TAG, "Starting OTA server on port %d", config.server_port);
-  ESP_ERROR_CHECK(httpd_start(&server, &config));
+void ota_server_register(httpd_handle_t server) {
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &ota_uri));
 }

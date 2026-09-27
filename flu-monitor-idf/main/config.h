@@ -52,3 +52,16 @@
 // it the bus reads stuck low always, regardless of internal pull-ups
 // (looks exactly like a wedged/shorted bus, but is really just "unpowered").
 #define STEMMA_QT_POWER_GPIO  2
+
+// --- Milestone 3: settings (NVS-backed; these are first-boot defaults only,
+// before NVS has anything saved -- see settings.h) ---
+
+// Same placeholder values as the ESPHome sidecar's own `substitutions:`
+// block (flu-monitor.yaml) -- pending the real multi-week data-gathering
+// run these thresholds exist to inform (see the repo root CLAUDE.md's
+// "Project goal").
+#define DEFAULT_ZONE_COLD_MAX_C          150.0f
+#define DEFAULT_ZONE_GOOD_MAX_C          280.0f
+#define DEFAULT_FAST_RISE_C_PER_MIN      20.0f
+#define DEFAULT_THERMOCOUPLE_DEADBAND_C  5.0f
+#define DEFAULT_LOG_HEARTBEAT_MIN        15
