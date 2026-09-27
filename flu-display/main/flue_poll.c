@@ -1,5 +1,6 @@
 #include "flue_poll.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -26,6 +27,20 @@ static const char *TAG = "flue_poll";
 #define SANITY_MIN_C  -40.0f
 #define SANITY_MAX_C  600.0f
 
+// The sanity clamp above only catches *wildly* wrong values -- it has to
+// stay wide, since a real overfire could genuinely reach a few hundred
+// degrees. A single corrupted/glitched reading landing inside that wide
+// range sails straight through otherwise, briefly flashing the display to
+// a misleading color (observed: an oven at ~150C spiking to a bogus 250C+
+// reading, self-correcting on the very next poll a few seconds later).
+// A jump bigger than this in a single poll interval isn't trusted
+// immediately -- it's held pending, and only accepted once the *next* poll
+// agrees with it too (within CONFIRM_TOLERANCE_C), so a one-off glitch
+// (which typically self-corrects by the next poll) never reaches the
+// display, while a real fast change still shows up within one extra poll.
+#define SUSPICIOUS_JUMP_C     15.0f
+#define CONFIRM_TOLERANCE_C   10.0f
+
 #define HTTP_RESPONSE_BUF_SIZE  256
 #define HTTP_TIMEOUT_MS         5000
 #define URL_BUF_SIZE            64
@@ -36,6 +51,9 @@ static int s_response_len;
 static bool s_have_prev = false;
 static float s_prev_temperature_c;
 static int64_t s_prev_time_us;
+
+static bool s_have_pending = false;
+static float s_pending_temperature_c;
 
 static bool s_have_ip = false;
 static esp_ip4_addr_t s_cached_ip;
@@ -145,6 +163,21 @@ flue_reading_t flue_poll_once(void) {
   if (temperature_c < SANITY_MIN_C || temperature_c > SANITY_MAX_C) {
     ESP_LOGW(TAG, "Rejecting implausible reading: %.1f C", temperature_c);
     return result;
+  }
+
+  if (s_have_prev) {
+    float jump = fabsf(temperature_c - s_prev_temperature_c);
+    if (jump > SUSPICIOUS_JUMP_C) {
+      bool confirmed = s_have_pending && fabsf(temperature_c - s_pending_temperature_c) <= CONFIRM_TOLERANCE_C;
+      if (!confirmed) {
+        ESP_LOGW(TAG, "Holding suspicious jump for confirmation: %.1f C (last confirmed %.1f C)", temperature_c,
+                  s_prev_temperature_c);
+        s_pending_temperature_c = temperature_c;
+        s_have_pending = true;
+        return result;
+      }
+    }
+    s_have_pending = false;
   }
 
   int64_t now_us = esp_timer_get_time();
