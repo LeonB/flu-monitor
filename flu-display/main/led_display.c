@@ -23,12 +23,12 @@ typedef struct {
 
 typedef enum {
   ZONE_COLD = 0,
-  ZONE_GOOD = 1,
+  ZONE_OPTIMAL = 1,
   ZONE_HOT = 2,
 } zone_t;
 
 static const rgb_t COLOR_COLD = {0, 60, 255};
-static const rgb_t COLOR_GOOD = {255, 55, 0};
+static const rgb_t COLOR_OPTIMAL = {255, 55, 0};
 static const rgb_t COLOR_HOT = {255, 0, 0};
 
 static float lerpf(float a, float b, float t) {
@@ -54,14 +54,14 @@ static rgb_t lerp_rgb(rgb_t a, rgb_t b, float t) {
 // flu-monitor.yaml) exactly -- same two thresholds, same <=/> boundaries.
 static zone_t temperature_to_zone(float temperature_c) {
   if (temperature_c <= ZONE_COLD_MAX_C) return ZONE_COLD;
-  if (temperature_c <= ZONE_GOOD_MAX_C) return ZONE_GOOD;
+  if (temperature_c <= ZONE_OPTIMAL_MAX_C) return ZONE_OPTIMAL;
   return ZONE_HOT;
 }
 
 static rgb_t zone_color(zone_t zone) {
   switch (zone) {
     case ZONE_COLD: return COLOR_COLD;
-    case ZONE_GOOD: return COLOR_GOOD;
+    case ZONE_OPTIMAL: return COLOR_OPTIMAL;
     default: return COLOR_HOT;
   }
 }

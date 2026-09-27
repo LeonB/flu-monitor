@@ -16,7 +16,7 @@ rate-of-change to serial. Milestone 3: the 24-LED SK6812 RGBW ring (wired to
 GPIO13, not GPIO25 -- see below) renders the polled reading as a
 blue/amber/red gradient with a breathing pulse, confirmed by camera to light
 up solid blue at room temperature as expected. Since then, live in-person
-tuning (see below) landed on: a less yellow-green, more amber good-zone
+tuning (see below) landed on: a less yellow-green, more amber optimal-zone
 color; the pulse's bright peak also swapping toward the neighboring zone's
 color to hint at heating/cooling direction; and slower pulse paces overall.
 Real-world field testing (a skillet on induction, then an oven) also
@@ -111,7 +111,8 @@ surfaced and fixed a single-sample-trust bug in `flue_poll.c` (see below).
 
 - **RGB color choices for the gradient need to be judged live on the real
   ring, not from a camera photo or from first-principles RGB values.** Two
-  separate incidents: (1) `COLOR_GOOD` was originally `{255, 120, 0}` --
+  separate incidents: (1) `COLOR_OPTIMAL` (named `COLOR_GOOD` at the time)
+  was originally `{255, 120, 0}` --
   looks like a reasonable amber in the abstract, but on the actual hardware
   it read as yellow-green, not amber; dropping green to `55` fixed it.
   (2) A camera photo of the ring lit solid blue came out with an obvious

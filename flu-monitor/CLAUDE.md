@@ -218,7 +218,7 @@ the time -- directly useful for retroactively evaluating and retuning it
 against real data, which is the whole point of the current data-gathering
 phase.
 
-- **`zone_cold_max_c`/`zone_good_max_c`/`fast_rise_c_per_min` substitutions**
+- **`zone_cold_max_c`/`zone_optimal_max_c`/`fast_rise_c_per_min` substitutions**
   are the canonical copy of these placeholder thresholds -- `flu-display`
   keeps its own copies too (`flu-display/main/config.h`), since its smooth
   in-zone color gradient needs the actual numeric thresholds, not just a

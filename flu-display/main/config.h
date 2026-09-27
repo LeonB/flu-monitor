@@ -30,9 +30,9 @@
 #define POLL_INTERVAL_MS        3000
 
 // Placeholders -- replace once flu-monitor's multi-week data-gathering run
-// gives real cold/good/hot boundaries (see CLAUDE.md's "Project goal").
+// gives real cold/optimal/hot boundaries (see CLAUDE.md's "Project goal").
 #define ZONE_COLD_MAX_C         150.0f
-#define ZONE_GOOD_MAX_C         280.0f
+#define ZONE_OPTIMAL_MAX_C      280.0f
 #define FAST_RISE_C_PER_MIN     20.0f
 
 // A computed rate smaller than this is treated as exactly 0 (stable) before

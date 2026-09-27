@@ -37,7 +37,7 @@ This file covers only what's shared context across all of them.
 ## Project goal (bigger than either subfolder's code suggests)
 
 The end goal: an ambient light display you can glance at to know if the
-stove is running too cold (creosote risk), in the good zone, or too hot
+stove is running too cold (creosote risk), in the optimal zone, or too hot
 (overfire risk), including catching a fast temperature spike, not just an
 absolute reading.
 
@@ -87,11 +87,11 @@ next phase starts:
   overfire a stove to collect a data point), so the dangerous-end threshold will
   have to come from a mix of the empirical normal-operation ceiling plus
   external stovepipe-safety reference values, not pure curve-fitting like the
-  cold/good boundaries can be.
+  cold/optimal boundaries can be.
 - Thresholds derived from data collected with the current bare-wire stand-in
   probe are calibrated to *that* probe's response. Once the final washer-style
   clamp probe is mounted on the real stovepipe, expect to need a light
   recalibration pass (different thermal mass/contact/lag) even though the
   overall shape of the analysis should carry over. `flu-display`'s zone
-  thresholds (`ZONE_COLD_MAX_C`/`ZONE_GOOD_MAX_C`/`FAST_RISE_C_PER_MIN` in
+  thresholds (`ZONE_COLD_MAX_C`/`ZONE_OPTIMAL_MAX_C`/`FAST_RISE_C_PER_MIN` in
   `flu-display/main/config.h`) are still placeholders pending this analysis.

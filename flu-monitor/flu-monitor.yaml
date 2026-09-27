@@ -29,12 +29,12 @@ substitutions:
   # Zone/rate boundaries for the "Thermocouple Zone"/"Thermocouple Rate"
   # sensors below -- placeholders, same as flu-display's own copies of these
   # numbers (flu-display/main/config.h), pending flu-monitor's multi-week
-  # data-gathering run giving real cold/good/hot boundaries (see the repo
+  # data-gathering run giving real cold/optimal/hot boundaries (see the repo
   # root CLAUDE.md's "Project goal"). flu-display still needs its own copies
   # for its smooth in-zone color gradient (a discrete zone label alone isn't
   # enough for that), so keep both in sync by hand until real values land.
   zone_cold_max_c: "150.0"
-  zone_good_max_c: "280.0"
+  zone_optimal_max_c: "280.0"
   fast_rise_c_per_min: "20.0"
 
 esphome:
@@ -244,8 +244,8 @@ sensor:
               std::string zone;
               if (x <= ${zone_cold_max_c}) {
                 zone = "cold";
-              } else if (x <= ${zone_good_max_c}) {
-                zone = "good";
+              } else if (x <= ${zone_optimal_max_c}) {
+                zone = "optimal";
               } else {
                 zone = "hot";
               }
