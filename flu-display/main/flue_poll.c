@@ -9,7 +9,6 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_netif.h"
-#include "esp_timer.h"
 #include "mdns.h"
 
 static const char *TAG = "flue_poll";
@@ -19,6 +18,15 @@ static const char *TAG = "flue_poll";
 // device: GET .../sensor/Thermocouple%20Temperature returns
 // {"id":"sensor/Thermocouple Temperature","value":25,"state":"25.0 °C"}.
 #define THERMOCOUPLE_PATH "/sensor/Thermocouple%20Temperature"
+
+// The sidecar now computes rate-of-change itself (a least-squares slope
+// over its own ~3-minute rolling window, off its own real sensor update
+// cadence) rather than flu-display deriving it from repeated polls -- see
+// flu-display/CLAUDE.md for why: a raw two-point derivative here was
+// vulnerable to a real bug where the mcp9600's 30s update_interval,
+// combined with this device's own 3s poll cadence, made any real change
+// look ~10x faster than it actually was.
+#define THERMOCOUPLE_RATE_PATH "/sensor/Thermocouple%20Rate"
 
 // Same reasoning as flu-monitor.yaml's own sanity clamp (see CLAUDE.md): a
 // stovepipe has no business reading outside this range, so anything outside
@@ -50,7 +58,6 @@ static int s_response_len;
 
 static bool s_have_prev = false;
 static float s_prev_temperature_c;
-static int64_t s_prev_time_us;
 
 static bool s_have_pending = false;
 static float s_pending_temperature_c;
@@ -105,18 +112,15 @@ static bool resolve_flu_monitor(esp_ip4_addr_t *out_addr) {
   return true;
 }
 
-flue_reading_t flue_poll_once(void) {
-  flue_reading_t result = {0};
-
-  if (!s_have_ip) {
-    if (!resolve_flu_monitor(&s_cached_ip)) {
-      return result;
-    }
-    s_have_ip = true;
-  }
-
+// GETs flu-monitor's JSON sensor endpoint at `path` and extracts its
+// numeric "value" field. On any failure (transport, HTTP status, JSON
+// parse, missing/non-numeric field), logs a warning and returns false --
+// callers decide how to degrade, rather than this guessing a fallback
+// value itself. A transport-level failure also invalidates the cached IP,
+// so the next poll re-resolves instead of retrying a possibly-dead address.
+static bool fetch_numeric_value(const char *path, float *out_value) {
   char url[URL_BUF_SIZE];
-  snprintf(url, sizeof(url), "http://" IPSTR "%s", IP2STR(&s_cached_ip), THERMOCOUPLE_PATH);
+  snprintf(url, sizeof(url), "http://" IPSTR "%s", IP2STR(&s_cached_ip), path);
 
   s_response_len = 0;
 
@@ -129,36 +133,52 @@ flue_reading_t flue_poll_once(void) {
   esp_err_t err = esp_http_client_perform(client);
 
   if (err != ESP_OK) {
-    ESP_LOGW(TAG, "HTTP GET to " IPSTR " failed: %s -- will re-resolve next poll", IP2STR(&s_cached_ip),
-              esp_err_to_name(err));
+    ESP_LOGW(TAG, "HTTP GET %s failed: %s -- will re-resolve next poll", path, esp_err_to_name(err));
     esp_http_client_cleanup(client);
     s_have_ip = false;
-    return result;
+    return false;
   }
 
   int status = esp_http_client_get_status_code(client);
   esp_http_client_cleanup(client);
 
   if (status != 200) {
-    ESP_LOGW(TAG, "HTTP GET returned status %d", status);
-    return result;
+    ESP_LOGW(TAG, "HTTP GET %s returned status %d", path, status);
+    return false;
   }
 
   cJSON *root = cJSON_ParseWithLength(s_response_buf, s_response_len);
   if (root == NULL) {
-    ESP_LOGW(TAG, "Failed to parse JSON response: '%.*s'", s_response_len, s_response_buf);
-    return result;
+    ESP_LOGW(TAG, "Failed to parse JSON response for %s: '%.*s'", path, s_response_len, s_response_buf);
+    return false;
   }
 
   cJSON *value = cJSON_GetObjectItemCaseSensitive(root, "value");
   if (!cJSON_IsNumber(value)) {
-    ESP_LOGW(TAG, "JSON response had no numeric 'value' field: '%.*s'", s_response_len, s_response_buf);
+    ESP_LOGW(TAG, "JSON response for %s had no numeric 'value' field: '%.*s'", path, s_response_len, s_response_buf);
     cJSON_Delete(root);
-    return result;
+    return false;
   }
 
-  float temperature_c = (float) value->valuedouble;
+  *out_value = (float) value->valuedouble;
   cJSON_Delete(root);
+  return true;
+}
+
+flue_reading_t flue_poll_once(void) {
+  flue_reading_t result = {0};
+
+  if (!s_have_ip) {
+    if (!resolve_flu_monitor(&s_cached_ip)) {
+      return result;
+    }
+    s_have_ip = true;
+  }
+
+  float temperature_c;
+  if (!fetch_numeric_value(THERMOCOUPLE_PATH, &temperature_c)) {
+    return result;
+  }
 
   if (temperature_c < SANITY_MIN_C || temperature_c > SANITY_MAX_C) {
     ESP_LOGW(TAG, "Rejecting implausible reading: %.1f C", temperature_c);
@@ -180,20 +200,21 @@ flue_reading_t flue_poll_once(void) {
     s_have_pending = false;
   }
 
-  int64_t now_us = esp_timer_get_time();
+  // The rate is a secondary value -- if this particular fetch fails (a
+  // transient hiccup, say) it's better to show the correct temperature
+  // with a stable-looking rate than to reject the whole poll over it.
+  float rate_c_per_min = 0.0f;
+  if (!fetch_numeric_value(THERMOCOUPLE_RATE_PATH, &rate_c_per_min)) {
+    ESP_LOGW(TAG, "Rate fetch failed; treating as stable this poll");
+    rate_c_per_min = 0.0f;
+  }
+
   result.valid = true;
   result.temperature_c = temperature_c;
-
-  if (s_have_prev) {
-    float elapsed_min = (float) (now_us - s_prev_time_us) / 1000000.0f / 60.0f;
-    if (elapsed_min > 0.0f) {
-      result.rate_c_per_min = (temperature_c - s_prev_temperature_c) / elapsed_min;
-    }
-  }
+  result.rate_c_per_min = rate_c_per_min;
 
   s_have_prev = true;
   s_prev_temperature_c = temperature_c;
-  s_prev_time_us = now_us;
 
   return result;
 }
