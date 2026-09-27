@@ -8,10 +8,11 @@ exists and its relationship to `../flu-monitor/` (the still-running ESPHome
 original, kept as a rollback path) and `../flu-display/`, and this folder's
 own `CLAUDE.md` for implementation-specific gotchas.
 
-**Status: Milestones 1-3 done and verified on real hardware** (WiFi + captive
+**Status: Milestones 1-4 done and verified on real hardware** (WiFi + captive
 portal + mDNS + OTA; BMP581 + MCP9601 sensors; NVS-backed settings + REST API
-+ rate/zone regression). Milestones 4-7 (WebSocket broadcast to `flu-display`,
-Google Sheets logging, web UI, event buttons) not yet built.
++ rate/zone regression; WebSocket broadcast, now consumed by `../flu-display/`
+instead of it polling REST). Milestones 5-7 (Google Sheets logging, web UI,
+event buttons) not yet built.
 
 ## Files
 
@@ -24,6 +25,8 @@ Google Sheets logging, web UI, event buttons) not yet built.
 - `main/sensors.c/.h` — BMP581 + MCP9601 init/read, I2C bus recovery, and the
   rate/zone regression (ported from the ESPHome sidecar's own lambda)
 - `main/rest_api.c/.h` — `GET /api/reading`, `GET`/`POST /api/settings`
+- `main/ws_server.c/.h` — `/ws` broadcast endpoint (reading + settings-changed
+  events), registered onto the same shared HTTP server
 - `main/ota_server.c/.h` — authenticated `POST /ota` endpoint, registered onto
   `rest_api`'s shared HTTP server (only one server can bind port 80)
 - `components/bmp5/` — Bosch's official `BMP5_SensorAPI` (vendored, BSD-3)
@@ -76,7 +79,20 @@ curl -X POST http://flu-monitor-idf.local/api/settings \
 `POST /api/settings` replaces the whole settings object (no partial/PATCH
 semantics) and validates before persisting — an invalid payload (e.g.
 `zone_cold_max_c >= zone_optimal_max_c`) gets a `400` and leaves the stored
-settings untouched.
+settings untouched. On success, it also broadcasts `{"type":"settings_changed"}`
+over `/ws` (see below).
+
+## WebSocket broadcast (once connected to WiFi)
+
+```sh
+# any WS client, e.g. `websocat ws://flu-monitor-idf.local/ws`
+```
+
+Broadcasts `{"type":"reading","reading":<same shape as GET /api/reading>}`
+every ~30s (matching the sensor's own update cadence), and
+`{"type":"settings_changed"}` immediately after a successful
+`POST /api/settings` — `flu-display` uses this instead of polling REST, and
+re-fetches `/api/settings` on the latter event.
 
 ## Hardware notes
 

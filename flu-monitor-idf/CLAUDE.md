@@ -13,12 +13,12 @@ zone classification became real algorithmic C++ living inside a YAML
 multiline lambda string — no separate compile step, awkward to iterate.
 Plain ESP-IDF, matching `../flu-display/`'s own architecture, fixes that.
 API-first, OTA, captive portal, mDNS were all part of the same ask; no MQTT
-broker exists on this network, so WebSocket (Milestone 4, not yet built) is
-the planned mechanism for pushing live readings to `flu-display` instead.
+broker exists on this network, so WebSocket is the mechanism for pushing
+live readings to `flu-display` instead.
 
 ## Status
 
-**Milestones 1-3 done and verified on the real Feather board:**
+**Milestones 1-4 done and verified on the real Feather board:**
 - **Milestone 1**: WiFi (stored creds) + captive portal fallback (scanned
   network list, live test-connect-before-save, a dedicated failure screen) +
   mDNS + OTA.
@@ -28,6 +28,10 @@ the planned mechanism for pushing live readings to `flu-display` instead.
 - **Milestone 3**: NVS-backed settings (replacing ESPHome's YAML
   `substitutions:`), the rate/zone regression ported from the ESPHome
   lambda, and a REST API (`GET /api/reading`, `GET`/`POST /api/settings`).
+- **Milestone 4**: a `/ws` broadcast endpoint (reading every ~30s,
+  `settings_changed` on a successful settings POST), consumed by
+  `../flu-display/`'s own Milestone 4 (WS subscription replacing its old 3s
+  REST poll) -- verified end to end on both real devices.
 
 Milestones 4-7 (WebSocket broadcast + `flu-display` update, Google Sheets
 logging, web UI, event buttons) not yet built.
@@ -140,10 +144,37 @@ partition-table transition, where NVS happened to survive — see
 ## Only one HTTP server can bind port 80
 
 `rest_api.c`'s `rest_api_start()` owns the single shared `httpd_handle_t` for
-normal running state (once connected to WiFi); `ota_server_register()` just
-adds its `/ota` URI handler onto that same server instead of starting its
-own. The captive portal's own server (setup-time only, never running at the
-same time as the connected-state server) is separate and unaffected.
+normal running state (once connected to WiFi); `ota_server_register()` and
+`ws_server_register()` just add their own URI handlers onto that same server
+instead of each starting their own. The captive portal's own server
+(setup-time only, never running at the same time as the connected-state
+server) is separate and unaffected.
+
+## A WebSocket URI handler is never called for its own handshake
+
+`ws_server.c`'s first version tracked new clients with `if (req->method ==
+HTTP_GET) { ...; return ESP_OK; }` inside the registered handler, reasoning
+(wrongly) that the handshake request itself would arrive as a `GET` and could
+be detected that way. It compiled fine and looked reasonable, but silently
+never worked: a client could connect and the server would broadcast forever
+without ever reaching it. Confirmed straight from `esp_http_server`'s own
+source (`httpd_uri.c`): once `is_websocket` is set, the framework completes
+the entire WS handshake internally and explicitly does **not** call the
+registered handler for it (its own comment: *"If the request is websocket
+handshake, then do not call the uri->handler"*) — the handler is only ever
+invoked later, for an actual client→server data frame. `req->method` on such
+a later invocation is just the URI's own statically-registered method
+(`HTTP_GET`), not a live signal distinguishing "this is the handshake" —
+there's no invocation where that branch's premise is even true. Since a
+broadcast-only client like `flu-display` never sends anything, the handler
+was never entered at all, and the client list stayed empty forever.
+
+The actual hook that fires once a connection is open is
+`ws_post_handshake_cb` (a separate callback field on `httpd_uri_t`, gated by
+`CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT` — off by default, on in this
+project's `sdkconfig.defaults`). Client tracking lives there now;
+`ws_handler()` itself only ever runs for a real subsequent frame (a client
+CLOSE, or draining an unexpected data frame).
 
 ## The regression window assumes a fixed, sensor-matching read cadence
 

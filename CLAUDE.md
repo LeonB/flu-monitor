@@ -12,11 +12,12 @@ below):
   (below), but still the currently-running, production one, and kept as the
   rollback path throughout that rewrite.
 - **`flu-monitor-idf/`** — the sidecar's **plain ESP-IDF rewrite**, same
-  physical role/hardware as `flu-monitor/`. In progress: Milestones 1-3 done
+  physical role/hardware as `flu-monitor/`. In progress: Milestones 1-4 done
   and verified on real hardware (WiFi/captive portal/mDNS/OTA; BMP581 +
-  MCP9601 sensors; NVS-backed settings + REST API + rate/zone regression),
-  Milestones 4-7 not yet built (see `flu-monitor-idf/README.md`'s Status
-  section for the exact cutoff). Not yet adopted as the production sidecar —
+  MCP9601 sensors; NVS-backed settings + REST API + rate/zone regression;
+  WebSocket broadcast, now consumed by `flu-display/` below), Milestones 5-7
+  not yet built (see `flu-monitor-idf/README.md`'s Status section for the
+  exact cutoff). Not yet adopted as the production sidecar —
   `flu-monitor/` (ESPHome) still is, until this rewrite fully catches up and
   a deliberate cutover happens. See `flu-monitor-idf/README.md` for
   day-to-day build/flash/OTA commands and its REST API, and
@@ -24,13 +25,13 @@ below):
   power sequencing, MCP960x errata specifics, the live WiFi
   test-connect-before-save design).
 - **`flu-display/`** — the plain-ESP-IDF **display**: a screen-less ambient
-  light box that polls the sidecar and shows the reading as a color/pulse
-  gradient. See `flu-display/README.md` for day-to-day build/flash commands
-  and `flu-display/CLAUDE.md` for its implementation-specific gotchas
-  (WiFi/captive portal, mDNS resolution, LED color/pulse tuning). Currently
-  polls `flu-monitor/` (ESPHome); switching it to `flu-monitor-idf/` (once
-  that has WebSocket broadcast — its own Milestone 4) is a coordinated
-  future change, not done yet.
+  light box that subscribes to the sidecar's live broadcast and shows the
+  reading as a color/pulse gradient. See `flu-display/README.md` for
+  day-to-day build/flash commands and `flu-display/CLAUDE.md` for its
+  implementation-specific gotchas (WiFi/captive portal, mDNS resolution, LED
+  color/pulse tuning). Now subscribes to `flu-monitor-idf/`'s WebSocket
+  broadcast (its Milestone 4) rather than polling `flu-monitor/` (ESPHome)
+  over REST — that coordinated cutover is done.
 
 This file covers only what's shared context across all of them.
 

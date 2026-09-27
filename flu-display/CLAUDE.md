@@ -4,23 +4,84 @@ The ambient light display device -- see the repo root `CLAUDE.md` for the
 bigger-picture project this is one half of, and `README.md` (in this folder)
 for day-to-day build/flash commands and hardware pinout.
 
-Status: **All three milestones (WiFi + captive portal, poll `flu-monitor`'s
-JSON API, drive the LED ring) verified working end-to-end on real hardware,
-plus push-based OTA updates (Milestone 4, originally deferred).**
-Milestone 1: captive portal auto-popped on a real client (confirmed via
-screenshot), form submission saved credentials to NVS, device rebooted and
-joined the real network, stayed connected. Milestone 2: once connected, the
-device resolves `flu-monitor`, polls its thermocouple sensor every
-`POLL_INTERVAL_MS`, and logs the parsed, sanity-clamped reading plus
-rate-of-change to serial. Milestone 3: the 24-LED SK6812 RGBW ring (wired to
-GPIO13, not GPIO25 -- see below) renders the polled reading as a
-blue/amber/red gradient with a breathing pulse, confirmed by camera to light
-up solid blue at room temperature as expected. Since then, live in-person
-tuning (see below) landed on: a less yellow-green, more amber optimal-zone
-color; the pulse's bright peak also swapping toward the neighboring zone's
-color to hint at heating/cooling direction; and slower pulse paces overall.
-Real-world field testing (a skillet on induction, then an oven) also
-surfaced and fixed a single-sample-trust bug in `flue_poll.c` (see below).
+Status: **All of Milestones 1-5 verified working end-to-end on real
+hardware.** Milestone 1: captive portal auto-popped on a real client
+(confirmed via screenshot), form submission saved credentials to NVS, device
+rebooted and joined the real network, stayed connected. Milestone 2
+(superseded by Milestone 5, below): once connected, the device resolved
+`flu-monitor`, polling its thermocouple sensor every `POLL_INTERVAL_MS`, and
+logged the parsed, sanity-clamped reading plus rate-of-change to serial.
+Milestone 3: the 24-LED SK6812 RGBW ring (wired to GPIO13, not GPIO25 -- see
+below) renders the polled reading as a blue/amber/red gradient with a
+breathing pulse, confirmed by camera to light up solid blue at room
+temperature as expected. Since then, live in-person tuning (see below)
+landed on: a less yellow-green, more amber optimal-zone color; the pulse's
+bright peak also swapping toward the neighboring zone's color to hint at
+heating/cooling direction; and slower pulse paces overall. Real-world field
+testing (a skillet on induction, then an oven) also surfaced and fixed a
+single-sample-trust bug in `flue_poll.c` (see below). Milestone 4: push-based
+OTA updates (originally deferred). **Milestone 5** (new): switched from
+polling `flu-monitor` (ESPHome) over REST every 3s to subscribing to
+`flu-monitor-idf`'s (the ESP-IDF rewrite's) WebSocket broadcast, and fetching
+zone/rate thresholds from its REST API instead of this project's own
+hardcoded `config.h` copies -- see "Switching to flu-monitor-idf's WebSocket
+broadcast" below.
+
+## Switching to flu-monitor-idf's WebSocket broadcast (Milestone 5)
+
+- **This device is now event-driven, not a poller.** `flue_poll.c` owns a
+  persistent `esp_websocket_client` connection to `flu-monitor-idf`'s `/ws`
+  endpoint instead of an `esp_http_client` GET every `POLL_INTERVAL_MS`.
+  `main.c`'s own loop shrank to a lightweight staleness check (a timestamp
+  comparison against `STALE_READING_MS`, no network I/O) -- every actual
+  reading calls `led_display_set_reading()` directly from the WS client's
+  own event-handler context as it arrives, roughly every 30s (the sidecar's
+  own sensor cadence), not this device's old 3s poll interval.
+- **The rate-of-change value comes straight from the broadcast payload**
+  (`thermocouple_rate_c_per_min`), same as it already did from a second REST
+  fetch before this change -- see the "Rate-of-change" bullet further down.
+  Nothing new here, just a different transport for the same already-computed
+  value.
+- **The sanity clamp and suspicious-jump confirmation logic carried over
+  unchanged**, just re-triggered by WS message arrival instead of a poll
+  tick. Still needed: the sidecar's own raw `thermocouple_c` is reported
+  as-read regardless of plausibility (only its *derived* rate/zone are
+  protected by its own clamp -- see `../flu-monitor-idf/CLAUDE.md`), so a
+  glitched raw reading can still arrive over WS exactly as it could over
+  REST.
+- **Zone/rate thresholds (`ZONE_COLD_MAX_C`/`ZONE_OPTIMAL_MAX_C`/
+  `FAST_RISE_C_PER_MIN`) became runtime-mutable** via
+  `led_display_set_thresholds()` instead of being read as compile-time
+  macros inside `led_display.c`'s zone/pulse-speed logic (which now takes
+  them as parameters, refreshed once per render tick from a small
+  critical-section-guarded state, same pattern as the reading itself).
+  `flue_poll.c` fetches `GET /api/settings` once at boot and again whenever
+  a `{"type":"settings_changed"}` broadcast arrives, so a threshold changed
+  via the sidecar's own REST API actually moves the ring's gradient, not
+  just its own classification. config.h's macros are now first-boot
+  defaults only, used until the first successful fetch.
+- **A blocking HTTP GET has no business running directly on the WS client's
+  own event-callback context** -- `handle_ws_message()`'s `"settings_changed"`
+  branch just gives a semaphore (`s_refetch_settings_sem`); a separate
+  `settings_task` does the actual `fetch_and_apply_settings()` call. The
+  reading path doesn't need this deferral, since
+  `led_display_set_reading()` is just a quick critical-section write, safe
+  to call directly from the event callback.
+- **The sidecar resolves once at boot, not on every reconnect.** Unlike the
+  old poller (which re-resolved via a fresh `mdns_query_a()` after any
+  failed HTTP request), `flue_poll.c` now resolves `FLU_MONITOR_MDNS_NAME`
+  once (retrying indefinitely if the sidecar simply hasn't booted yet -- a
+  real race at power-on with no reason to give up) and hands
+  `esp_websocket_client` a fixed `ws://<ip>/ws` URI; its own built-in
+  auto-reconnect handles a transient WiFi/sidecar drop against that same
+  address. A DHCP re-lease changing the sidecar's IP while this device
+  stays connected to the same AP isn't specially handled -- rare enough on
+  a home network that it wasn't worth the complexity of tearing down and
+  recreating the WS client with a freshly-resolved URI, at least for now.
+- **`FLU_MONITOR_MDNS_NAME` now points at `flu-monitor-idf`, not the
+  original ESPHome `flu-monitor`** -- the coordinated cutover the root
+  `CLAUDE.md` had flagged as pending. Point it back only to roll back to
+  the ESPHome sidecar.
 
 ## OTA updates (`ota_server.c`, `ota_flash.sh`, `partitions_ota.csv`)
 
@@ -90,11 +151,15 @@ surfaced and fixed a single-sample-trust bug in `flue_poll.c` (see below).
   deadband was added first as a quick mitigation -- it's still in
   `led_display.c` and still useful as a perceptual floor, but the real fix
   was computing the rate off the sensor's own real update cadence instead,
-  which only the sidecar can do). `flue_poll.c` now fetches
-  `/sensor/Thermocouple%20Rate` the same way it fetches the temperature
-  (factored into a shared `fetch_numeric_value()` helper, since there are
-  now two endpoints to poll instead of one) and no longer keeps its own
-  previous-timestamp state at all.
+  which only the sidecar can do). At the time this was fixed, `flue_poll.c`
+  fetched `/sensor/Thermocouple%20Rate` (the ESPHome sidecar's REST
+  endpoint) the same way it fetched the temperature; since Milestone 5
+  (above), both values arrive together in the same WS broadcast payload
+  (`thermocouple_c`/`thermocouple_rate_c_per_min`) -- the underlying fix
+  (computing the rate off the sidecar's own real update cadence, not this
+  device's poll cadence) is unchanged, only the transport is different now.
+  Either way, this device has never kept its own previous-timestamp state
+  for the rate calculation.
 - **Induction cooktops are a uniquely bad environment for testing a bare,
   unshielded thermocouple** -- observed wild, fast swings (e.g. 73C to 164C
   within a couple of minutes) that don't look like real thermal behavior
@@ -206,20 +271,22 @@ surfaced and fixed a single-sample-trust bug in `flue_poll.c` (see below).
   exact same firmware. See the mDNS bullets above (Milestone 3 section) for
   what actually ended up robust: an explicit `mdns_query_a()` call, with its
   result cached and reused across polls rather than re-queried every time.
-- **The sidecar's `web_server` JSON API is keyed by the sensor's exact
-  entity name, URL-encoded, not its `object_id`** -- reuses the same URL
-  format verified against the live sidecar earlier in this project:
+- **(Historical -- describes the ESPHome-era REST mechanism Milestone 5
+  above replaced; kept for the URL-format detail, not as current
+  behavior.)** The sidecar's `web_server` JSON API was keyed by the
+  sensor's exact entity name, URL-encoded, not its `object_id`:
   `GET http://flu-monitor.local/sensor/Thermocouple%20Temperature` ->
   `{"id":"sensor/Thermocouple Temperature","value":25,"state":"25.0 °C"}`.
-  `main/flue_poll.c` parses the `"value"` field.
+  `flue_poll.c` no longer calls this endpoint at all -- see "Switching to
+  flu-monitor-idf's WebSocket broadcast" above.
 - **`flue_poll.c` reuses the sidecar's own defensive pattern**: a
   -40..600°C sanity clamp (same range and rationale as `flu-monitor.yaml`'s
-  own clamp, see `../flu-monitor/CLAUDE.md`) before a reading is accepted,
-  and rate-of-change computed from the last *accepted* reading and its
-  timestamp (via `esp_timer_get_time()`), not the raw poll cadence -- so
-  one bad/rejected reading can't skew the rate calculation, and a
-  poll/parse failure just returns `valid=false` rather than a stale or
-  guessed value.
+  own clamp, see `../flu-monitor/CLAUDE.md`) before a reading is accepted --
+  see "Switching to flu-monitor-idf's WebSocket broadcast" above for how
+  rate-of-change and this clamp both carried over into the WS-based
+  version unchanged. A poll/parse failure (or, now, an implausible/held
+  broadcast) just leaves the display state as-is rather than showing a
+  stale or guessed value.
 - **LED ring data line is on GPIO13, not the originally-planned GPIO25.**
   GPIO25 was chosen on the (wrong, for this board) assumption that GPIO12-15
   form the D32 Pro's onboard TF-card SPI bus, the ESP32's generic HSPI
