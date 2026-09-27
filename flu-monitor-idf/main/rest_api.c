@@ -9,6 +9,7 @@
 
 #include "sensors.h"
 #include "settings.h"
+#include "ws_server.h"
 
 static const char *TAG = "rest_api";
 
@@ -22,22 +23,27 @@ static double round_to(double value, double step) {
   return round(value / step) * step;
 }
 
+char *rest_api_reading_json(const sensor_reading_t *r) {
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddBoolToObject(root, "bmp581_ok", r->bmp581_ok);
+  cJSON_AddNumberToObject(root, "bmp581_temperature_c", round_to(r->bmp581_temperature_c, 0.1));
+  cJSON_AddNumberToObject(root, "bmp581_pressure_pa", round_to(r->bmp581_pressure_pa, 1.0));
+  cJSON_AddBoolToObject(root, "thermocouple_ok", r->thermocouple_ok);
+  cJSON_AddNumberToObject(root, "thermocouple_c", round_to(r->thermocouple_c, 0.1));
+  cJSON_AddNumberToObject(root, "cold_junction_c", round_to(r->cold_junction_c, 0.1));
+  cJSON_AddNumberToObject(root, "thermocouple_rate_c_per_min", round_to(r->thermocouple_rate_c_per_min, 0.01));
+  cJSON_AddStringToObject(root, "thermocouple_zone", thermocouple_zone_name(r->thermocouple_zone));
+
+  char *json = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+  return json;
+}
+
 static esp_err_t reading_get_handler(httpd_req_t *req) {
   sensor_reading_t r;
   sensors_get_last_reading(&r);
 
-  cJSON *root = cJSON_CreateObject();
-  cJSON_AddBoolToObject(root, "bmp581_ok", r.bmp581_ok);
-  cJSON_AddNumberToObject(root, "bmp581_temperature_c", round_to(r.bmp581_temperature_c, 0.1));
-  cJSON_AddNumberToObject(root, "bmp581_pressure_pa", round_to(r.bmp581_pressure_pa, 1.0));
-  cJSON_AddBoolToObject(root, "thermocouple_ok", r.thermocouple_ok);
-  cJSON_AddNumberToObject(root, "thermocouple_c", round_to(r.thermocouple_c, 0.1));
-  cJSON_AddNumberToObject(root, "cold_junction_c", round_to(r.cold_junction_c, 0.1));
-  cJSON_AddNumberToObject(root, "thermocouple_rate_c_per_min", round_to(r.thermocouple_rate_c_per_min, 0.01));
-  cJSON_AddStringToObject(root, "thermocouple_zone", thermocouple_zone_name(r.thermocouple_zone));
-
-  char *json = cJSON_PrintUnformatted(root);
-  cJSON_Delete(root);
+  char *json = rest_api_reading_json(&r);
   httpd_resp_set_type(req, "application/json");
   httpd_resp_sendstr(req, json);
   free(json);
@@ -148,6 +154,10 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid settings values");
     return ESP_FAIL;
   }
+
+  // Lets flu-display (and any other WS client) know its cached zone
+  // thresholds are stale, without waiting for its own next poll cycle.
+  ws_server_broadcast_settings_changed();
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_sendstr(req, "{\"success\":true}");

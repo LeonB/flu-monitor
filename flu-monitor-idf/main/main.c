@@ -2,11 +2,14 @@
 // portal fallback (with network scan and a "last attempt failed" state) +
 // mDNS + OTA. Milestone 2 -- BMP581 + MCP9601 sensors. Milestone 3 --
 // NVS-backed settings, rate/zone regression, and a REST API (GET
-// /api/reading, GET+POST /api/settings) once connected to real WiFi. See
-// the repo root CLAUDE.md and the approved project plan for the full
-// context and architecture rationale.
+// /api/reading, GET+POST /api/settings). Milestone 4 -- a /ws WebSocket
+// endpoint broadcasting each reading + settings-changed events, for
+// flu-display to subscribe to instead of polling REST. See the repo root
+// CLAUDE.md and the approved project plan for the full context and
+// architecture rationale.
 
 #include <stdbool.h>
+#include <stdlib.h>
 
 #include "esp_event.h"
 #include "esp_log.h"
@@ -24,6 +27,7 @@
 #include "sensors.h"
 #include "settings.h"
 #include "wifi_setup.h"
+#include "ws_server.h"
 
 static const char *TAG = "main";
 
@@ -50,6 +54,10 @@ static void sensor_log_task(void *arg) {
     } else {
       ESP_LOGW(TAG, "MCP9601: read failed");
     }
+
+    char *reading_json = rest_api_reading_json(&reading);
+    ws_server_broadcast_reading(reading_json);
+    free(reading_json);
 
     // Matches the ESPHome sidecar's own 30s update_interval for a fair
     // side-by-side comparison.
@@ -112,6 +120,7 @@ void app_main(void) {
     start_mdns();
     httpd_handle_t server = rest_api_start();
     ota_server_register(server);
+    ws_server_register(server);
 
     while (true) {
       vTaskDelay(pdMS_TO_TICKS(10000));

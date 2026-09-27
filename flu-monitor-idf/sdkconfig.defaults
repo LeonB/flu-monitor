@@ -19,3 +19,12 @@ CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
 # reverts to the last known-good slot on next boot instead of getting
 # stuck on a bad image.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Milestone 4: WebSocket broadcast (ws_server.c) on the same shared httpd
+# server rest_api.c already owns. The framework handles the WS handshake
+# entirely internally and never calls our own URI handler for it (see
+# httpd_uri.c) -- POST_HANDSHAKE_CB is the only hook that fires once a
+# connection is actually open, which is what ws_server.c uses to track
+# clients for broadcast.
+CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT=y
