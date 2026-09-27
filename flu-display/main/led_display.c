@@ -21,14 +21,11 @@ typedef struct {
   uint8_t r, g, b;
 } rgb_t;
 
-// Blue at/below the cold zone's ceiling, red at/above a "hot" ceiling placed
-// as far past the good zone as the good zone is wide, amber exactly in the
-// middle of the good zone -- entirely derived from the two zone thresholds
-// in config.h, so there's nothing extra to keep in sync once those get real
-// values from the sidecar's data-gathering run (see CLAUDE.md).
-static float cold_anchor_c(void) { return ZONE_COLD_MAX_C; }
-static float good_anchor_c(void) { return (ZONE_COLD_MAX_C + ZONE_GOOD_MAX_C) / 2.0f; }
-static float hot_anchor_c(void) { return ZONE_GOOD_MAX_C + (ZONE_GOOD_MAX_C - ZONE_COLD_MAX_C) / 2.0f; }
+typedef enum {
+  ZONE_COLD = 0,
+  ZONE_GOOD = 1,
+  ZONE_HOT = 2,
+} zone_t;
 
 static const rgb_t COLOR_COLD = {0, 60, 255};
 static const rgb_t COLOR_GOOD = {255, 55, 0};
@@ -53,42 +50,43 @@ static rgb_t lerp_rgb(rgb_t a, rgb_t b, float t) {
   return out;
 }
 
-// Three-stop piecewise-linear gradient: solid blue at/below the cold
-// anchor, solid red at/above the hot anchor, interpolated through amber in
-// between.
-static rgb_t temperature_to_color(float temperature_c) {
-  float t_cold = cold_anchor_c();
-  float t_good = good_anchor_c();
-  float t_hot = hot_anchor_c();
-
-  if (temperature_c <= t_cold) {
-    return COLOR_COLD;
-  }
-  if (temperature_c >= t_hot) {
-    return COLOR_HOT;
-  }
-  if (temperature_c <= t_good) {
-    return lerp_rgb(COLOR_COLD, COLOR_GOOD, (temperature_c - t_cold) / (t_good - t_cold));
-  }
-  return lerp_rgb(COLOR_GOOD, COLOR_HOT, (temperature_c - t_good) / (t_hot - t_good));
+// Matches the sidecar's own "Thermocouple Zone" classification (see
+// flu-monitor.yaml) exactly -- same two thresholds, same <=/> boundaries.
+static zone_t temperature_to_zone(float temperature_c) {
+  if (temperature_c <= ZONE_COLD_MAX_C) return ZONE_COLD;
+  if (temperature_c <= ZONE_GOOD_MAX_C) return ZONE_GOOD;
+  return ZONE_HOT;
 }
 
-// The pure zone color one step toward the trend direction -- used only for
-// the pulse's bright-peak hue. A partial RGB blend between two colors this
-// far apart (e.g. 65% of the way from amber to blue) comes out as a muddy,
-// desaturated mix that reads as washed-out white at high brightness rather
-// than "leaning toward the next color" -- a clean swap between the two pure
-// endpoints reads far better than any partial blend does. A stable reading
-// (rate 0) gets no shift at all, same color as the trough.
+static rgb_t zone_color(zone_t zone) {
+  switch (zone) {
+    case ZONE_COLD: return COLOR_COLD;
+    case ZONE_GOOD: return COLOR_GOOD;
+    default: return COLOR_HOT;
+  }
+}
+
+// No blending between zones -- solid blue/amber/red only, picked straight
+// off the same thresholds the sidecar uses to classify its own zone.
+static rgb_t temperature_to_color(float temperature_c) {
+  return zone_color(temperature_to_zone(temperature_c));
+}
+
+// The pure color of the *next* zone in the trend direction -- used only for
+// the pulse's bright-peak hue, so a heating/cooling reading pulses toward
+// where it's headed. Already at the hottest/coldest zone and still trending
+// that way has no next zone to swap to, so it just stays put (no pulse
+// shift). A stable reading (rate 0) also gets no shift, same color as the
+// trough.
 static rgb_t trend_neighbor_color(float temperature_c, float rate_c_per_min) {
-  float t_good = good_anchor_c();
+  zone_t zone = temperature_to_zone(temperature_c);
   if (rate_c_per_min > 0.0f) {
-    return (temperature_c <= t_good) ? COLOR_GOOD : COLOR_HOT;
+    return zone_color(zone < ZONE_HOT ? zone + 1 : zone);
   }
   if (rate_c_per_min < 0.0f) {
-    return (temperature_c <= t_good) ? COLOR_COLD : COLOR_GOOD;
+    return zone_color(zone > ZONE_COLD ? zone - 1 : zone);
   }
-  return temperature_to_color(temperature_c);
+  return zone_color(zone);
 }
 
 // Maps a rate of rise to a breathing-pulse period: idle pace normally,
