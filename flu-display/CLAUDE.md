@@ -18,6 +18,39 @@ up solid blue at room temperature as expected. Since then, live in-person
 tuning (see below) landed on: a less yellow-green, more amber good-zone
 color; the pulse's bright peak also swapping toward the neighboring zone's
 color to hint at heating/cooling direction; and slower pulse paces overall.
+Real-world field testing (a skillet on induction, then an oven) also
+surfaced and fixed a single-sample-trust bug in `flue_poll.c` (see below).
+
+- **A single glitched reading can slip through the wide sanity clamp and
+  briefly flash a misleading color.** Observed live: an oven ramping
+  smoothly around 150C, but the ring flashed red a couple of times before
+  settling back -- one poll briefly reported a reading above the hot-zone
+  threshold, self-correcting on the very next poll a few seconds later.
+  The `-40..600C` sanity clamp can't be tightened to catch this: it has to
+  stay wide since a real overfire could genuinely reach into that range, so
+  a one-off glitch landing inside it sails straight through. Fixed by
+  requiring confirmation: a reading that jumps more than `SUSPICIOUS_JUMP_C`
+  in a single poll is held as "pending" rather than displayed immediately,
+  and only accepted once the *next* poll agrees with it (within
+  `CONFIRM_TOLERANCE_C`) -- a one-off glitch typically self-corrects by the
+  next poll and never gets confirmed, while a real fast change still shows
+  up within one extra ~3s poll interval. This is the same "don't trust a
+  single sample" principle already written down for the sidecar's own
+  future alert logic (see `../flu-monitor/CLAUDE.md`), just not previously
+  applied to the display.
+- **Induction cooktops are a uniquely bad environment for testing a bare,
+  unshielded thermocouple** -- observed wild, fast swings (e.g. 73C to 164C
+  within a couple of minutes) that don't look like real thermal behavior
+  (a pan has real thermal mass; it can't swing 90C in under a minute) and
+  don't match a smooth ramp when the same probe was moved to an oven
+  instead. The likely cause: induction hobs drive a strong, rapidly-switching
+  magnetic field to induce current in the pan, and a bare unshielded
+  thermocouple wire near the coil picks up that field as noise on its own
+  millivolt-level signal. This is a harsher EMI environment than the actual
+  target (a wood stove has no oscillating magnetic field), so don't read
+  too much into bad results from an induction-hob bench test specifically --
+  an oven, hot water, or a heat gun are all more representative test
+  sources.
 
 - **RGB color choices for the gradient need to be judged live on the real
   ring, not from a camera photo or from first-principles RGB values.** Two
