@@ -5,7 +5,8 @@ bigger-picture project this is one half of, and `README.md` (in this folder)
 for day-to-day build/flash commands and hardware pinout.
 
 Status: **All three milestones (WiFi + captive portal, poll `flu-monitor`'s
-JSON API, drive the LED ring) verified working end-to-end on real hardware.**
+JSON API, drive the LED ring) verified working end-to-end on real hardware,
+plus push-based OTA updates (Milestone 4, originally deferred).**
 Milestone 1: captive portal auto-popped on a real client (confirmed via
 screenshot), form submission saved credentials to NVS, device rebooted and
 joined the real network, stayed connected. Milestone 2: once connected, the
@@ -20,6 +21,43 @@ color; the pulse's bright peak also swapping toward the neighboring zone's
 color to hint at heating/cooling direction; and slower pulse paces overall.
 Real-world field testing (a skillet on induction, then an oven) also
 surfaced and fixed a single-sample-trust bug in `flue_poll.c` (see below).
+
+## OTA updates (`ota_server.c`, `ota_flash.sh`, `partitions_ota.csv`)
+
+- **Switching from a single-app to a two-OTA-slot partition table requires
+  a one-time full USB reflash**, not something OTA itself can bootstrap --
+  the partition table is a fixed on-flash layout, and the running device
+  has no way to repartition itself out from under its own running image.
+  After that one reflash, further updates go over WiFi via `ota_flash.sh`.
+- **WiFi credentials (in NVS) survived the partition-table change
+  unexpectedly** -- both the old single-app table and the new
+  `partitions_ota.csv` happen to place `nvs` at the same offset (`0x9000`,
+  since both list it first with the same declared size and `idf.py flash`
+  only writes the regions it's told to), so the already-flashed NVS
+  contents were left untouched. Not something to rely on in general
+  (a differently-ordered or differently-sized partition table would not
+  preserve this), but worth knowing this specific transition didn't require
+  re-entering WiFi credentials via the captive portal.
+- **The bootloader's rollback safety net is real and was verified by
+  accident, not just in theory.** `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`
+  leaves a freshly-OTA'd image in a "pending verify" state until
+  `esp_ota_mark_app_valid_cancel_rollback()` runs (here, once WiFi connects
+  -- see `main.c`); forcing an extra reset immediately after a push, before
+  that call had a chance to run, made the device correctly boot back into
+  the *previous* slot instead of the new one, rather than getting stuck.
+  Confirmed by reading the actual `otadata` sequence numbers with
+  `$IDF_PATH/components/app_update/otatool.py ... read_otadata` and cross-
+  checking against the boot log's "Loaded app from partition at offset"
+  line -- don't trust which slot *should* be active from otadata sequence
+  numbers alone without also checking what the bootloader actually printed,
+  since an unconfirmed image's fate depends on timing (whether it reset
+  again before confirming itself), not just what was last written.
+- **The OTA endpoint's only auth is a shared secret in the URL query
+  string** (`main/secrets.h`, git-ignored, mirroring `flu-monitor`'s
+  `secrets.yaml` pattern -- copy `main/secrets.h.example` to start), sent
+  over plain HTTP. Same trust level as `flu-monitor`'s own Google Sheets
+  webhook secret: fine for a device that never leaves the home LAN, not
+  something to expose beyond it.
 
 - **A single glitched reading can slip through the wide sanity clamp and
   briefly flash a misleading color.** Observed live: an oven ramping

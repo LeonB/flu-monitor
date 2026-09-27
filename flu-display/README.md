@@ -11,8 +11,12 @@ Plain ESP-IDF firmware (not ESPHome/Arduino) for a **Lolin D32 Pro** driving a
   (renders the ring)
 - `components/wifi_setup/`, `components/captive_portal/`, `components/dns_server/`
   — WiFi credential storage (NVS) and the fallback setup access point
+- `main/ota_server.c/.h` — authenticated `POST /ota` endpoint for pushing
+  firmware updates over WiFi
 - `activate-idf.sh` — sources the cached ESP-IDF toolchain (see `CLAUDE.md`
   for why it's reused rather than freshly installed)
+- `ota_flash.sh` — pushes a build to a running device over WiFi
+- `partitions_ota.csv` — two-OTA-slot partition table
 
 ## Setup
 
@@ -27,6 +31,22 @@ a setup access point called **"Flu Display Setup"** (password `flu-display-setup
 with a captive portal — connecting a phone/laptop to it should auto-pop a page to
 enter your real WiFi credentials, which are then saved to NVS and it reboots to
 join that network.
+
+## Updating over WiFi (OTA)
+
+Once a device is running (any build from after OTA support landed), further
+updates don't need USB:
+
+```sh
+cp main/secrets.h.example main/secrets.h   # first time only -- fill in a real random string
+. ./activate-idf.sh && idf.py build
+./ota_flash.sh <device-ip-or-hostname>
+```
+
+`main/secrets.h` is git-ignored; the same secret has to be in it on every
+machine that pushes updates. A device still running the old single-app
+partition table needs one full USB reflash first (`idf.py flash`) to switch
+partition layouts -- after that, OTA works going forward.
 
 ## Hardware notes
 
