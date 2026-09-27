@@ -98,8 +98,21 @@ static uint32_t rate_to_pulse_period_ms(float rate_c_per_min) {
   return (uint32_t) lerpf((float) IDLE_PULSE_PERIOD_MS, (float) FAST_PULSE_PERIOD_MS, t);
 }
 
+// The "Apple sleep-LED" breathing curve: exp(sin(phase)), normalized from
+// its natural range [1/e, e] back to [0, 1]. Unlike a plain sine (equal
+// time at every brightness level), the exponential warp spends most of the
+// cycle near the dark end and only flares briefly at the peak -- see
+// config.h's comment above PULSE_BRIGHTNESS_MIN.
+static float breath_envelope(double cycle_pos) {
+  const float kExpSinMin = 0.36787944f;  // 1/e, exp(sin(x))'s minimum
+  const float kExpSinMax = 2.71828183f;  // e, exp(sin(x))'s maximum
+  float phase = (float) (2.0 * M_PI * cycle_pos) - (float) M_PI_2;
+  float raw = expf(sinf(phase));
+  return (raw - kExpSinMin) / (kExpSinMax - kExpSinMin);
+}
+
 static void render_task(void *arg) {
-  double phase = 0.0;
+  double cycle_pos = 0.0;  // 0..1 fraction of the way through the current pulse cycle
 
   while (true) {
     bool valid;
@@ -116,12 +129,12 @@ static void render_task(void *arg) {
     }
 
     uint32_t period_ms = valid ? rate_to_pulse_period_ms(rate_c_per_min) : IDLE_PULSE_PERIOD_MS;
-    phase += 2.0 * M_PI * ((double) LED_RENDER_TICK_MS / (double) period_ms);
-    if (phase > 2.0 * M_PI) {
-      phase -= 2.0 * M_PI;
+    cycle_pos += (double) LED_RENDER_TICK_MS / (double) period_ms;
+    if (cycle_pos > 1.0) {
+      cycle_pos -= 1.0;
     }
 
-    float envelope = 0.5f + 0.5f * (float) sin(phase);  // 0..1
+    float envelope = breath_envelope(cycle_pos);  // 0..1
     uint8_t brightness = (uint8_t) lerpf((float) PULSE_BRIGHTNESS_MIN, (float) PULSE_BRIGHTNESS_MAX, envelope);
 
     if (valid) {

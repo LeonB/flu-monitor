@@ -55,19 +55,27 @@
 // the *positive* rate of change (relative to FAST_RISE_C_PER_MIN, above)
 // increases; a falling or stable reading always stays at the slow idle
 // pace, since a fast drop isn't the failure mode this is watching for.
-#define IDLE_PULSE_PERIOD_MS    5500
+#define IDLE_PULSE_PERIOD_MS    8000
 #define FAST_PULSE_PERIOD_MS    1400
 
 // Pulse brightness floor/ceiling, 0-255 per-pixel scale.
-#define PULSE_BRIGHTNESS_MIN    60
+#define PULSE_BRIGHTNESS_MIN    20
 #define PULSE_BRIGHTNESS_MAX    255
+
+// Pulse brightness envelope shape: a plain sine wave spends equal time at
+// every brightness level, which reads as mechanical rather than
+// breath-like. This instead uses the classic "Apple sleep-LED" curve --
+// exp(sin(phase)), normalized back to 0..1 -- which lingers near the dark
+// end and only flares briefly at the peak (see led_display.c's
+// breath_envelope()). Timing stays symmetric (same duration rising and
+// falling); it's the *brightness* that's warped, not the speed.
 
 // Shapes the trough->peak color swing so it isn't a straight linear
 // crossfade with brightness: >1 keeps it near the trough color (e.g. amber)
 // for most of the cycle and only swings to the peak color (e.g. blue) in a
 // quick ramp near the very top of the brightness swing. Higher = longer
 // hold, quicker ramp. 1.0 would be a plain linear crossfade.
-#define COLOR_TRANSITION_EXPONENT  11.0f
+#define COLOR_TRANSITION_EXPONENT  3.0f
 
 // How often the render task recomputes the pulse -- fast enough to look
 // smooth, far below what would meaningfully load the RMT peripheral.
