@@ -21,7 +21,7 @@ static void set_defaults(settings_t *s) {
   memset(s, 0, sizeof(*s));
   s->log_heartbeat_min = DEFAULT_LOG_HEARTBEAT_MIN;
   s->zone_cold_max_c = DEFAULT_ZONE_COLD_MAX_C;
-  s->zone_good_max_c = DEFAULT_ZONE_GOOD_MAX_C;
+  s->zone_optimal_max_c = DEFAULT_ZONE_OPTIMAL_MAX_C;
   s->fast_rise_c_per_min = DEFAULT_FAST_RISE_C_PER_MIN;
   s->thermocouple_deadband_c = DEFAULT_THERMOCOUPLE_DEADBAND_C;
   // google_sheets_webhook_url/secret left empty -- no safe compile-time
@@ -30,7 +30,7 @@ static void set_defaults(settings_t *s) {
 }
 
 static bool validate(const settings_t *s) {
-  if (s->zone_cold_max_c >= s->zone_good_max_c) {
+  if (s->zone_cold_max_c >= s->zone_optimal_max_c) {
     return false;
   }
   if (s->fast_rise_c_per_min <= 0.0f) {

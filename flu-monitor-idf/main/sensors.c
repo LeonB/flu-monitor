@@ -23,8 +23,8 @@ const char *thermocouple_zone_name(thermocouple_zone_t zone) {
   switch (zone) {
     case THERMOCOUPLE_ZONE_COLD:
       return "cold";
-    case THERMOCOUPLE_ZONE_GOOD:
-      return "good";
+    case THERMOCOUPLE_ZONE_OPTIMAL:
+      return "optimal";
     case THERMOCOUPLE_ZONE_HOT:
       return "hot";
     case THERMOCOUPLE_ZONE_UNKNOWN:
@@ -90,8 +90,8 @@ static thermocouple_zone_t classify_zone(float c) {
   if (c <= s.zone_cold_max_c) {
     return THERMOCOUPLE_ZONE_COLD;
   }
-  if (c <= s.zone_good_max_c) {
-    return THERMOCOUPLE_ZONE_GOOD;
+  if (c <= s.zone_optimal_max_c) {
+    return THERMOCOUPLE_ZONE_OPTIMAL;
   }
   return THERMOCOUPLE_ZONE_HOT;
 }

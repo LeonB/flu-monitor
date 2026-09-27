@@ -17,7 +17,7 @@ extern "C" {
 typedef struct {
   uint16_t log_heartbeat_min;
   float zone_cold_max_c;
-  float zone_good_max_c;
+  float zone_optimal_max_c;
   float fast_rise_c_per_min;
   float thermocouple_deadband_c;
   char google_sheets_webhook_url[SETTINGS_SHEETS_URL_MAX_LEN];

@@ -11,11 +11,11 @@ extern "C" {
 typedef enum {
   THERMOCOUPLE_ZONE_UNKNOWN = 0,  // no plausible reading admitted yet
   THERMOCOUPLE_ZONE_COLD,
-  THERMOCOUPLE_ZONE_GOOD,
+  THERMOCOUPLE_ZONE_OPTIMAL,
   THERMOCOUPLE_ZONE_HOT,
 } thermocouple_zone_t;
 
-// "cold"/"good"/"hot"/"unknown" -- for REST responses and logging.
+// "cold"/"optimal"/"hot"/"unknown" -- for REST responses and logging.
 const char *thermocouple_zone_name(thermocouple_zone_t zone);
 
 typedef struct {

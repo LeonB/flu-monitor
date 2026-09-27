@@ -70,12 +70,12 @@ curl http://flu-monitor-idf.local/api/reading
 curl http://flu-monitor-idf.local/api/settings
 curl -X POST http://flu-monitor-idf.local/api/settings \
   -H "Content-Type: application/json" \
-  -d '{"log_heartbeat_min":15,"zone_cold_max_c":150,"zone_good_max_c":280,"fast_rise_c_per_min":20,"thermocouple_deadband_c":5,"google_sheets_webhook_url":"","google_sheets_secret":""}'
+  -d '{"log_heartbeat_min":15,"zone_cold_max_c":150,"zone_optimal_max_c":280,"fast_rise_c_per_min":20,"thermocouple_deadband_c":5,"google_sheets_webhook_url":"","google_sheets_secret":""}'
 ```
 
 `POST /api/settings` replaces the whole settings object (no partial/PATCH
 semantics) and validates before persisting — an invalid payload (e.g.
-`zone_cold_max_c >= zone_good_max_c`) gets a `400` and leaves the stored
+`zone_cold_max_c >= zone_optimal_max_c`) gets a `400` and leaves the stored
 settings untouched.
 
 ## Hardware notes

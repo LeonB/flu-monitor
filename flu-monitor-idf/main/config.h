@@ -61,7 +61,7 @@
 // run these thresholds exist to inform (see the repo root CLAUDE.md's
 // "Project goal").
 #define DEFAULT_ZONE_COLD_MAX_C          150.0f
-#define DEFAULT_ZONE_GOOD_MAX_C          280.0f
+#define DEFAULT_ZONE_OPTIMAL_MAX_C       280.0f
 #define DEFAULT_FAST_RISE_C_PER_MIN      20.0f
 #define DEFAULT_THERMOCOUPLE_DEADBAND_C  5.0f
 #define DEFAULT_LOG_HEARTBEAT_MIN        15

@@ -53,7 +53,7 @@ static const httpd_uri_t reading_uri = {
 static void settings_to_json(const settings_t *s, cJSON *root) {
   cJSON_AddNumberToObject(root, "log_heartbeat_min", s->log_heartbeat_min);
   cJSON_AddNumberToObject(root, "zone_cold_max_c", round_to(s->zone_cold_max_c, 0.1));
-  cJSON_AddNumberToObject(root, "zone_good_max_c", round_to(s->zone_good_max_c, 0.1));
+  cJSON_AddNumberToObject(root, "zone_optimal_max_c", round_to(s->zone_optimal_max_c, 0.1));
   cJSON_AddNumberToObject(root, "fast_rise_c_per_min", round_to(s->fast_rise_c_per_min, 0.1));
   cJSON_AddNumberToObject(root, "thermocouple_deadband_c", round_to(s->thermocouple_deadband_c, 0.1));
   cJSON_AddStringToObject(root, "google_sheets_webhook_url", s->google_sheets_webhook_url);
@@ -121,8 +121,8 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
   item = cJSON_GetObjectItem(root, "zone_cold_max_c");
   s.zone_cold_max_c = cJSON_IsNumber(item) ? (float) item->valuedouble : 0.0f;
 
-  item = cJSON_GetObjectItem(root, "zone_good_max_c");
-  s.zone_good_max_c = cJSON_IsNumber(item) ? (float) item->valuedouble : 0.0f;
+  item = cJSON_GetObjectItem(root, "zone_optimal_max_c");
+  s.zone_optimal_max_c = cJSON_IsNumber(item) ? (float) item->valuedouble : 0.0f;
 
   item = cJSON_GetObjectItem(root, "fast_rise_c_per_min");
   s.fast_rise_c_per_min = cJSON_IsNumber(item) ? (float) item->valuedouble : 0.0f;
