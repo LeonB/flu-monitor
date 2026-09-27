@@ -6,24 +6,26 @@
 extern "C" {
 #endif
 
-// One polled+validated reading of flu-monitor's thermocouple sensor.
-typedef struct {
-  bool valid;            // false if the poll, parse, or sanity check failed
-  float temperature_c;   // only meaningful when valid
-  float rate_c_per_min;  // change since the last *accepted* reading; 0.0 on
-                          // the first accepted reading (no prior baseline)
-} flue_reading_t;
-
-// Starts mDNS so FLU_MONITOR_HOST (config.h) resolves. Call once at boot,
-// after WiFi STA is connected.
+// Starts mDNS (so this device is itself discoverable, and so
+// FLU_MONITOR_MDNS_NAME can be resolved), then in the background: resolves
+// flu-monitor-idf, fetches its current zone/rate settings (applied via
+// led_display_set_thresholds()), and connects a persistent WebSocket to its
+// /ws broadcast endpoint. Call once at boot, after WiFi STA is connected.
+//
+// Non-blocking and event-driven from here on -- there's no poll loop to run
+// anymore. Each broadcast reading is validated (same sanity clamp and
+// suspicious-jump confirmation as the old REST-polling version) and, if
+// accepted, passed straight to led_display_set_reading() as it arrives. A
+// "settings changed" broadcast triggers a fresh settings re-fetch. The
+// WebSocket client's own built-in auto-reconnect handles a transient
+// WiFi/sidecar drop.
 void flue_poll_init(void);
 
-// Blocking: performs one HTTP GET against flu-monitor's web_server JSON API,
-// parses the response, and sanity-clamps it (same -40..600C range as
-// flu-monitor.yaml's own clamp -- see CLAUDE.md). Safe to call repeatedly
-// from a polling loop; on any failure returns a result with valid=false
-// rather than a stale/guessed value.
-flue_reading_t flue_poll_once(void);
+// True if no valid reading has arrived recently enough to trust (either
+// none yet, or it's been more than STALE_READING_MS since the last one) --
+// call this from a lightweight timer/task to fall back to the neutral
+// pulse. No network I/O happens here.
+bool flue_poll_is_stale(void);
 
 #ifdef __cplusplus
 }

@@ -17,6 +17,13 @@ static bool s_valid = false;
 static float s_temperature_c = 0.0f;
 static float s_rate_c_per_min = 0.0f;
 
+// Defaults to config.h's own placeholders until flue_poll.c's first
+// settings fetch succeeds -- see led_display_set_thresholds()'s doc comment.
+static portMUX_TYPE s_threshold_lock = portMUX_INITIALIZER_UNLOCKED;
+static float s_zone_cold_max_c = ZONE_COLD_MAX_C;
+static float s_zone_optimal_max_c = ZONE_OPTIMAL_MAX_C;
+static float s_fast_rise_c_per_min = FAST_RISE_C_PER_MIN;
+
 typedef struct {
   uint8_t r, g, b;
 } rgb_t;
@@ -51,10 +58,13 @@ static rgb_t lerp_rgb(rgb_t a, rgb_t b, float t) {
 }
 
 // Matches the sidecar's own "Thermocouple Zone" classification (see
-// flu-monitor.yaml) exactly -- same two thresholds, same <=/> boundaries.
-static zone_t temperature_to_zone(float temperature_c) {
-  if (temperature_c <= ZONE_COLD_MAX_C) return ZONE_COLD;
-  if (temperature_c <= ZONE_OPTIMAL_MAX_C) return ZONE_OPTIMAL;
+// flu-monitor.yaml/flu-monitor-idf) exactly -- same two thresholds, same
+// <=/> boundaries. Thresholds are passed in (not read from config.h's
+// macros directly) since they're runtime-updatable -- see
+// led_display_set_thresholds().
+static zone_t temperature_to_zone(float temperature_c, float zone_cold_max_c, float zone_optimal_max_c) {
+  if (temperature_c <= zone_cold_max_c) return ZONE_COLD;
+  if (temperature_c <= zone_optimal_max_c) return ZONE_OPTIMAL;
   return ZONE_HOT;
 }
 
@@ -68,8 +78,8 @@ static rgb_t zone_color(zone_t zone) {
 
 // No blending between zones -- solid blue/amber/red only, picked straight
 // off the same thresholds the sidecar uses to classify its own zone.
-static rgb_t temperature_to_color(float temperature_c) {
-  return zone_color(temperature_to_zone(temperature_c));
+static rgb_t temperature_to_color(float temperature_c, float zone_cold_max_c, float zone_optimal_max_c) {
+  return zone_color(temperature_to_zone(temperature_c, zone_cold_max_c, zone_optimal_max_c));
 }
 
 // The pure color of the *next* zone in the trend direction -- used only for
@@ -78,8 +88,9 @@ static rgb_t temperature_to_color(float temperature_c) {
 // that way has no next zone to swap to, so it just stays put (no pulse
 // shift). A stable reading (rate 0) also gets no shift, same color as the
 // trough.
-static rgb_t trend_neighbor_color(float temperature_c, float rate_c_per_min) {
-  zone_t zone = temperature_to_zone(temperature_c);
+static rgb_t trend_neighbor_color(float temperature_c, float rate_c_per_min, float zone_cold_max_c,
+                                  float zone_optimal_max_c) {
+  zone_t zone = temperature_to_zone(temperature_c, zone_cold_max_c, zone_optimal_max_c);
   if (rate_c_per_min > 0.0f) {
     return zone_color(zone < ZONE_HOT ? zone + 1 : zone);
   }
@@ -91,10 +102,10 @@ static rgb_t trend_neighbor_color(float temperature_c, float rate_c_per_min) {
 
 // Maps a rate of rise to a breathing-pulse period: idle pace normally,
 // speeding up toward FAST_PULSE_PERIOD_MS as the rate approaches
-// FAST_RISE_C_PER_MIN. A falling/stable reading (rate <= 0) is clamped to
+// fast_rise_c_per_min. A falling/stable reading (rate <= 0) is clamped to
 // 0 here, so it always gets the slow idle pace.
-static uint32_t rate_to_pulse_period_ms(float rate_c_per_min) {
-  float t = clampf(rate_c_per_min, 0.0f, FAST_RISE_C_PER_MIN) / FAST_RISE_C_PER_MIN;
+static uint32_t rate_to_pulse_period_ms(float rate_c_per_min, float fast_rise_c_per_min) {
+  float t = clampf(rate_c_per_min, 0.0f, fast_rise_c_per_min) / fast_rise_c_per_min;
   return (uint32_t) lerpf((float) IDLE_PULSE_PERIOD_MS, (float) FAST_PULSE_PERIOD_MS, t);
 }
 
@@ -124,11 +135,18 @@ static void render_task(void *arg) {
     rate_c_per_min = s_rate_c_per_min;
     portEXIT_CRITICAL(&s_state_lock);
 
+    float zone_cold_max_c, zone_optimal_max_c, fast_rise_c_per_min;
+    portENTER_CRITICAL(&s_threshold_lock);
+    zone_cold_max_c = s_zone_cold_max_c;
+    zone_optimal_max_c = s_zone_optimal_max_c;
+    fast_rise_c_per_min = s_fast_rise_c_per_min;
+    portEXIT_CRITICAL(&s_threshold_lock);
+
     if (fabsf(rate_c_per_min) < RATE_DEADBAND_C_PER_MIN) {
       rate_c_per_min = 0.0f;
     }
 
-    uint32_t period_ms = valid ? rate_to_pulse_period_ms(rate_c_per_min) : IDLE_PULSE_PERIOD_MS;
+    uint32_t period_ms = valid ? rate_to_pulse_period_ms(rate_c_per_min, fast_rise_c_per_min) : IDLE_PULSE_PERIOD_MS;
     cycle_pos += (double) LED_RENDER_TICK_MS / (double) period_ms;
     if (cycle_pos > 1.0) {
       cycle_pos -= 1.0;
@@ -143,8 +161,8 @@ static void render_task(void *arg) {
       // to the pure neighboring zone's color in the trend direction. A
       // stable reading (rate 0) has no shift, so it stays one solid color
       // through the whole pulse, same as before this was added.
-      rgb_t trough_color = temperature_to_color(temperature_c);
-      rgb_t peak_color = trend_neighbor_color(temperature_c, rate_c_per_min);
+      rgb_t trough_color = temperature_to_color(temperature_c, zone_cold_max_c, zone_optimal_max_c);
+      rgb_t peak_color = trend_neighbor_color(temperature_c, rate_c_per_min, zone_cold_max_c, zone_optimal_max_c);
       float color_t = powf(envelope, COLOR_TRANSITION_EXPONENT);
       rgb_t color = lerp_rgb(trough_color, peak_color, color_t);
       uint32_t r = (uint32_t) color.r * brightness / 255;
@@ -196,4 +214,12 @@ void led_display_set_reading(bool valid, float temperature_c, float rate_c_per_m
   s_temperature_c = temperature_c;
   s_rate_c_per_min = rate_c_per_min;
   portEXIT_CRITICAL(&s_state_lock);
+}
+
+void led_display_set_thresholds(float zone_cold_max_c, float zone_optimal_max_c, float fast_rise_c_per_min) {
+  portENTER_CRITICAL(&s_threshold_lock);
+  s_zone_cold_max_c = zone_cold_max_c;
+  s_zone_optimal_max_c = zone_optimal_max_c;
+  s_fast_rise_c_per_min = fast_rise_c_per_min;
+  portEXIT_CRITICAL(&s_threshold_lock);
 }

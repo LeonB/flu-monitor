@@ -1,6 +1,9 @@
 // flu-display: Milestone 1 (WiFi with stored credentials + captive portal
-// fallback), Milestone 2 (poll flu-monitor's JSON API), and Milestone 3
-// (drive the LED ring off the polled reading).
+// fallback), Milestone 2 (poll flu-monitor's JSON API), Milestone 3 (drive
+// the LED ring off the polled reading), Milestone 4 (subscribe to
+// flu-monitor-idf's WebSocket broadcast instead of polling REST, and fetch
+// zone/rate thresholds from its REST API instead of this project's own
+// config.h copies).
 // See CLAUDE.md's "Project goal" section for the full project context, and
 // the plan this was built from for the architecture rationale (ESPHome vs.
 // Arduino vs. plain ESP-IDF, why plain ESP-IDF was chosen).
@@ -10,7 +13,6 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
-#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -53,7 +55,7 @@ void app_main(void) {
   }
 
   if (connected) {
-    ESP_LOGI(TAG, "Connected. Polling flu-monitor and driving the LED ring.");
+    ESP_LOGI(TAG, "Connected. Subscribing to flu-monitor-idf and driving the LED ring.");
 
     // Confirms this image works well enough to join WiFi, canceling the
     // bootloader's rollback timer for it. A build broken badly enough to
@@ -63,31 +65,19 @@ void app_main(void) {
     esp_ota_mark_app_valid_cancel_rollback();
 
     ota_server_start();
-    flue_poll_init();
     led_display_init();
+    flue_poll_init();
 
-    bool have_ever_valid = false;
-    int64_t last_valid_us = 0;
-
+    // Everything from here on is event-driven: flue_poll.c's own WS event
+    // handler calls led_display_set_reading() directly as broadcasts
+    // arrive. This tick only watches for staleness (no network I/O) --
+    // falls back to the neutral pulse if nothing's arrived in a while,
+    // rather than holding a stale color forever.
     while (true) {
-      flue_reading_t reading = flue_poll_once();
-      if (reading.valid) {
-        ESP_LOGI(TAG, "Thermocouple: %.1f C (rate %.2f C/min)", reading.temperature_c, reading.rate_c_per_min);
-        have_ever_valid = true;
-        last_valid_us = esp_timer_get_time();
-        led_display_set_reading(true, reading.temperature_c, reading.rate_c_per_min);
-      } else {
-        ESP_LOGW(TAG, "Poll failed or reading rejected -- see flue_poll warnings above");
-        bool stale = !have_ever_valid ||
-                     (esp_timer_get_time() - last_valid_us) > (int64_t) STALE_READING_MS * 1000;
-        if (stale) {
-          // No reading yet, or the last good one is too old to trust --
-          // fall back to the neutral pulse rather than holding a stale
-          // color. A single missed poll doesn't trigger this by itself.
-          led_display_set_reading(false, 0.0f, 0.0f);
-        }
+      if (flue_poll_is_stale()) {
+        led_display_set_reading(false, 0.0f, 0.0f);
       }
-      vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
+      vTaskDelay(pdMS_TO_TICKS(STALENESS_CHECK_INTERVAL_MS));
     }
   } else {
     ESP_LOGW(TAG, "Not connected -- starting setup access point + captive portal");

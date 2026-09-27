@@ -17,17 +17,31 @@
 // before giving up and falling back to the setup AP.
 #define STA_CONNECT_TIMEOUT_MS   15000
 
-// --- Milestone 2: poll flu-monitor's JSON API ---
+// --- Milestone 2: poll flu-monitor's JSON API (superseded by Milestone 4's
+// WebSocket subscription below, but this section's mDNS-resolution
+// reasoning still applies) ---
 
 // mDNS hostname WITHOUT the ".local" suffix -- mdns_query_a() (see
 // flue_poll.c) rejects/warns on a name that includes it. Relying on the
-// implicit LWIP ".local" resolver hook (passing "flu-monitor.local" straight
-// to esp_http_client) worked in initial testing but was NOT reliable across
-// every boot/network condition observed since, so flue_poll.c resolves this
-// explicitly instead. See CLAUDE.md's "flu-display" section.
-#define FLU_MONITOR_MDNS_NAME   "flu-monitor"
+// implicit LWIP ".local" resolver hook (passing a "....local" hostname
+// straight to esp_http_client) worked in initial testing but was NOT
+// reliable across every boot/network condition observed since, so
+// flue_poll.c resolves this explicitly instead. See CLAUDE.md's
+// "flu-display" section.
+//
+// Points at flu-monitor-idf (the ESP-IDF rewrite), not the original ESPHome
+// flu-monitor -- Milestone 4's coordinated cutover (see the repo root
+// CLAUDE.md). Rename back only if rolling back to the ESPHome sidecar.
+#define FLU_MONITOR_MDNS_NAME   "flu-monitor-idf"
 #define MDNS_QUERY_TIMEOUT_MS   3000
-#define POLL_INTERVAL_MS        3000
+
+// --- Milestone 4: WebSocket subscription (flue_poll.c) ---
+
+// How often main.c's lightweight staleness-check tick runs. No network I/O
+// happens on this tick anymore (the WS connection is event-driven) -- it
+// only compares timestamps, to fall back to the neutral pulse if nothing's
+// arrived in a while (see flue_poll_is_stale()).
+#define STALENESS_CHECK_INTERVAL_MS  3000
 
 // Placeholders -- replace once flu-monitor's multi-week data-gathering run
 // gives real cold/optimal/hot boundaries (see CLAUDE.md's "Project goal").

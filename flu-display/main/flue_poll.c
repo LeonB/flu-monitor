@@ -9,29 +9,23 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
+#include "esp_websocket_client.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "led_display.h"
 #include "mdns.h"
 
 static const char *TAG = "flue_poll";
 
-// flu-monitor's web_server exposes each sensor at /sensor/<exact entity
-// NAME, URL-encoded>, not its object_id -- verified against the live
-// device: GET .../sensor/Thermocouple%20Temperature returns
-// {"id":"sensor/Thermocouple Temperature","value":25,"state":"25.0 °C"}.
-#define THERMOCOUPLE_PATH "/sensor/Thermocouple%20Temperature"
-
-// The sidecar now computes rate-of-change itself (a least-squares slope
-// over its own ~3-minute rolling window, off its own real sensor update
-// cadence) rather than flu-display deriving it from repeated polls -- see
-// flu-display/CLAUDE.md for why: a raw two-point derivative here was
-// vulnerable to a real bug where the mcp9600's 30s update_interval,
-// combined with this device's own 3s poll cadence, made any real change
-// look ~10x faster than it actually was.
-#define THERMOCOUPLE_RATE_PATH "/sensor/Thermocouple%20Rate"
-
-// Same reasoning as flu-monitor.yaml's own sanity clamp (see CLAUDE.md): a
-// stovepipe has no business reading outside this range, so anything outside
-// it is a corrupted/failed reading, not real data -- and must not become the
-// new rate-of-change baseline.
+// Same reasoning as flu-monitor.yaml's/flu-monitor-idf's own sanity clamp
+// (see CLAUDE.md): a stovepipe has no business reading outside this range,
+// so anything outside it is a corrupted/failed reading, not real data --
+// and must not become the new rate-of-change baseline. The sidecar's own
+// raw thermocouple_c is reported as-read regardless of plausibility (only
+// its *derived* rate/zone are protected -- see flu-monitor-idf/CLAUDE.md),
+// so this check is still this device's own responsibility.
 #define SANITY_MIN_C  -40.0f
 #define SANITY_MAX_C  600.0f
 
@@ -41,17 +35,19 @@ static const char *TAG = "flue_poll";
 // range sails straight through otherwise, briefly flashing the display to
 // a misleading color (observed: an oven at ~150C spiking to a bogus 250C+
 // reading, self-correcting on the very next poll a few seconds later).
-// A jump bigger than this in a single poll interval isn't trusted
-// immediately -- it's held pending, and only accepted once the *next* poll
-// agrees with it too (within CONFIRM_TOLERANCE_C), so a one-off glitch
-// (which typically self-corrects by the next poll) never reaches the
-// display, while a real fast change still shows up within one extra poll.
+// A jump bigger than this in a single broadcast isn't trusted immediately
+// -- it's held pending, and only accepted once the *next* broadcast agrees
+// with it too (within CONFIRM_TOLERANCE_C), so a one-off glitch (which
+// typically self-corrects by the next broadcast) never reaches the
+// display, while a real fast change still shows up within one extra cycle.
 #define SUSPICIOUS_JUMP_C     15.0f
 #define CONFIRM_TOLERANCE_C   10.0f
 
-#define HTTP_RESPONSE_BUF_SIZE  256
 #define HTTP_TIMEOUT_MS         5000
 #define URL_BUF_SIZE            64
+#define HTTP_RESPONSE_BUF_SIZE  512  // must comfortably fit a settings response with a full webhook URL + secret
+
+#define WS_MSG_BUF_SIZE  512
 
 static char s_response_buf[HTTP_RESPONSE_BUF_SIZE];
 static int s_response_len;
@@ -62,8 +58,13 @@ static float s_prev_temperature_c;
 static bool s_have_pending = false;
 static float s_pending_temperature_c;
 
-static bool s_have_ip = false;
-static esp_ip4_addr_t s_cached_ip;
+static bool s_have_ever_valid = false;
+static int64_t s_last_valid_us = 0;
+
+static char s_ws_msg_buf[WS_MSG_BUF_SIZE];
+static int s_ws_msg_len = 0;
+
+static SemaphoreHandle_t s_refetch_settings_sem;
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
   if (evt->event_id == HTTP_EVENT_ON_DATA && !esp_http_client_is_chunked_response(evt->client)) {
@@ -79,27 +80,20 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
   return ESP_OK;
 }
 
-void flue_poll_init(void) {
-  ESP_ERROR_CHECK(mdns_init());
-  ESP_ERROR_CHECK(mdns_hostname_set("flu-display"));
-  ESP_ERROR_CHECK(mdns_instance_name_set("flu-display"));
-}
-
 // Resolves FLU_MONITOR_MDNS_NAME via an explicit mDNS query rather than
-// relying on the implicit ".local" resolution hook that esp_http_client
-// would otherwise trigger on its own by parsing the hostname out of the
-// URL. That implicit path worked in initial testing but proved unreliable
-// on a later boot (consistent ESP_ERR_HTTP_CONNECT / getaddrinfo failures
-// even though the Mac and other clients resolved the same hostname fine at
-// the same time) -- see CLAUDE.md's "flu-display" section.
-//
-// Even mdns_query_a() itself turned out flaky poll-to-poll on this network
-// (weak/variable RSSI observed -38 to -62 -- plausibly lossy multicast, not
-// a code bug), so this is only called to populate/refresh a cached IP, not
-// on every single poll: flue_poll_once() reuses the last resolved address
-// until an actual HTTP request against it fails, rather than gambling a
-// fresh multicast round trip every 3 seconds.
-static bool resolve_flu_monitor(esp_ip4_addr_t *out_addr) {
+// relying on the implicit ".local" resolution hook that esp_http_client (or
+// esp_websocket_client) would otherwise trigger on its own by parsing the
+// hostname out of the URL. That implicit path worked in initial testing but
+// proved unreliable on a later boot (consistent ESP_ERR_HTTP_CONNECT /
+// getaddrinfo failures even though the Mac and other clients resolved the
+// same hostname fine at the same time) -- see CLAUDE.md's "flu-display"
+// section. mdns_query_a() itself is also somewhat flaky poll-to-poll on
+// this network (weak/variable RSSI observed, plausibly lossy multicast),
+// so this is only called once at boot to get an initial address -- not on
+// every reconnect, unlike the reading itself the address rarely changes on
+// a home network, and the WS client's own auto-reconnect handles a
+// transient drop against the same address.
+static bool resolve_sidecar(esp_ip4_addr_t *out_addr) {
   esp_err_t err = mdns_query_a(FLU_MONITOR_MDNS_NAME, MDNS_QUERY_TIMEOUT_MS, out_addr);
   if (err != ESP_OK) {
     if (err == ESP_ERR_NOT_FOUND) {
@@ -112,15 +106,14 @@ static bool resolve_flu_monitor(esp_ip4_addr_t *out_addr) {
   return true;
 }
 
-// GETs flu-monitor's JSON sensor endpoint at `path` and extracts its
-// numeric "value" field. On any failure (transport, HTTP status, JSON
-// parse, missing/non-numeric field), logs a warning and returns false --
-// callers decide how to degrade, rather than this guessing a fallback
-// value itself. A transport-level failure also invalidates the cached IP,
-// so the next poll re-resolves instead of retrying a possibly-dead address.
-static bool fetch_numeric_value(const char *path, float *out_value) {
+// GETs flu-monitor-idf's GET /api/settings and applies the zone/rate
+// thresholds it returns -- see led_display_set_thresholds()'s own doc
+// comment for why this matters (a threshold changed via the sidecar's REST
+// API should actually move the ring's gradient, not just its own
+// classification).
+static void fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
   char url[URL_BUF_SIZE];
-  snprintf(url, sizeof(url), "http://" IPSTR "%s", IP2STR(&s_cached_ip), path);
+  snprintf(url, sizeof(url), "http://" IPSTR "/api/settings", IP2STR(ip));
 
   s_response_len = 0;
 
@@ -131,58 +124,58 @@ static bool fetch_numeric_value(const char *path, float *out_value) {
   };
   esp_http_client_handle_t client = esp_http_client_init(&config);
   esp_err_t err = esp_http_client_perform(client);
-
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "HTTP GET %s failed: %s -- will re-resolve next poll", path, esp_err_to_name(err));
-    esp_http_client_cleanup(client);
-    s_have_ip = false;
-    return false;
-  }
-
   int status = esp_http_client_get_status_code(client);
   esp_http_client_cleanup(client);
 
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "GET /api/settings failed: %s", esp_err_to_name(err));
+    return;
+  }
   if (status != 200) {
-    ESP_LOGW(TAG, "HTTP GET %s returned status %d", path, status);
-    return false;
+    ESP_LOGW(TAG, "GET /api/settings returned status %d", status);
+    return;
   }
 
   cJSON *root = cJSON_ParseWithLength(s_response_buf, s_response_len);
   if (root == NULL) {
-    ESP_LOGW(TAG, "Failed to parse JSON response for %s: '%.*s'", path, s_response_len, s_response_buf);
-    return false;
+    ESP_LOGW(TAG, "Failed to parse /api/settings response: '%.*s'", s_response_len, s_response_buf);
+    return;
   }
 
-  cJSON *value = cJSON_GetObjectItemCaseSensitive(root, "value");
-  if (!cJSON_IsNumber(value)) {
-    ESP_LOGW(TAG, "JSON response for %s had no numeric 'value' field: '%.*s'", path, s_response_len, s_response_buf);
+  cJSON *zone_cold_max_c = cJSON_GetObjectItemCaseSensitive(root, "zone_cold_max_c");
+  cJSON *zone_optimal_max_c = cJSON_GetObjectItemCaseSensitive(root, "zone_optimal_max_c");
+  cJSON *fast_rise_c_per_min = cJSON_GetObjectItemCaseSensitive(root, "fast_rise_c_per_min");
+  if (!cJSON_IsNumber(zone_cold_max_c) || !cJSON_IsNumber(zone_optimal_max_c) || !cJSON_IsNumber(fast_rise_c_per_min)) {
+    ESP_LOGW(TAG, "/api/settings response missing expected numeric fields: '%.*s'", s_response_len, s_response_buf);
     cJSON_Delete(root);
-    return false;
+    return;
   }
 
-  *out_value = (float) value->valuedouble;
+  ESP_LOGI(TAG, "Applying settings: zone_cold_max_c=%.1f zone_optimal_max_c=%.1f fast_rise_c_per_min=%.1f",
+           zone_cold_max_c->valuedouble, zone_optimal_max_c->valuedouble, fast_rise_c_per_min->valuedouble);
+  led_display_set_thresholds((float) zone_cold_max_c->valuedouble, (float) zone_optimal_max_c->valuedouble,
+                             (float) fast_rise_c_per_min->valuedouble);
+
   cJSON_Delete(root);
-  return true;
 }
 
-flue_reading_t flue_poll_once(void) {
-  flue_reading_t result = {0};
-
-  if (!s_have_ip) {
-    if (!resolve_flu_monitor(&s_cached_ip)) {
-      return result;
-    }
-    s_have_ip = true;
+// Applies the same sanity-clamp + suspicious-jump-confirmation gating the
+// old REST-polling version used, then hands a validated reading straight to
+// led_display_set_reading().
+static void handle_reading(cJSON *reading) {
+  cJSON *ok = cJSON_GetObjectItemCaseSensitive(reading, "thermocouple_ok");
+  cJSON *temperature_c_item = cJSON_GetObjectItemCaseSensitive(reading, "thermocouple_c");
+  cJSON *rate_item = cJSON_GetObjectItemCaseSensitive(reading, "thermocouple_rate_c_per_min");
+  if (!cJSON_IsTrue(ok) || !cJSON_IsNumber(temperature_c_item) || !cJSON_IsNumber(rate_item)) {
+    return;  // sidecar itself couldn't read the thermocouple this cycle -- nothing new to show
   }
 
-  float temperature_c;
-  if (!fetch_numeric_value(THERMOCOUPLE_PATH, &temperature_c)) {
-    return result;
-  }
+  float temperature_c = (float) temperature_c_item->valuedouble;
+  float rate_c_per_min = (float) rate_item->valuedouble;
 
   if (temperature_c < SANITY_MIN_C || temperature_c > SANITY_MAX_C) {
     ESP_LOGW(TAG, "Rejecting implausible reading: %.1f C", temperature_c);
-    return result;
+    return;
   }
 
   if (s_have_prev) {
@@ -194,27 +187,130 @@ flue_reading_t flue_poll_once(void) {
                   s_prev_temperature_c);
         s_pending_temperature_c = temperature_c;
         s_have_pending = true;
-        return result;
+        return;
       }
     }
     s_have_pending = false;
   }
 
-  // The rate is a secondary value -- if this particular fetch fails (a
-  // transient hiccup, say) it's better to show the correct temperature
-  // with a stable-looking rate than to reject the whole poll over it.
-  float rate_c_per_min = 0.0f;
-  if (!fetch_numeric_value(THERMOCOUPLE_RATE_PATH, &rate_c_per_min)) {
-    ESP_LOGW(TAG, "Rate fetch failed; treating as stable this poll");
-    rate_c_per_min = 0.0f;
-  }
-
-  result.valid = true;
-  result.temperature_c = temperature_c;
-  result.rate_c_per_min = rate_c_per_min;
+  ESP_LOGI(TAG, "Thermocouple: %.1f C (rate %.2f C/min)", temperature_c, rate_c_per_min);
 
   s_have_prev = true;
   s_prev_temperature_c = temperature_c;
+  s_have_ever_valid = true;
+  s_last_valid_us = esp_timer_get_time();
 
-  return result;
+  led_display_set_reading(true, temperature_c, rate_c_per_min);
+}
+
+static void handle_ws_message(const char *json, int len) {
+  cJSON *root = cJSON_ParseWithLength(json, len);
+  if (root == NULL) {
+    ESP_LOGW(TAG, "Failed to parse WS message: '%.*s'", len, json);
+    return;
+  }
+
+  cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+  if (cJSON_IsString(type) && strcmp(type->valuestring, "reading") == 0) {
+    cJSON *reading = cJSON_GetObjectItemCaseSensitive(root, "reading");
+    if (cJSON_IsObject(reading)) {
+      handle_reading(reading);
+    }
+  } else if (cJSON_IsString(type) && strcmp(type->valuestring, "settings_changed") == 0) {
+    // Deferred to settings_task -- a blocking HTTP GET has no business
+    // running directly on the WS client's own event-callback context.
+    xSemaphoreGive(s_refetch_settings_sem);
+  }
+
+  cJSON_Delete(root);
+}
+
+static void ws_event_handler(void *handler_arg, esp_event_base_t base, int32_t event_id, void *event_data) {
+  (void) handler_arg;
+  (void) base;
+  esp_websocket_event_data_t *data = event_data;
+
+  switch (event_id) {
+    case WEBSOCKET_EVENT_CONNECTED:
+      ESP_LOGI(TAG, "WebSocket connected");
+      break;
+    case WEBSOCKET_EVENT_DISCONNECTED:
+      ESP_LOGW(TAG, "WebSocket disconnected -- auto-reconnect will retry");
+      break;
+    case WEBSOCKET_EVENT_DATA:
+      // op_code 1 = text frame; ignore ping/pong/close housekeeping frames,
+      // which also surface here with op_code 0/9/10/8.
+      if (data->op_code != 1 || data->data_len <= 0) {
+        break;
+      }
+      // Reassemble a payload split across multiple events (won't normally
+      // happen at this message size, but payload_len > buffer_size would
+      // cause it) -- accumulate by payload_offset, dispatch once complete.
+      if (data->payload_offset == 0) {
+        s_ws_msg_len = 0;
+      }
+      int copy_len = data->data_len;
+      if (s_ws_msg_len + copy_len >= WS_MSG_BUF_SIZE) {
+        copy_len = WS_MSG_BUF_SIZE - 1 - s_ws_msg_len;
+      }
+      if (copy_len > 0) {
+        memcpy(s_ws_msg_buf + s_ws_msg_len, data->data_ptr, copy_len);
+        s_ws_msg_len += copy_len;
+      }
+      if (data->payload_offset + data->data_len >= data->payload_len) {
+        handle_ws_message(s_ws_msg_buf, s_ws_msg_len);
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+// Resolves the sidecar (retrying indefinitely -- it may simply not have
+// booted yet, a real race at power-on with no reason to give up), fetches
+// its initial settings, connects the WebSocket client, then just waits for
+// "settings changed" broadcasts to re-fetch. Runs for the lifetime of the
+// device; everything after the first connect is event-driven.
+static void settings_task(void *arg) {
+  (void) arg;
+
+  esp_ip4_addr_t ip;
+  while (!resolve_sidecar(&ip)) {
+    vTaskDelay(pdMS_TO_TICKS(MDNS_QUERY_TIMEOUT_MS));
+  }
+  ESP_LOGI(TAG, "Resolved %s to " IPSTR, FLU_MONITOR_MDNS_NAME, IP2STR(&ip));
+
+  fetch_and_apply_settings(&ip);
+
+  char ws_uri[URL_BUF_SIZE];
+  snprintf(ws_uri, sizeof(ws_uri), "ws://" IPSTR "/ws", IP2STR(&ip));
+
+  esp_websocket_client_config_t ws_config = {
+      .uri = ws_uri,
+  };
+  esp_websocket_client_handle_t ws_client = esp_websocket_client_init(&ws_config);
+  esp_websocket_register_events(ws_client, WEBSOCKET_EVENT_ANY, ws_event_handler, NULL);
+  esp_websocket_client_start(ws_client);
+
+  while (true) {
+    xSemaphoreTake(s_refetch_settings_sem, portMAX_DELAY);
+    ESP_LOGI(TAG, "Settings changed -- re-fetching");
+    fetch_and_apply_settings(&ip);
+  }
+}
+
+void flue_poll_init(void) {
+  ESP_ERROR_CHECK(mdns_init());
+  ESP_ERROR_CHECK(mdns_hostname_set("flu-display"));
+  ESP_ERROR_CHECK(mdns_instance_name_set("flu-display"));
+
+  s_refetch_settings_sem = xSemaphoreCreateBinary();
+  xTaskCreate(settings_task, "flue_settings", 4096, NULL, tskIDLE_PRIORITY + 1, NULL);
+}
+
+bool flue_poll_is_stale(void) {
+  if (!s_have_ever_valid) {
+    return true;
+  }
+  return (esp_timer_get_time() - s_last_valid_us) > (int64_t) STALE_READING_MS * 1000;
 }
