@@ -1,3 +1,23 @@
 # Milestone 1 (WiFi + captive portal only) target settings.
 CONFIG_IDF_TARGET="esp32"
 CONFIG_LWIP_MAX_SOCKETS=16
+
+# Milestone 4: OTA. Two 1500K app slots (comfortable headroom above the
+# ~984K current build size) instead of one single-app partition -- requires
+# a one-time full USB reflash on any device still running the old
+# single-app layout, since the partition table itself is changing.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_ota.csv"
+# The D32 Pro's flash chip is physically 16MB, but the build was only ever
+# told about 2MB of it (barely enough for one single-app slot) -- 4MB is
+# comfortable for two OTA slots with room to grow, still far short of what's
+# physically available.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+# A newly OTA'd image starts in "pending verify" state; if it doesn't
+# self-confirm via esp_ota_mark_app_valid_cancel_rollback() (main.c does
+# this once WiFi connects, on the theory that a build broken badly enough
+# to not do that is a build worth reverting), the bootloader automatically
+# reverts to the last known-good slot on next boot instead of getting
+# stuck on a bad image.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

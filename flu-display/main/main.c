@@ -15,10 +15,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "esp_ota_ops.h"
+
 #include "captive_portal.h"
 #include "config.h"
 #include "flue_poll.h"
 #include "led_display.h"
+#include "ota_server.h"
 #include "wifi_setup.h"
 
 static const char *TAG = "main";
@@ -51,6 +54,15 @@ void app_main(void) {
 
   if (connected) {
     ESP_LOGI(TAG, "Connected. Polling flu-monitor and driving the LED ring.");
+
+    // Confirms this image works well enough to join WiFi, canceling the
+    // bootloader's rollback timer for it. A build broken badly enough to
+    // never reach here leaves the last known-good image as the boot target
+    // on the next reset instead -- see sdkconfig.defaults for the rollback
+    // config this depends on.
+    esp_ota_mark_app_valid_cancel_rollback();
+
+    ota_server_start();
     flue_poll_init();
     led_display_init();
 
