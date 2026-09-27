@@ -35,6 +35,16 @@
 #define ZONE_GOOD_MAX_C         280.0f
 #define FAST_RISE_C_PER_MIN     20.0f
 
+// A computed rate smaller than this is treated as exactly 0 (stable) before
+// it reaches the LED logic -- same "ignore noise-sized changes" principle
+// as flu-monitor.yaml's own thermocouple_deadband_c. Without this, ordinary
+// poll-to-poll sensor jitter (a fraction of a degree over the 3s poll
+// interval) is enough to compute a small nonzero rate, which is fully
+// sufficient to trigger led_display.c's all-or-nothing trend-color swap
+// (unlike the pulse speed, that swap doesn't scale down for a tiny rate) --
+// observed live as a few spurious amber/blue flashes while sitting stable.
+#define RATE_DEADBAND_C_PER_MIN 3.0f
+
 // --- Milestone 3: LED ring ---
 
 #define LED_GPIO                13

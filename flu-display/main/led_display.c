@@ -113,6 +113,10 @@ static void render_task(void *arg) {
     rate_c_per_min = s_rate_c_per_min;
     portEXIT_CRITICAL(&s_state_lock);
 
+    if (fabsf(rate_c_per_min) < RATE_DEADBAND_C_PER_MIN) {
+      rate_c_per_min = 0.0f;
+    }
+
     uint32_t period_ms = valid ? rate_to_pulse_period_ms(rate_c_per_min) : IDLE_PULSE_PERIOD_MS;
     phase += 2.0 * M_PI * ((double) LED_RENDER_TICK_MS / (double) period_ms);
     if (phase > 2.0 * M_PI) {
