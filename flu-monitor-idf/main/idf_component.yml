@@ -1,2 +1,4 @@
 dependencies:
   espressif/mdns: ">=1.0.0"
+  esp-idf-lib/i2cdev: "*"
+  esp-idf-lib/mcp960x: "*"

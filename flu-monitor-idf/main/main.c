@@ -1,7 +1,10 @@
 // flu-monitor-idf: Milestone 1 -- WiFi (with stored credentials) + captive
 // portal fallback (with network scan and a "last attempt failed" state) +
-// mDNS + OTA. No sensors yet (Milestone 2). See the repo root CLAUDE.md and
-// the approved project plan for the full context and architecture rationale.
+// mDNS + OTA. Milestone 2 -- BMP581 + MCP9601 sensors, logged over serial
+// for a side-by-side comparison against the existing ESPHome sidecar; no
+// REST API, regression, or zone logic yet (Milestone 3). See the repo root
+// CLAUDE.md and the approved project plan for the full context and
+// architecture rationale.
 
 #include <stdbool.h>
 
@@ -17,9 +20,40 @@
 #include "captive_portal.h"
 #include "config.h"
 #include "ota_server.h"
+#include "sensors.h"
 #include "wifi_setup.h"
 
 static const char *TAG = "main";
+
+// Runs independent of WiFi state (both the connected idle loop and the
+// captive-portal branch below keep this alive) -- Milestone 2 is just
+// "prove the sensors work on real hardware," verified by eyeballing this
+// log against the existing ESPHome sidecar's readings, not by anything
+// reachable over the network yet.
+static void sensor_log_task(void *arg) {
+  (void) arg;
+  while (true) {
+    sensor_reading_t reading;
+    sensors_read(&reading);
+
+    if (reading.bmp581_ok) {
+      ESP_LOGI(TAG, "BMP581: %.2f C, %.1f Pa", reading.bmp581_temperature_c, reading.bmp581_pressure_pa);
+    } else {
+      ESP_LOGW(TAG, "BMP581: read failed");
+    }
+
+    if (reading.thermocouple_ok) {
+      ESP_LOGI(TAG, "MCP9601: thermocouple %.2f C, cold junction %.2f C", reading.thermocouple_c,
+               reading.cold_junction_c);
+    } else {
+      ESP_LOGW(TAG, "MCP9601: read failed");
+    }
+
+    // Matches the ESPHome sidecar's own 30s update_interval for a fair
+    // side-by-side comparison.
+    vTaskDelay(pdMS_TO_TICKS(30000));
+  }
+}
 
 static void init_nvs(void) {
   esp_err_t err = nvs_flash_init();
@@ -40,6 +74,11 @@ void app_main(void) {
   init_nvs();
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+  if (sensors_init() != ESP_OK) {
+    ESP_LOGW(TAG, "No sensors found at all -- continuing anyway (Milestone 2 verification build)");
+  }
+  xTaskCreate(sensor_log_task, "sensor_log", 4096, NULL, tskIDLE_PRIORITY + 1, NULL);
 
   char ssid[WIFI_SSID_MAX_LEN + 1] = {0};
   char pass[WIFI_PASS_MAX_LEN + 1] = {0};
@@ -72,7 +111,7 @@ void app_main(void) {
 
     while (true) {
       vTaskDelay(pdMS_TO_TICKS(10000));
-      ESP_LOGI(TAG, "(still connected, idling -- Milestone 1, no sensors yet)");
+      ESP_LOGI(TAG, "(still connected, idling -- sensor_log_task has the actual readings)");
     }
   } else {
     if (have_creds) {
