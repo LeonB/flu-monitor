@@ -38,6 +38,25 @@ surfaced and fixed a single-sample-trust bug in `flue_poll.c` (see below).
   single sample" principle already written down for the sidecar's own
   future alert logic (see `../flu-monitor/CLAUDE.md`), just not previously
   applied to the display.
+- **Rate-of-change is now polled from the sidecar's own "Thermocouple
+  Rate" sensor, not derived locally from repeated polls.** The original
+  local calc (a raw two-point delta between `flue_poll_once()` calls, real
+  elapsed time via `esp_timer_get_time()`) had a real bug: the mcp9600's own
+  `update_interval` is 30s, far slower than this device's 3s poll cadence,
+  but every poll still updates the "previous reading" timestamp regardless
+  of whether the underlying value actually changed -- so whenever it
+  finally did change, the full 30s-worth of delta got divided by an
+  assumed ~3s, making any real change look ~10x faster than it was.
+  Observed live as a few spurious amber/blue trend-color flashes while
+  sitting at an otherwise-stable reading (a `RATE_DEADBAND_C_PER_MIN`
+  deadband was added first as a quick mitigation -- it's still in
+  `led_display.c` and still useful as a perceptual floor, but the real fix
+  was computing the rate off the sensor's own real update cadence instead,
+  which only the sidecar can do). `flue_poll.c` now fetches
+  `/sensor/Thermocouple%20Rate` the same way it fetches the temperature
+  (factored into a shared `fetch_numeric_value()` helper, since there are
+  now two endpoints to poll instead of one) and no longer keeps its own
+  previous-timestamp state at all.
 - **Induction cooktops are a uniquely bad environment for testing a bare,
   unshielded thermocouple** -- observed wild, fast swings (e.g. 73C to 164C
   within a couple of minutes) that don't look like real thermal behavior

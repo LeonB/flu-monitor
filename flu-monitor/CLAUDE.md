@@ -203,6 +203,53 @@ The periodic (non-button) log to Sheets is gated, not unconditional every tick:
   minutes off of one bad reading) -- if that pattern reappears, suspect the clamp's
   range needs adjusting, not the deadband logic itself.
 
+## Rate-of-change and zone classification
+
+Computed here on the sidecar, not on `flu-display` -- deliberately. Two reasons:
+`flu-display` polls every 3s, far more often than the mcp9600's own 30s
+`update_interval`, so a rate computed there from raw two-point poll deltas was
+vulnerable to a real bug: a value that only actually changes once per 30s, but
+gets timestamped as if every poll were a fresh sample, makes any real delta
+look ~10x faster than it is (see `flu-display/CLAUDE.md`). Computing it here
+instead, off the sensor's own real update cadence, sidesteps that entirely.
+Second: doing it here means the algorithm's own live output can sit right next
+to the raw readings in the same Sheet, tagged by whatever burn was happening at
+the time -- directly useful for retroactively evaluating and retuning it
+against real data, which is the whole point of the current data-gathering
+phase.
+
+- **`zone_cold_max_c`/`zone_good_max_c`/`fast_rise_c_per_min` substitutions**
+  are the canonical copy of these placeholder thresholds -- `flu-display`
+  keeps its own copies too (`flu-display/main/config.h`), since its smooth
+  in-zone color gradient needs the actual numeric thresholds, not just a
+  discrete zone label. Keep both in sync by hand until real values replace
+  the placeholders.
+- **The rolling window and regression live in the `hot_junction`'s own
+  `on_value` trigger**, not a separate `interval:` tick -- `on_value` fires
+  exactly once per real sensor update, which is what makes the window's
+  timestamps trustworthy. Pushing to the window (and the sanity clamp
+  guarding it) happens *before* the Sheets-logging `interval:` tick even
+  runs; the two are independent consumers of the same underlying reading.
+- **The regression window's own sanity clamp is essential, not just
+  belt-and-suspenders**: a glitched reading admitted into a 6-sample window
+  corrupts the rate for the window's whole ~3-minute span, not just one
+  sample the way it would for a raw two-point delta -- so the same
+  `-40..600°C` clamp used for the Sheets-logging gate runs first here too,
+  skipping the whole update (window, rate, zone) on failure rather than
+  admitting a bad value.
+- **`Thermocouple Rate` and `Thermocouple Zone` are template sensors with
+  `update_interval: never`**, manually `publish_state()`'d from inside the
+  `on_value` lambda right after computing them -- not sensors with their own
+  periodic `update_interval`, which would just re-read stale globals on an
+  unrelated schedule instead of publishing exactly when a real computation
+  happened.
+- **`Code.gs`'s header-backfill logic was generalized** from "backfill just
+  the last column" (written for the one-off Event column addition) to a loop
+  backfilling any number of missing trailing columns, to handle the Rate and
+  Zone columns landing together. Existing sheets predating this get both new
+  header cells added automatically on the next write, same pattern as the
+  original Event-column backfill.
+
 ## Other notes
 
 - `secrets.yaml` and `.esphome/` are git-ignored.
