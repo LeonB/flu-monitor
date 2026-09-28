@@ -181,6 +181,17 @@ project's `sdkconfig.defaults`). Client tracking lives there now;
 `ws_handler()` itself only ever runs for a real subsequent frame (a client
 CLOSE, or draining an unexpected data frame).
 
+## The onboard NeoPixel's power line is shared with STEMMA QT
+
+`status_led.c` drives the onboard NeoPixel (GPIO0) as a solid WiFi-status
+color, but doesn't do any power-enable sequencing of its own -- Adafruit's
+own pinout docs confirm the NeoPixel and STEMMA QT connector share the same
+power-enable pin (`STEMMA_QT_POWER_GPIO`/GPIO2), and `sensors_init()`
+already drives it high, unconditionally, before `status_led_init()` is ever
+called in `main.c`. If `status_led_init()` is ever reordered to run before
+`sensors_init()`, the NeoPixel would stay dark regardless of what color it's
+told to show.
+
 ## `esp_http_client` needs its TLS cert bundle attached explicitly
 
 `sheets_logger.c`'s first version against the real Google Sheets webhook

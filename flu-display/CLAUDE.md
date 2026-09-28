@@ -287,6 +287,15 @@ broadcast" below.
   version unchanged. A poll/parse failure (or, now, an implausible/held
   broadcast) just leaves the display state as-is rather than showing a
   stale or guessed value.
+- **The onboard status LED (GPIO5) is wired active-low.** `status_led.c`
+  drives it to reflect WiFi connection state (see `README.md`). The first
+  version drove GPIO5 HIGH for "on," matching every other LED in both
+  projects (the NeoPixel ring, `flu-monitor-idf`'s onboard NeoPixel) --
+  confirmed dark on real hardware instead of lit. No pinout reference found
+  for this board documents the LED's polarity either way; the fix was
+  simply inverting the output (`STATUS_LED_ACTIVE_LOW` in `status_led.c`)
+  after observing it live, the same "judge on real hardware, don't assume"
+  lesson as the RGB color-tuning notes below.
 - **LED ring data line is on GPIO13, not the originally-planned GPIO25.**
   GPIO25 was chosen on the (wrong, for this board) assumption that GPIO12-15
   form the D32 Pro's onboard TF-card SPI bus, the ESP32's generic HSPI

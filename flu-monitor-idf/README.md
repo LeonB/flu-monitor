@@ -116,6 +116,15 @@ future `POST /api/event` (Milestone 7) will call
 woodstove annotation (Cold Start, Added Wood, etc.), already wired up on its
 own queue.
 
+## Onboard NeoPixel: WiFi status at a glance
+
+`status_led.c` drives the board's onboard NeoPixel as a solid color
+reflecting the WiFi connection lifecycle: **amber** while attempting to join
+stored credentials, **green** once connected (REST/WS/OTA all up), **red**
+while the setup access point / captive portal is active. Shares its
+power-enable line with STEMMA QT (GPIO2, already driven high by
+`sensors_init()` before this ever runs) — see `CLAUDE.md`.
+
 ## Hardware notes
 
 | Function              | Pin/value |
@@ -123,6 +132,7 @@ own queue.
 | STEMMA QT SDA          | GPIO22 |
 | STEMMA QT SCL          | GPIO20 |
 | STEMMA QT power        | GPIO2 (must be driven HIGH — see `CLAUDE.md`) |
+| Onboard NeoPixel data  | GPIO0 (WiFi status color, see above) |
 | BMP581 I2C address     | 0x47 (0x46 with SDO jumper cut) |
 | MCP9601 I2C address    | 0x67 |
 | I2C bus speed          | 50kHz (see `CLAUDE.md`'s MCP960x errata notes) |

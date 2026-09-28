@@ -49,6 +49,17 @@ machine that pushes updates. A device still running the old single-app
 partition table needs one full USB reflash first (`idf.py flash`) to switch
 partition layouts -- after that, OTA works going forward.
 
+## Onboard LED: WiFi status at a glance
+
+`status_led.c` blinks the board's onboard LED (separate from the 24-LED
+ring, which is dedicated to the temperature reading) to reflect the WiFi
+connection lifecycle: slow blink while attempting to join stored
+credentials, solid on once connected, fast blink while the setup access
+point / captive portal is active. Since it joins almost instantly whenever
+valid credentials are stored, the "connecting" blink is easy to miss —
+it's most visible during AP mode or a slow/failing join. See `CLAUDE.md`
+for the active-low wiring gotcha.
+
 ## Hardware notes
 
 | Function              | Pin/value |
@@ -57,3 +68,4 @@ partition layouts -- after that, OTA works going forward.
 | LED ring model        | 24x SK6812 RGBW |
 | LED ring power        | External 5V supply, **not** off the board's own 3.3V/USB rail |
 | Common ground         | Ring GND, ESP32 GND, and the 5V supply's GND all need to be tied together |
+| Onboard status LED    | GPIO5, wired **active-low** (see `CLAUDE.md`) |
