@@ -36,6 +36,20 @@ static void clients_add(int fd) {
   xSemaphoreGive(s_clients_mutex);
 }
 
+// Removing fd from s_client_fds[] only stops *this module* from trying to
+// send to it again -- it does nothing to the underlying httpd session,
+// which stays open (and still counted against max_open_sockets) until
+// something explicitly closes it. This was a real, confirmed bug: a WS
+// client going away uncleanly (WiFi drop, no close frame -- the normal
+// case, not the exception) leaked one httpd socket slot every time,
+// eventually pinning the server at max_open_sockets/max_open_sockets and
+// hanging every new request indefinitely (see CLAUDE.md's full writeup).
+// httpd_sess_trigger_close() is the documented way to close a session
+// from a context other than the httpd worker task itself, which this is
+// (send_work_cb runs on the httpd task via httpd_queue_work(), so it
+// could probably close directly, but ws_handler()'s own close-frame path
+// runs on the httpd task via the normal request-handling call chain where
+// closing this way is the documented, safe pattern either way).
 static void clients_remove(int fd) {
   xSemaphoreTake(s_clients_mutex, portMAX_DELAY);
   for (int i = 0; i < s_client_count; i++) {
@@ -47,6 +61,13 @@ static void clients_remove(int fd) {
     }
   }
   xSemaphoreGive(s_clients_mutex);
+
+  if (s_server != NULL) {
+    esp_err_t err = httpd_sess_trigger_close(s_server, fd);
+    if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
+      ESP_LOGW(TAG, "httpd_sess_trigger_close(fd=%d) failed: %s", fd, esp_err_to_name(err));
+    }
+  }
 }
 
 // httpd_ws_send_frame_async() is only safe to call from the httpd server's

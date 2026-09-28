@@ -250,12 +250,36 @@ during a hang would point at something else (a genuinely wedged task, not
 a resource leak). Deliberately synthetic load right after adding this
 (sequential and concurrent `curl` bursts) did **not** reproduce either
 hang, and the socket count stayed low (2-3) throughout -- whatever
-triggers the second failure mode likely needs something closer to the
-original real-world condition (an extended real browser session actively
-polling the dashboard every 5s for several minutes) rather than short
-scripted request bursts. Unresolved as of this writing; the logging is in
-place to gather real data the next time it happens rather than continuing
-to guess.
+triggers the second failure mode needed something closer to the original
+real-world condition, not short scripted request bursts.
+
+**Root cause found and fixed the next time it recurred.** The diagnostic
+caught it directly: `Open sockets: 7/7`, pinned across multiple 30s ticks,
+while `ws_server.c`'s own client count showed only 1-2 -- meaning most of
+those 7 httpd sessions weren't legitimate, currently-tracked WS clients at
+all. The bug: `ws_server.c`'s `clients_remove()` (called when a broadcast
+send to a client fails, or a clean WS close frame arrives) only removed
+the fd from *its own* bookkeeping array -- it never told httpd to actually
+close the underlying session. A WS client going away uncleanly (a WiFi
+drop with no close frame -- the normal case on this network, not the
+exception) permanently leaked one httpd socket slot, every single time.
+Fixed by also calling `httpd_sess_trigger_close(s_server, fd)` (the
+documented API for closing a session from a context other than the httpd
+worker task itself) in `clients_remove()`.
+
+Verified live: before the fix, a pinned 7/7 never recovered on its own,
+not even after many minutes with zero new client activity. After the fix,
+a post-reboot burst of reconnect activity (`flu-display` re-establishing
+its WS connection after `flu-monitor`'s own restart) still spiked the
+count to 7/7 briefly, but it now **recovers** -- settling back down and
+holding steady (observed at 4/7, stable for 2+ minutes) instead of staying
+pinned. That settled count is still higher than the "just 1 legitimate
+WS client" baseline would suggest, which points at some remaining
+churn/slow-to-detect staleness (each stale fd is only pruned reactively,
+on the *next* failed broadcast attempt against it specifically, up to a
+30s wait) -- worth continued attention via this same logging, but the
+severe failure mode (permanent, total lockup with zero recovery) is
+confirmed fixed.
 
 ## `EMBED_FILES` collides on basename, not full path
 
