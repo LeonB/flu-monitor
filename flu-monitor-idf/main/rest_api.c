@@ -25,9 +25,6 @@ static double round_to(double value, double step) {
 
 char *rest_api_reading_json(const sensor_reading_t *r) {
   cJSON *root = cJSON_CreateObject();
-  cJSON_AddBoolToObject(root, "bmp581_ok", r->bmp581_ok);
-  cJSON_AddNumberToObject(root, "bmp581_temperature_c", round_to(r->bmp581_temperature_c, 0.1));
-  cJSON_AddNumberToObject(root, "bmp581_pressure_pa", round_to(r->bmp581_pressure_pa, 1.0));
   cJSON_AddBoolToObject(root, "thermocouple_ok", r->thermocouple_ok);
   cJSON_AddNumberToObject(root, "thermocouple_c", round_to(r->thermocouple_c, 0.1));
   cJSON_AddNumberToObject(root, "cold_junction_c", round_to(r->cold_junction_c, 0.1));

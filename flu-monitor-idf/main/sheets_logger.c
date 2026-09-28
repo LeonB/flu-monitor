@@ -41,11 +41,8 @@ static void log_to_sheets(const sensor_reading_t *reading, const settings_t *set
   }
 
   char url[URL_BUF_SIZE];
-  int len = snprintf(url, sizeof(url),
-                     "%s?secret=%s&temperature=%.1f&pressure=%.0f&thermocouple=%.1f&cold_junction=%.1f&rate=%.2f&"
-                     "zone=%s&event=%s",
-                     settings->google_sheets_webhook_url, settings->google_sheets_secret,
-                     reading->bmp581_temperature_c, reading->bmp581_pressure_pa, reading->thermocouple_c,
+  int len = snprintf(url, sizeof(url), "%s?secret=%s&thermocouple=%.1f&cold_junction=%.1f&rate=%.2f&zone=%s&event=%s",
+                     settings->google_sheets_webhook_url, settings->google_sheets_secret, reading->thermocouple_c,
                      reading->cold_junction_c, reading->thermocouple_rate_c_per_min,
                      thermocouple_zone_name(reading->thermocouple_zone), event);
   if (len < 0 || (size_t) len >= sizeof(url)) {

@@ -1,6 +1,7 @@
 // flu-monitor-idf: Milestone 1 -- WiFi (with stored credentials) + captive
 // portal fallback (with network scan and a "last attempt failed" state) +
-// mDNS + OTA. Milestone 2 -- BMP581 + MCP9601 sensors. Milestone 3 --
+// mDNS + OTA. Milestone 2 -- BMP581 + MCP9601 sensors (BMP581 since
+// physically removed from the board -- see sensors.c). Milestone 3 --
 // NVS-backed settings, rate/zone regression, and a REST API (GET
 // /api/reading, GET+POST /api/settings). Milestone 4 -- a /ws WebSocket
 // endpoint broadcasting each reading + settings-changed events, for
@@ -43,12 +44,6 @@ static void sensor_log_task(void *arg) {
   while (true) {
     sensor_reading_t reading;
     sensors_read(&reading);
-
-    if (reading.bmp581_ok) {
-      ESP_LOGI(TAG, "BMP581: %.2f C, %.1f Pa", reading.bmp581_temperature_c, reading.bmp581_pressure_pa);
-    } else {
-      ESP_LOGW(TAG, "BMP581: read failed");
-    }
 
     if (reading.thermocouple_ok) {
       ESP_LOGI(TAG, "MCP9601: thermocouple %.2f C, cold junction %.2f C, rate %.2f C/min, zone %s",

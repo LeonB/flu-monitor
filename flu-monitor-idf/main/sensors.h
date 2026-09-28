@@ -25,10 +25,6 @@ const char *thermocouple_zone_name(thermocouple_zone_t zone);
 bool thermocouple_reading_plausible(float c);
 
 typedef struct {
-  bool bmp581_ok;
-  float bmp581_temperature_c;
-  float bmp581_pressure_pa;
-
   bool thermocouple_ok;
   float thermocouple_c;   // hot-junction, cold-junction compensated -- raw, always reported as read (see sensors.c)
   float cold_junction_c;  // MCP9601's own ambient/cold-junction sensor
@@ -42,17 +38,15 @@ typedef struct {
   thermocouple_zone_t thermocouple_zone;
 } sensor_reading_t;
 
-// Brings up the shared I2C bus and both sensors (BMP581 + MCP9601). Logs
-// which of the two were found; a missing/failed one doesn't prevent the
-// other from working (see sensors_read()'s per-sensor 'ok' fields) -- this
-// is Milestone 2, verifying the hardware works at all, not yet wired into
-// any alerting that would need both.
+// Brings up the shared I2C bus and the MCP9601. Logs whether it was found
+// -- a missing/failed sensor doesn't prevent boot (see sensors_read()'s
+// thermocouple_ok field).
 esp_err_t sensors_init(void);
 
-// Takes one reading from each sensor (BMP581 in forced/single-shot mode,
-// MCP9601 already free-running at its own internal cadence), and -- if the
-// thermocouple reading is plausible -- admits it into the rate/zone
-// regression window. Call this on a fixed, sensor-matching cadence only
+// Takes one reading from the MCP9601 (already free-running at its own
+// internal cadence), and -- if the thermocouple reading is plausible --
+// admits it into the rate/zone regression window. Call this on a fixed,
+// sensor-matching cadence only
 // (currently every 30s, from main.c's sensor_log_task): the regression
 // assumes each call is a genuinely new sample at that cadence, which is
 // exactly the assumption an arbitrary-rate poller (e.g. a REST client) would

@@ -24,7 +24,10 @@ live readings to `flu-display` instead.
   mDNS + OTA.
 - **Milestone 2**: BMP581 + MCP9601 both reading correctly, verified
   side-by-side against the ESPHome sidecar's own values on the same physical
-  sensors.
+  sensors. (The BMP581 was later physically removed from the board -- its
+  ambient temperature reading was almost a duplicate of the MCP9601's own
+  cold-junction reading -- and all BMP581 code has since been removed; see
+  "BMP581 removed" below.)
 - **Milestone 3**: NVS-backed settings (replacing ESPHome's YAML
   `substitutions:`), the rate/zone regression ported from the ESPHome
   lambda, and a REST API (`GET /api/reading`, `GET`/`POST /api/settings`).
@@ -85,11 +88,12 @@ ESPHome sidecar's own writeup already covers:
   parallel with* the breakout boards' own pull-ups. This rewrite wasn't
   doing that at first. The extra pull-up speeds up the bus's rise time,
   which matters here: slower edges distort SCL's effective duty cycle
-  enough to trip the errata even at a "safe" nominal frequency. Both
-  `init_mcp9601()` and `init_bmp581()` now explicitly set
-  `sda_pullup_en`/`scl_pullup_en = true` on their `i2c_dev_t` before the
-  first real transaction, matching ESPHome's default rather than relying on
-  the driver's own default of `false`.
+  enough to trip the errata even at a "safe" nominal frequency.
+  `init_mcp9601()` explicitly sets `sda_pullup_en`/`scl_pullup_en = true` on
+  its `i2c_dev_t` before the first real transaction, matching ESPHome's
+  default rather than relying on the driver's own default of `false` (the
+  now-removed BMP581 init did the same, for the same reason, while it was
+  still on the board).
 - **The MCP9601's device-config register (mode/ADC-resolution/burst count)
   is never touched by esp-idf-lib's `mcp960x` driver** — it's left at
   whatever the power-on-reset default is. ESPHome's own `mcp9600.cpp`
@@ -228,20 +232,34 @@ poisoning the ~3-minute window.
 
 ## Sensor drivers: vendored official/registry drivers, not copied ESPHome components
 
-BMP581 uses Bosch's own official `BMP5_SensorAPI` (`components/bmp5/`,
-vendored verbatim, BSD-3-Clause) plus a ~40-line ESP-IDF/i2cdev glue layer
-(`bmp5_port.c/.h`). MCP9601 uses `esp-idf-lib/mcp960x` via the component
-registry. Deliberately *not* copying ESPHome's own `bmp581_base.cpp`/
-`mcp9600.cpp` directly, even though their source was extremely useful for
-finding the gotchas above: ESPHome is GPL-3.0 (a real copyleft concern for
-otherwise BSD-3 vendored code), and those files are written against
-ESPHome's own `Component`/`i2c::I2CDevice` base classes and HAL — not
-standalone, and pulling them in would drag along a meaningful slice of
-ESPHome's own core, working against the entire reason this rewrite exists.
-Reading ESPHome's source for the *procedural knowledge* (which register,
-which pin, which order) while keeping the actual driver code as the
-manufacturer's/registry's own reference implementation got the same
-debugging value without either problem.
+MCP9601 uses `esp-idf-lib/mcp960x` via the component registry. Deliberately
+*not* copying ESPHome's own `mcp9600.cpp` directly, even though its source
+was extremely useful for finding the gotchas above: ESPHome is GPL-3.0 (a
+real copyleft concern for otherwise permissively-licensed vendored code),
+and that file is written against ESPHome's own `Component`/`i2c::I2CDevice`
+base classes and HAL — not standalone, and pulling it in would drag along a
+meaningful slice of ESPHome's own core, working against the entire reason
+this rewrite exists. Reading ESPHome's source for the *procedural knowledge*
+(which register, which pin, which order) while keeping the actual driver
+code as the manufacturer's/registry's own reference implementation got the
+same debugging value without either problem. (The BMP581 previously used the
+same approach -- Bosch's own official `BMP5_SensorAPI`, vendored verbatim --
+before the sensor and all its code were removed; see "BMP581 removed"
+below.)
+
+## BMP581 removed
+
+The BMP581 (pressure/ambient-temperature sensor) was physically removed from
+the board -- its ambient temperature reading was almost a duplicate of the
+MCP9601's own cold-junction reading, so it wasn't earning its board space.
+All BMP581 code was removed to match: `sensors.c/.h`'s `bmp581_*` fields and
+`init_bmp581()`/`read_bmp581()`, `rest_api.c`'s `bmp581_*` JSON fields, the
+vendored `components/bmp5/` directory, and its `bmp5`/`BMP581_I2C_ADDR`
+references in `CMakeLists.txt`/`config.h`. `sheets_logger.c`'s webhook URL
+also dropped its `temperature`/`pressure` query params, which were sourced
+from the BMP581 -- **the Google Apps Script webhook itself (external to this
+repo) may still expect those params**; not updated here since its source
+isn't tracked in this repo.
 
 ## Misc
 

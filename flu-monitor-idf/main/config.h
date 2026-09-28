@@ -24,7 +24,7 @@
 // cutover (see the project plan's "Recommended structure" section).
 #define MDNS_HOSTNAME       "flu-monitor-idf"
 
-// --- Milestone 2: sensors (BMP581 + MCP9601 over I2C) ---
+// --- Milestone 2: sensors (MCP9601 over I2C; BMP581 physically removed) ---
 
 // Same bus/pins as the existing ESPHome sidecar's flu-monitor.yaml `i2c:`
 // block -- keeps this rewrite's readings directly comparable to it.
@@ -42,7 +42,6 @@
 // up (github.com/adafruit/Adafruit_Wippersnapper_Arduino/issues/299).
 #define I2C_FREQ_HZ       50000
 
-#define BMP581_I2C_ADDR   0x47  // Adafruit breakout default (SDO floating/high)
 #define MCP9601_I2C_ADDR  0x67  // Adafruit breakout default (ADDR floating/high)
 
 // The Feather V2's STEMMA QT connector's power is gated by a FET switch on

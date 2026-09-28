@@ -2,7 +2,6 @@
 
 #include <string.h>
 
-#include "bmp5_port.h"
 #include "i2cdev.h"
 #include "mcp960x.h"
 
@@ -209,13 +208,6 @@ static bool i2c_bus_recover(gpio_num_t scl_pin, gpio_num_t sda_pin) {
 static mcp960x_t s_mcp;
 static bool s_mcp_ready = false;
 
-static bmp5_port_t s_bmp;
-static bool s_bmp_ready = false;
-// Set once at init, reused for every forced-mode read -- bmp5_get_sensor_data()
-// takes this as an input alongside the raw ADC data (Bosch's compensation
-// math needs it), not just a one-time "set and forget" register write.
-static struct bmp5_osr_odr_press_config s_bmp_osr_cfg;
-
 static esp_err_t init_mcp9601(void) {
   esp_err_t err = mcp960x_init_desc(&s_mcp, MCP9601_I2C_ADDR, I2C_NUM_0, I2C_SDA_GPIO, I2C_SCL_GPIO);
   if (err != ESP_OK) {
@@ -277,72 +269,13 @@ static esp_err_t init_mcp9601(void) {
   return ESP_OK;
 }
 
-static esp_err_t init_bmp581(void) {
-  esp_err_t err = bmp5_port_init_desc(&s_bmp, BMP581_I2C_ADDR, I2C_NUM_0, I2C_SDA_GPIO, I2C_SCL_GPIO, I2C_FREQ_HZ);
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "BMP581: i2cdev descriptor init failed: %s", esp_err_to_name(err));
-    return err;
-  }
-  // See the matching comment in init_mcp9601() -- same bus, same reasoning.
-  s_bmp.i2c_dev.cfg.sda_pullup_en = true;
-  s_bmp.i2c_dev.cfg.scl_pullup_en = true;
-
-  int8_t rslt = bmp5_soft_reset(&s_bmp.bosch_dev);
-  if (rslt != BMP5_OK) {
-    ESP_LOGW(TAG, "BMP581: soft reset failed (%d) -- not present or wrong address?", rslt);
-    return ESP_FAIL;
-  }
-
-  rslt = bmp5_init(&s_bmp.bosch_dev);
-  if (rslt != BMP5_OK) {
-    ESP_LOGW(TAG, "BMP581: init failed (%d)", rslt);
-    return ESP_FAIL;
-  }
-  ESP_LOGI(TAG, "BMP581: found, chip_id=0x%02x", s_bmp.bosch_dev.chip_id);
-
-  // oversampling 8x/16x, iir_filter 4x -- matches the ESPHome sidecar's
-  // bmp581_i2c config (COEFF_3 is that driver's own "4x" step; see the
-  // macro table in bmp5_defs.h) for the same apples-to-apples comparison.
-  s_bmp_osr_cfg.osr_t = BMP5_OVERSAMPLING_8X;
-  s_bmp_osr_cfg.osr_p = BMP5_OVERSAMPLING_16X;
-  s_bmp_osr_cfg.press_en = BMP5_ENABLE;
-  s_bmp_osr_cfg.odr = BMP5_ODR_240_HZ;  // irrelevant in forced mode -- we trigger every reading ourselves
-  rslt = bmp5_set_osr_odr_press_config(&s_bmp_osr_cfg, &s_bmp.bosch_dev);
-  if (rslt != BMP5_OK) {
-    ESP_LOGW(TAG, "BMP581: osr/odr config failed (%d)", rslt);
-    return ESP_FAIL;
-  }
-
-  struct bmp5_iir_config iir_cfg = {
-      .set_iir_t = BMP5_IIR_FILTER_COEFF_3,
-      .set_iir_p = BMP5_IIR_FILTER_COEFF_3,
-  };
-  rslt = bmp5_set_iir_config(&iir_cfg, &s_bmp.bosch_dev);
-  if (rslt != BMP5_OK) {
-    ESP_LOGW(TAG, "BMP581: iir config failed (%d)", rslt);
-    return ESP_FAIL;
-  }
-
-  // The INT_STATUS register's DRDY bit (what read_bmp581() polls after
-  // triggering a forced read) only ever latches once this source is
-  // enabled -- purely a register gate, independent of whether an actual
-  // interrupt pin is wired up.
-  struct bmp5_int_source_select int_source = {.drdy_en = BMP5_ENABLE};
-  rslt = bmp5_int_source_select(&int_source, &s_bmp.bosch_dev);
-  if (rslt != BMP5_OK) {
-    ESP_LOGW(TAG, "BMP581: drdy interrupt source select failed (%d)", rslt);
-    return ESP_FAIL;
-  }
-
-  return ESP_OK;
-}
-
 esp_err_t sensors_init(void) {
   s_last_reading_mutex = xSemaphoreCreateMutex();
 
-  // The Feather V2's STEMMA QT connector (both sensors) is unpowered until
-  // this is driven high -- see config.h's STEMMA_QT_POWER_GPIO comment. Must
-  // happen before anything else here touches the bus.
+  // The Feather V2's STEMMA QT connector is unpowered until this is driven
+  // high -- see config.h's STEMMA_QT_POWER_GPIO comment (also gates the
+  // onboard NeoPixel, see status_led.c). Must happen before anything else
+  // here touches the bus.
   gpio_config_t power_cfg = {
       .pin_bit_mask = 1ULL << STEMMA_QT_POWER_GPIO,
       .mode = GPIO_MODE_OUTPUT,
@@ -359,50 +292,8 @@ esp_err_t sensors_init(void) {
   ESP_ERROR_CHECK(i2cdev_init());
 
   s_mcp_ready = init_mcp9601() == ESP_OK;
-  s_bmp_ready = init_bmp581() == ESP_OK;
 
-  return (s_mcp_ready || s_bmp_ready) ? ESP_OK : ESP_FAIL;
-}
-
-static bool read_bmp581(float *temperature_c, float *pressure_pa) {
-  if (!s_bmp_ready) {
-    return false;
-  }
-
-  int8_t rslt = bmp5_set_power_mode(BMP5_POWERMODE_FORCED, &s_bmp.bosch_dev);
-  if (rslt != BMP5_OK) {
-    ESP_LOGW(TAG, "BMP581: trigger forced read failed (%d)", rslt);
-    return false;
-  }
-
-  // Poll for data-ready rather than a blind delay -- conversion time
-  // depends on the OSR settings above; this comfortably covers them
-  // without hardcoding a worst-case guess.
-  bool ready = false;
-  for (int i = 0; i < 50; i++) {
-    uint8_t int_status = 0;
-    rslt = bmp5_get_interrupt_status(&int_status, &s_bmp.bosch_dev);
-    if (rslt == BMP5_OK && (int_status & BMP5_INT_ASSERTED_DRDY)) {
-      ready = true;
-      break;
-    }
-    vTaskDelay(pdMS_TO_TICKS(10));
-  }
-  if (!ready) {
-    ESP_LOGW(TAG, "BMP581: data-ready timeout");
-    return false;
-  }
-
-  struct bmp5_sensor_data data;
-  rslt = bmp5_get_sensor_data(&data, &s_bmp_osr_cfg, &s_bmp.bosch_dev);
-  if (rslt != BMP5_OK) {
-    ESP_LOGW(TAG, "BMP581: read failed (%d)", rslt);
-    return false;
-  }
-
-  *temperature_c = data.temperature;
-  *pressure_pa = data.pressure;
-  return true;
+  return s_mcp_ready ? ESP_OK : ESP_FAIL;
 }
 
 static bool read_mcp9601(float *thermocouple_c, float *cold_junction_c) {
@@ -422,7 +313,6 @@ static bool read_mcp9601(float *thermocouple_c, float *cold_junction_c) {
 
 void sensors_read(sensor_reading_t *out) {
   memset(out, 0, sizeof(*out));
-  out->bmp581_ok = read_bmp581(&out->bmp581_temperature_c, &out->bmp581_pressure_pa);
   out->thermocouple_ok = read_mcp9601(&out->thermocouple_c, &out->cold_junction_c);
 
   if (out->thermocouple_ok) {

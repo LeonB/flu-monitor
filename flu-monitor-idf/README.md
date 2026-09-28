@@ -1,16 +1,20 @@
 # flu-monitor-idf
 
 Plain ESP-IDF (not ESPHome/Arduino) rewrite of the `flu-monitor` sidecar, for
-the same **Adafruit ESP32 Feather V2** with an **Adafruit BMP581**
-(pressure/temperature) and an **Adafruit MCP9601** (K-type thermocouple amp),
-both over STEMMA QT. See the repo root `CLAUDE.md` for why this rewrite
-exists and its relationship to `../flu-monitor/` (the still-running ESPHome
-original, kept as a rollback path) and `../flu-display/`, and this folder's
-own `CLAUDE.md` for implementation-specific gotchas.
+the same **Adafruit ESP32 Feather V2** with an **Adafruit MCP9601** (K-type
+thermocouple amp) over STEMMA QT. See the repo root `CLAUDE.md` for why this
+rewrite exists and its relationship to `../flu-monitor/` (the still-running
+ESPHome original, kept as a rollback path) and `../flu-display/`, and this
+folder's own `CLAUDE.md` for implementation-specific gotchas.
+
+An onboard **Adafruit BMP581** (pressure/temperature) was originally
+alongside it, but has since been physically removed — its ambient
+temperature reading was almost a duplicate of the MCP9601's own cold-junction
+reading, so it wasn't earning its board space. No BMP581 code remains.
 
 **Status: Milestones 1-5 done and verified on real hardware** (WiFi + captive
-portal + mDNS + OTA; BMP581 + MCP9601 sensors; NVS-backed settings + REST API
-+ rate/zone regression; WebSocket broadcast, now consumed by `../flu-display/`
+portal + mDNS + OTA; MCP9601 sensor; NVS-backed settings + REST API + rate/
+zone regression; WebSocket broadcast, now consumed by `../flu-display/`
 instead of it polling REST; Google Sheets logging, verified against the real
 production webhook). Milestones 6-7 (web UI, event buttons) not yet built.
 
@@ -22,7 +26,7 @@ production webhook). Milestones 6-7 (web UI, event buttons) not yet built.
 - `main/config.h` — compile-time tunables and first-boot setting defaults
 - `main/settings.c/.h` — NVS-backed runtime settings (zone thresholds,
   fast-rise rate, deadband, heartbeat, Google Sheets webhook/secret)
-- `main/sensors.c/.h` — BMP581 + MCP9601 init/read, I2C bus recovery, and the
+- `main/sensors.c/.h` — MCP9601 init/read, I2C bus recovery, and the
   rate/zone regression (ported from the ESPHome sidecar's own lambda)
 - `main/rest_api.c/.h` — `GET /api/reading`, `GET`/`POST /api/settings`
 - `main/ws_server.c/.h` — `/ws` broadcast endpoint (reading + settings-changed
@@ -32,8 +36,6 @@ production webhook). Milestones 6-7 (web UI, event buttons) not yet built.
   Script response never blocks sensor sampling or the REST/WS servers
 - `main/ota_server.c/.h` — authenticated `POST /ota` endpoint, registered onto
   `rest_api`'s shared HTTP server (only one server can bind port 80)
-- `components/bmp5/` — Bosch's official `BMP5_SensorAPI` (vendored, BSD-3)
-  plus a small ESP-IDF/i2cdev glue layer (`bmp5_port.c/.h`)
 - `components/wifi_setup/`, `components/captive_portal/`, `components/dns_server/`
   — WiFi credential storage (NVS) and the fallback setup access point, with a
   live test-connect-before-save flow (see `CLAUDE.md`)
@@ -133,6 +135,5 @@ power-enable line with STEMMA QT (GPIO2, already driven high by
 | STEMMA QT SCL          | GPIO20 |
 | STEMMA QT power        | GPIO2 (must be driven HIGH — see `CLAUDE.md`) |
 | Onboard NeoPixel data  | GPIO0 (WiFi status color, see above) |
-| BMP581 I2C address     | 0x47 (0x46 with SDO jumper cut) |
 | MCP9601 I2C address    | 0x67 |
 | I2C bus speed          | 50kHz (see `CLAUDE.md`'s MCP960x errata notes) |

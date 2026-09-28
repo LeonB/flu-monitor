@@ -13,9 +13,10 @@ below):
   rollback path throughout that rewrite.
 - **`flu-monitor-idf/`** — the sidecar's **plain ESP-IDF rewrite**, same
   physical role/hardware as `flu-monitor/`. In progress: Milestones 1-5 done
-  and verified on real hardware (WiFi/captive portal/mDNS/OTA; BMP581 +
-  MCP9601 sensors; NVS-backed settings + REST API + rate/zone regression;
-  WebSocket broadcast, now consumed by `flu-display/` below; Google Sheets
+  and verified on real hardware (WiFi/captive portal/mDNS/OTA; MCP9601
+  sensor -- the BMP581 originally alongside it was physically removed, see
+  `flu-monitor-idf/CLAUDE.md`; NVS-backed settings + REST API + rate/zone
+  regression; WebSocket broadcast, now consumed by `flu-display/` below; Google Sheets
   logging, verified against the real production webhook), Milestones 6-7
   not yet built (see `flu-monitor-idf/README.md`'s Status section for the
   exact cutoff). Not yet adopted as the production sidecar —
