@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Flu Monitor</title>
+<link rel="stylesheet" href="/dashboard.css">
+<style>
+  body { margin: 0; padding: 0; min-height: 100vh; box-sizing: border-box; overflow-x: hidden; }
+  .screen { max-width: 460px; margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; box-sizing: border-box; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; padding: 16px 16px 0; }
+  .topbar h2 { margin: 0; }
+  .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent-2); display: inline-block; margin-right: 6px; }
+  .stale .live-dot { background: var(--color-neutral-500); }
+  .glow-wrap { flex: 1; display: grid; place-items: center; padding: 24px; min-height: 320px; }
+  .glow-outer { width: 280px; height: 280px; border-radius: 50%; display: grid; place-items: center; transition: box-shadow .3s ease; }
+  .glow-inner { width: 200px; height: 200px; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; transition: background-color .15s linear, color .15s linear; }
+  .glow-temp { font-family: var(--font-heading); font-size: 68px; line-height: 1; }
+  .glow-rate { font-size: 14px; font-weight: 600; }
+  .zone-range { display: flex; justify-content: space-between; padding: 0 24px; font-size: 13px; color: var(--color-neutral-700); }
+  .actions { padding: 16px; }
+  .footer-nav { display: flex; justify-content: center; gap: 24px; padding: 10px 16px 20px; }
+  .footer-nav button { background: none; border: none; font: inherit; color: var(--color-neutral-700); font-size: 14px; font-weight: 600; cursor: pointer; padding: 8px; }
+  .sheet-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 10; }
+  .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 11; background: var(--color-bg); border-radius: 28px 28px 0 0; padding: 12px 16px 24px; box-shadow: var(--shadow-lg); max-height: 80vh; overflow-y: auto; }
+  .sheet-handle { width: 40px; height: 5px; border-radius: 999px; background: var(--color-neutral-400); margin: 0 auto 14px; }
+  .event-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+  .event-btn { height: 64px; border-radius: 20px; background: var(--color-surface); font-size: 15px; font-weight: 600; border: none; cursor: pointer; font-family: inherit; color: var(--color-text); }
+  .event-btn:active { background: var(--color-accent-200); }
+  .toast { position: fixed; left: 16px; right: 16px; bottom: 24px; z-index: 20; background: var(--color-text); color: var(--color-bg); padding: 14px 18px; border-radius: 999px; font-size: 14px; font-weight: 600; text-align: center; box-shadow: var(--shadow-lg); }
+  .graph-screen { padding: 16px; display: flex; flex-direction: column; gap: 14px; min-height: 100vh; box-sizing: border-box; }
+  .graph-card { background: var(--color-surface); border-radius: 28px; padding: 14px 12px; }
+  .graph-legend { display: flex; gap: 14px; font-size: 12px; color: var(--color-neutral-700); flex-wrap: wrap; }
+  .graph-legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .settings-screen { padding: 16px 16px 110px; display: flex; flex-direction: column; gap: 18px; }
+  .field-group h6 { margin: 0 0 6px 12px; color: var(--color-neutral-700); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .field-list { padding: 4px; border-radius: 28px; background: var(--color-surface); display: flex; flex-direction: column; }
+  .field-row { display: flex; align-items: center; gap: 10px; padding: 10px 8px 10px 16px; }
+  .field-row + .field-row { border-top: 1px solid var(--color-divider); }
+  .field-row .field-label { flex: 1; font-size: 15px; font-weight: 600; }
+  .stepper { display: flex; align-items: center; border-radius: 999px; background: var(--color-bg); }
+  .stepper.changed { box-shadow: 0 0 0 2px var(--color-accent); }
+  .stepper button { width: 40px; height: 40px; border-radius: 50%; border: none; background: none; font-size: 18px; font-family: inherit; cursor: pointer; color: var(--color-text); }
+  .stepper .stepper-value { min-width: 68px; text-align: center; font-weight: 700; font-size: 14px; }
+  .text-field { padding: 10px 16px 14px; }
+  .text-field label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .save-bar { position: fixed; left: 16px; right: 16px; bottom: 16px; max-width: 428px; margin: 0 auto; padding: 8px 8px 8px 20px; border-radius: 999px; background: var(--color-text); color: var(--color-bg); display: flex; align-items: center; gap: 10px; box-shadow: var(--shadow-lg); }
+  .save-bar span { flex: 1; font-size: 14px; font-weight: 600; }
+  .save-bar button { height: 44px; border-radius: 999px; border: none; font: inherit; font-weight: 600; cursor: pointer; padding: 0 18px; }
+  .btn-revert { background: none; color: var(--color-bg); }
+  .btn-save { background: var(--color-accent); color: var(--color-bg); font-size: 15px; }
+</style>
+</head>
+<body x-data="app()" x-init="init()">
+
+  <!-- ============ Dashboard ============ -->
+  <template x-if="view === 'dashboard'">
+    <div class="screen">
+      <div class="topbar">
+        <div :class="{ stale: isStale }" style="display:flex;align-items:center;font-size:13px;color:var(--color-neutral-700)">
+          <span class="live-dot"></span>
+          <span x-text="isStale ? 'No recent reading' : 'Live'"></span>
+        </div>
+        <button class="btn btn-secondary btn-icon" aria-label="Settings" @click="openSettings()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"></path></svg>
+        </button>
+      </div>
+
+      <div class="glow-wrap">
+        <div class="glow-outer" :style="glowOuterStyle">
+          <div class="glow-inner" :style="glowInnerStyle">
+            <template x-if="reading.thermocouple_ok">
+              <div class="glow-temp" x-text="Math.round(reading.thermocouple_c) + '°'"></div>
+            </template>
+            <template x-if="!reading.thermocouple_ok">
+              <div class="glow-temp" style="font-size:28px">No reading</div>
+            </template>
+            <div class="glow-rate" x-show="reading.thermocouple_ok" x-text="rateLabel"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="zone-range">
+        <span x-text="'Cold below ' + Math.round(settings.zone_cold_max_c) + '°C'"></span>
+        <span x-text="'Hot above ' + Math.round(settings.zone_optimal_max_c) + '°C'"></span>
+      </div>
+
+      <div class="actions">
+        <button class="btn btn-primary btn-block" style="height:60px;font-size:17px;gap:10px" @click="openSheet()">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
+          Log what you did
+        </button>
+      </div>
+
+      <div class="footer-nav">
+        <button @click="openGraph()">Last 24 hours →</button>
+      </div>
+    </div>
+  </template>
+
+  <!-- Event-log bottom sheet -->
+  <template x-if="sheetOpen">
+    <div>
+      <div class="sheet-backdrop" @click="sheetOpen = false"></div>
+      <div class="sheet">
+        <div class="sheet-handle"></div>
+        <h3 style="margin:0 0 2px">What just happened?</h3>
+        <p class="text-muted" style="margin:0;font-size:13px" x-show="reading.thermocouple_ok" x-text="'at ' + Math.round(reading.thermocouple_c) + '°C'"></p>
+        <div class="event-grid">
+          <template x-for="ev in events" :key="ev.slug">
+            <button class="event-btn" @click="logEvent(ev)" x-text="ev.label"></button>
+          </template>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <template x-if="toast">
+    <div class="toast" x-text="toast"></div>
+  </template>
+
+  <!-- ============ 24h graph ============ -->
+  <template x-if="view === 'graph'">
+    <div class="graph-screen">
+      <div class="topbar" style="padding:0">
+        <button class="btn btn-secondary" style="height:44px;gap:4px;padding:0 16px 0 10px" @click="view = 'dashboard'">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg>
+          Now
+        </button>
+        <button class="btn btn-secondary btn-icon" aria-label="Settings" @click="openSettings()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"></path></svg>
+        </button>
+      </div>
+      <h2 style="margin:0">Last 24 hours</h2>
+      <div class="graph-card">
+        <div x-show="!historyLoaded" class="text-muted" style="padding:20px;text-align:center">Loading&hellip;</div>
+        <div x-show="historyLoaded && history.samples.length === 0" class="text-muted" style="padding:20px;text-align:center">No history yet.</div>
+        <svg x-show="historyLoaded && history.samples.length > 0" width="100%" :viewBox="'0 0 342 ' + graphHeight" style="display:block;overflow:visible" x-html="graphSvg"></svg>
+      </div>
+      <div class="graph-legend">
+        <span><span class="legend-dot" style="background:var(--color-neutral-400)"></span>Cold</span>
+        <span><span class="legend-dot" style="background:var(--color-accent-2-400)"></span>Optimal</span>
+        <span><span class="legend-dot" style="background:var(--color-accent-400)"></span>Hot</span>
+      </div>
+    </div>
+  </template>
+
+  <!-- ============ Settings ============ -->
+  <template x-if="view === 'settings'">
+    <div class="settings-screen">
+      <div class="topbar" style="padding:0">
+        <button class="btn btn-secondary" style="height:44px;gap:4px;padding:0 16px 0 10px" @click="closeSettings()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg>
+          Back
+        </button>
+      </div>
+      <h2 style="margin:0">Tuning</h2>
+
+      <div class="field-group">
+        <h6>The glow</h6>
+        <div class="field-list">
+          <div class="field-row">
+            <span class="field-label">Cold until</span>
+            <div class="stepper" :class="{ changed: changed('zone_cold_max_c') }">
+              <button @click="step('zone_cold_max_c', -5)">−</button>
+              <span class="stepper-value" x-text="Math.round(draft.zone_cold_max_c) + ' °C'"></span>
+              <button @click="step('zone_cold_max_c', 5)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Optimal until</span>
+            <div class="stepper" :class="{ changed: changed('zone_optimal_max_c') }">
+              <button @click="step('zone_optimal_max_c', -5)">−</button>
+              <span class="stepper-value" x-text="Math.round(draft.zone_optimal_max_c) + ' °C'"></span>
+              <button @click="step('zone_optimal_max_c', 5)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Climbing fast</span>
+            <div class="stepper" :class="{ changed: changed('fast_rise_c_per_min') }">
+              <button @click="step('fast_rise_c_per_min', -1)">−</button>
+              <span class="stepper-value" x-text="Math.round(draft.fast_rise_c_per_min) + ' °/min'"></span>
+              <button @click="step('fast_rise_c_per_min', 1)">+</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <h6>The logbook</h6>
+        <div class="field-list">
+          <div class="field-row">
+            <span class="field-label">Log on a change of</span>
+            <div class="stepper" :class="{ changed: changed('thermocouple_deadband_c') }">
+              <button @click="step('thermocouple_deadband_c', -1)">−</button>
+              <span class="stepper-value" x-text="Math.round(draft.thermocouple_deadband_c) + ' °C'"></span>
+              <button @click="step('thermocouple_deadband_c', 1)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <span class="field-label">&hellip;or at least every</span>
+            <div class="stepper" :class="{ changed: changed('log_heartbeat_min') }">
+              <button @click="step('log_heartbeat_min', -5)">−</button>
+              <span class="stepper-value" x-text="Math.round(draft.log_heartbeat_min) + ' min'"></span>
+              <button @click="step('log_heartbeat_min', 5)">+</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <h6>Google Sheets</h6>
+        <div class="field-list">
+          <div class="text-field">
+            <label>Webhook URL</label>
+            <input class="input" x-model="draft.google_sheets_webhook_url" placeholder="https://script.google.com/macros/s/.../exec">
+          </div>
+          <div class="text-field" style="padding-top:0">
+            <label>Secret</label>
+            <input class="input" x-model="draft.google_sheets_secret" placeholder="shared secret">
+          </div>
+        </div>
+      </div>
+
+      <template x-if="changeCount > 0">
+        <div class="save-bar">
+          <span x-text="changeCount + (changeCount === 1 ? ' change' : ' changes')"></span>
+          <button class="btn-revert" @click="revertDraft()">Undo</button>
+          <button class="btn-save" @click="saveSettings()" x-text="saving ? 'Saving…' : 'Save'"></button>
+        </div>
+      </template>
+    </div>
+  </template>
+
+<script src="/alpinejs.min.js" defer></script>
+<script src="/dashboard.js" defer></script>
+</body>
+</html>

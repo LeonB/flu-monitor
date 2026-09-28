@@ -7,6 +7,7 @@
 
 #include "cJSON.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "sensors.h"
 #include "settings.h"
@@ -15,11 +16,46 @@
 
 static const char *TAG = "rest_api";
 
-// Matches sheets_logger.c's own private EVENT_LABEL_MAX_LEN -- not shared
-// via its header, but sheets_logger_log_event() truncates safely to its own
-// buffer regardless, so this only needs to comfortably fit every EVENTS[]
-// slug below (longest is "burning_optimally", 18 chars), not match exactly.
-#define EVENT_SLUG_MAX_LEN 32
+// Embedded web UI assets (EMBED_FILES in CMakeLists.txt) -- served below by
+// web_ui_*_handler, same extern-symbol pattern as captive_portal.c's own
+// embedded root.html/styles.css/alpine.min.js.
+extern const char web_ui_html_start[] asm("_binary_dashboard_html_start");
+extern const char web_ui_html_end[] asm("_binary_dashboard_html_end");
+extern const char web_ui_js_start[] asm("_binary_dashboard_js_start");
+extern const char web_ui_js_end[] asm("_binary_dashboard_js_end");
+extern const char web_ui_css_start[] asm("_binary_dashboard_css_start");
+extern const char web_ui_css_end[] asm("_binary_dashboard_css_end");
+extern const char web_ui_alpine_js_start[] asm("_binary_alpinejs_min_js_start");
+extern const char web_ui_alpine_js_end[] asm("_binary_alpinejs_min_js_end");
+
+static esp_err_t web_ui_html_get_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_send(req, web_ui_html_start, web_ui_html_end - web_ui_html_start);
+  return ESP_OK;
+}
+static const httpd_uri_t web_ui_html_uri = {.uri = "/", .method = HTTP_GET, .handler = web_ui_html_get_handler};
+
+static esp_err_t web_ui_js_get_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "application/javascript");
+  httpd_resp_send(req, web_ui_js_start, web_ui_js_end - web_ui_js_start);
+  return ESP_OK;
+}
+static const httpd_uri_t web_ui_js_uri = {.uri = "/dashboard.js", .method = HTTP_GET, .handler = web_ui_js_get_handler};
+
+static esp_err_t web_ui_css_get_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/css");
+  httpd_resp_send(req, web_ui_css_start, web_ui_css_end - web_ui_css_start);
+  return ESP_OK;
+}
+static const httpd_uri_t web_ui_css_uri = {.uri = "/dashboard.css", .method = HTTP_GET, .handler = web_ui_css_get_handler};
+
+static esp_err_t web_ui_alpine_js_get_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "application/javascript");
+  httpd_resp_send(req, web_ui_alpine_js_start, web_ui_alpine_js_end - web_ui_alpine_js_start);
+  return ESP_OK;
+}
+static const httpd_uri_t web_ui_alpine_js_uri = {
+    .uri = "/alpinejs.min.js", .method = HTTP_GET, .handler = web_ui_alpine_js_get_handler};
 
 // cJSON_AddNumberToObject widens our floats to double and prints the
 // shortest round-tripping decimal for *that* double -- which surfaces the
@@ -202,13 +238,41 @@ static const woodstove_event_t EVENTS[] = {
 };
 #define EVENT_COUNT (sizeof(EVENTS) / sizeof(EVENTS[0]))
 
-static bool event_slug_valid(const char *slug) {
+// Returns EVENTS[]'s own canonical slug pointer on a match (so callers can
+// hang onto it, e.g. in the event log ring buffer below, without copying),
+// or NULL if `slug` isn't one of the fixed taxonomy.
+static const char *event_slug_canonical(const char *slug) {
   for (size_t i = 0; i < EVENT_COUNT; i++) {
     if (strcmp(EVENTS[i].slug, slug) == 0) {
-      return true;
+      return EVENTS[i].slug;
     }
   }
-  return false;
+  return NULL;
+}
+
+// A small separate ring buffer of *logged* events (as opposed to EVENTS[]
+// above, the fixed menu of what's loggable) -- GET /api/history includes
+// these as markers on the 24h graph, matching the design mockup's dots on
+// the curve. 64 comfortably covers a burn's worth of taps; older ones just
+// age out, same as the sensor history ring buffer.
+#define EVENT_LOG_CAPACITY 64
+typedef struct {
+  uint32_t uptime_s;
+  const char *slug;  // points into EVENTS[]'s own static strings, never freed
+} logged_event_t;
+static logged_event_t s_event_log[EVENT_LOG_CAPACITY];
+static size_t s_event_log_count = 0;
+static size_t s_event_log_head = 0;
+
+static void event_log_push(const char *slug) {
+  s_event_log[s_event_log_head] = (logged_event_t){
+      .uptime_s = (uint32_t) (esp_timer_get_time() / 1000000),
+      .slug = slug,
+  };
+  s_event_log_head = (s_event_log_head + 1) % EVENT_LOG_CAPACITY;
+  if (s_event_log_count < EVENT_LOG_CAPACITY) {
+    s_event_log_count++;
+  }
 }
 
 static esp_err_t events_get_handler(httpd_req_t *req) {
@@ -265,17 +329,15 @@ static esp_err_t event_post_handler(httpd_req_t *req) {
   }
 
   cJSON *item = cJSON_GetObjectItem(root, "event");
-  if (!cJSON_IsString(item) || !event_slug_valid(item->valuestring)) {
-    cJSON_Delete(root);
+  const char *canonical = cJSON_IsString(item) ? event_slug_canonical(item->valuestring) : NULL;
+  cJSON_Delete(root);
+  if (canonical == NULL) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Unknown event -- see GET /api/events for valid slugs");
     return ESP_FAIL;
   }
 
-  char slug[EVENT_SLUG_MAX_LEN] = {0};
-  strlcpy(slug, item->valuestring, sizeof(slug));
-  cJSON_Delete(root);
-
-  sheets_logger_log_event(slug);
+  sheets_logger_log_event(canonical);
+  event_log_push(canonical);
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_sendstr(req, "{\"success\":true}");
@@ -288,11 +350,64 @@ static const httpd_uri_t event_post_uri = {
     .handler = event_post_handler,
 };
 
+// Backs the web UI's 24h graph. Samples are downsampled to ~4min
+// resolution (see sensors.h's history_sample_t) and events are the last
+// EVENT_LOG_CAPACITY logged annotations, both returned oldest-first as
+// compact [age_s, ...] arrays rather than repeated-key objects, to keep
+// this cheap to build even at (a still-small) 360+64 entries. age_s is
+// seconds before "now" (this response's own timestamp), not a raw uptime
+// value the client would otherwise need this device's boot time to
+// interpret.
+static esp_err_t history_get_handler(httpd_req_t *req) {
+  uint32_t now_s = (uint32_t) (esp_timer_get_time() / 1000000);
+
+  static history_sample_t samples[SENSORS_HISTORY_CAPACITY];
+  size_t sample_count = sensors_get_history(samples, SENSORS_HISTORY_CAPACITY);
+
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddNumberToObject(root, "now_s", now_s);
+
+  cJSON *samples_json = cJSON_CreateArray();
+  for (size_t i = 0; i < sample_count; i++) {
+    cJSON *point = cJSON_CreateArray();
+    cJSON_AddItemToArray(point, cJSON_CreateNumber(now_s - samples[i].uptime_s));
+    cJSON_AddItemToArray(point, cJSON_CreateNumber(round_to(samples[i].thermocouple_c, 0.1)));
+    cJSON_AddItemToArray(point, cJSON_CreateNumber(round_to(samples[i].thermocouple_rate_c_per_min, 0.01)));
+    cJSON_AddItemToArray(point, cJSON_CreateNumber(samples[i].thermocouple_zone));
+    cJSON_AddItemToArray(samples_json, point);
+  }
+  cJSON_AddItemToObject(root, "samples", samples_json);
+
+  cJSON *events_json = cJSON_CreateArray();
+  size_t event_start = s_event_log_count < EVENT_LOG_CAPACITY ? 0 : s_event_log_head;
+  for (size_t i = 0; i < s_event_log_count; i++) {
+    logged_event_t *e = &s_event_log[(event_start + i) % EVENT_LOG_CAPACITY];
+    cJSON *point = cJSON_CreateArray();
+    cJSON_AddItemToArray(point, cJSON_CreateNumber(now_s - e->uptime_s));
+    cJSON_AddItemToArray(point, cJSON_CreateString(e->slug));
+    cJSON_AddItemToArray(events_json, point);
+  }
+  cJSON_AddItemToObject(root, "events", events_json);
+
+  char *json = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, json);
+  free(json);
+  return ESP_OK;
+}
+
+static const httpd_uri_t history_get_uri = {
+    .uri = "/api/history",
+    .method = HTTP_GET,
+    .handler = history_get_handler,
+};
+
 httpd_handle_t rest_api_start(void) {
   httpd_handle_t server = NULL;
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.stack_size = 8192;  // shared with ota_server's esp_ota_* calls, which need more than the 4096 default
-  config.max_uri_handlers = 12;  // default (8) is too few once ota + this project's own endpoints are all registered
+  config.max_uri_handlers = 16;  // default (8) is too few once ota + web_ui + this project's own endpoints are all registered
 
   ESP_LOGI(TAG, "Starting REST API server on port %d", config.server_port);
   ESP_ERROR_CHECK(httpd_start(&server, &config));
@@ -301,5 +416,10 @@ httpd_handle_t rest_api_start(void) {
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &settings_post_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &events_get_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &event_post_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &history_get_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_html_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_js_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_css_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_alpine_js_uri));
   return server;
 }

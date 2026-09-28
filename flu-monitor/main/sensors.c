@@ -125,6 +125,19 @@ static void thermocouple_update_regression(float c) {
 static sensor_reading_t s_last_reading;
 static SemaphoreHandle_t s_last_reading_mutex;
 
+// 24h history ring buffer for GET /api/history's graph -- pushed at a
+// coarser cadence than sensors_read()'s own ~30s tick (see
+// HISTORY_PUSH_EVERY_N below), guarded by the same mutex as s_last_reading
+// since both are only ever written together, from the same sensors_read()
+// call. Capacity is SENSORS_HISTORY_CAPACITY (sensors.h), not a private
+// define here, since rest_api.c's GET /api/history handler needs to know
+// it too.
+#define HISTORY_PUSH_EVERY_N 8  // 8 * ~30s sensor ticks = ~4min between pushes
+static history_sample_t s_history[SENSORS_HISTORY_CAPACITY];
+static size_t s_history_count = 0;  // valid entries so far, caps at SENSORS_HISTORY_CAPACITY
+static size_t s_history_head = 0;   // index the next push writes to
+static uint32_t s_history_tick = 0;
+
 // If a device was left holding the bus (e.g. SCL/SDA still low mid-transaction
 // from an earlier reset/reflash), the new i2c_master driver's own bus/device
 // setup never notices or recovers -- it just times out on the first real
@@ -315,6 +328,7 @@ void sensors_read(sensor_reading_t *out) {
   memset(out, 0, sizeof(*out));
   out->thermocouple_ok = read_mcp9601(&out->thermocouple_c, &out->cold_junction_c);
 
+  bool plausible = out->thermocouple_ok && thermocouple_reading_plausible(out->thermocouple_c);
   if (out->thermocouple_ok) {
     thermocouple_update_regression(out->thermocouple_c);
   }
@@ -323,6 +337,22 @@ void sensors_read(sensor_reading_t *out) {
 
   xSemaphoreTake(s_last_reading_mutex, portMAX_DELAY);
   s_last_reading = *out;
+
+  // Same plausibility gate as the regression window itself -- a failed or
+  // implausible reading just doesn't get a history point this tick, rather
+  // than recording a false dip to 0.0C on the 24h graph.
+  if (plausible && (s_history_tick++ % HISTORY_PUSH_EVERY_N) == 0) {
+    s_history[s_history_head] = (history_sample_t){
+        .uptime_s = (uint32_t) (esp_timer_get_time() / 1000000),
+        .thermocouple_c = out->thermocouple_c,
+        .thermocouple_rate_c_per_min = out->thermocouple_rate_c_per_min,
+        .thermocouple_zone = out->thermocouple_zone,
+    };
+    s_history_head = (s_history_head + 1) % SENSORS_HISTORY_CAPACITY;
+    if (s_history_count < SENSORS_HISTORY_CAPACITY) {
+      s_history_count++;
+    }
+  }
   xSemaphoreGive(s_last_reading_mutex);
 }
 
@@ -330,4 +360,18 @@ void sensors_get_last_reading(sensor_reading_t *out) {
   xSemaphoreTake(s_last_reading_mutex, portMAX_DELAY);
   *out = s_last_reading;
   xSemaphoreGive(s_last_reading_mutex);
+}
+
+size_t sensors_get_history(history_sample_t *out, size_t max_out) {
+  xSemaphoreTake(s_last_reading_mutex, portMAX_DELAY);
+  size_t n = s_history_count < max_out ? s_history_count : max_out;
+  // s_history_head is where the *next* write will land, i.e. one past the
+  // most recent sample -- walk backward from there to copy the n most
+  // recent samples out in oldest-first order.
+  size_t oldest = (s_history_head + SENSORS_HISTORY_CAPACITY - n) % SENSORS_HISTORY_CAPACITY;
+  for (size_t i = 0; i < n; i++) {
+    out[i] = s_history[(oldest + i) % SENSORS_HISTORY_CAPACITY];
+  }
+  xSemaphoreGive(s_last_reading_mutex);
+  return n;
 }

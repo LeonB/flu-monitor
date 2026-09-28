@@ -1,0 +1,309 @@
+// Dashboard/graph/settings app for the sidecar's embedded web UI. Talks to
+// this same device's own REST API (GET /api/reading, /api/settings,
+// /api/events, /api/history; POST /api/settings, /api/event) -- no
+// WebSocket here, REST polling is fine for a UI a human is looking at (see
+// the project plan: WS is reserved for the flu-display link, which needs
+// push-driven low latency this doesn't).
+
+// --- Pulse/color math, ported from flu-display/main/led_display.c so the
+// glow's *rhythm* (pulse speed scales with rate, peak color swaps toward
+// the neighboring zone when trending) matches the physical LED ring
+// exactly. The brightness treatment is deliberately NOT ported 1:1, though:
+// the LED math dims an actual light source to ~8% at the trough, which
+// reads as "breathing" on a physical diffuser but would just look like the
+// circle going nearly black on a flat screen against this design's light
+// cream background. Here the *halo* (glow-outer's box-shadow) breathes in
+// opacity/size instead, while the inner circle's color stays fully
+// saturated throughout -- same signals (speed, trend direction, zone),
+// adapted for a screen instead of a light source.
+const IDLE_PULSE_PERIOD_MS = 8000;
+const FAST_PULSE_PERIOD_MS = 1400;
+const RATE_DEADBAND_C_PER_MIN = 3.0;
+const COLOR_TRANSITION_EXPONENT = 3.0;
+
+// Zone colors: the physical LED ring uses saturated blue/amber/red (tuned
+// for a diffused physical light), but this design system has no blue token
+// at all -- reusing its own accent/accent-2/neutral families instead keeps
+// the web UI visually consistent with the rest of the design (captive
+// portal, settings mockups) rather than introducing a clashing foreign hue.
+// Keyed by name, not number: GET /api/reading serializes thermocouple_zone
+// as a string ("cold"/"optimal"/"hot"/"unknown") via
+// thermocouple_zone_name(), unlike GET /api/history's compact per-sample
+// arrays, which use the raw numeric enum for payload size (see
+// rest_api.c) -- these are genuinely two different wire representations
+// for the same underlying zone, not a bug to unify.
+const ZONE_ORDER = ['cold', 'optimal', 'hot'];
+const ZONE_COLORS = {
+  cold: { bg: [192, 182, 165], text: [46, 43, 37] },     // neutral-400 / neutral-900
+  optimal: { bg: [174, 191, 146], text: [39, 46, 27] },  // accent-2-400 / accent-2-900
+  hot: { bg: [246, 160, 107], text: [64, 35, 16] },      // accent-400 / accent-900
+};
+function zoneColor(zoneName) {
+  return ZONE_COLORS[zoneName] || ZONE_COLORS.cold;
+}
+function peakZoneColor(zoneName, rate) {
+  const i = Math.max(0, ZONE_ORDER.indexOf(zoneName));
+  if (rate > 0) return zoneColor(ZONE_ORDER[Math.min(2, i + 1)]);
+  if (rate < 0) return zoneColor(ZONE_ORDER[Math.max(0, i - 1)]);
+  return zoneColor(zoneName);
+}
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function lerpRgb(a, b, t) { return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]; }
+function rgbCss(c) { return `rgb(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])})`; }
+
+// The "Apple sleep-LED" breathing curve: exp(sin(phase)), normalized from
+// its natural range [1/e, e] back to [0, 1] -- ported verbatim from
+// led_display.c's breath_envelope().
+function breathEnvelope(cyclePos) {
+  const kMin = 1 / Math.E, kMax = Math.E;
+  const phase = 2 * Math.PI * cyclePos - Math.PI / 2;
+  const raw = Math.exp(Math.sin(phase));
+  return (raw - kMin) / (kMax - kMin);
+}
+function ratePulsePeriodMs(rateCPerMin, fastRiseCPerMin) {
+  const t = fastRiseCPerMin > 0 ? clamp(rateCPerMin, 0, fastRiseCPerMin) / fastRiseCPerMin : 0;
+  return lerp(IDLE_PULSE_PERIOD_MS, FAST_PULSE_PERIOD_MS, t);
+}
+
+function app() {
+  return {
+    view: 'dashboard',
+    sheetOpen: false,
+    toast: '',
+    toastTimer: null,
+
+    reading: { thermocouple_ok: false, thermocouple_c: 0, thermocouple_rate_c_per_min: 0, thermocouple_zone: 'cold' },
+    lastReadingMs: 0,
+    settings: {},
+    draft: {},
+    events: [],
+    history: { now_s: 0, samples: [], events: [] },
+    historyLoaded: false,
+    saving: false,
+
+    // Glow animation state, updated ~30fps by a requestAnimationFrame loop
+    // -- see runGlowFrame() below.
+    cyclePos: 0,
+    lastFrameMs: 0,
+    glowOuterStyle: '',
+    glowInnerStyle: '',
+
+    get isStale() {
+      // No real-time clock on the device, so this is "no reading fetched
+      // in the last 90s" (3x the sensor's own ~30s cadence), not a true
+      // reading-age check.
+      return this.lastReadingMs === 0 || (Date.now() - this.lastReadingMs) > 90000;
+    },
+
+    get rateLabel() {
+      const r = this.reading.thermocouple_rate_c_per_min || 0;
+      if (Math.abs(r) < RATE_DEADBAND_C_PER_MIN) return 'Holding steady';
+      return (r > 0 ? '+' : '') + r.toFixed(1) + ' °C/min';
+    },
+
+    async init() {
+      await Promise.all([this.fetchReading(), this.fetchSettings(), this.fetchEvents()]);
+      setInterval(() => this.fetchReading(), 5000);
+      requestAnimationFrame((t) => this.runGlowFrame(t));
+    },
+
+    async fetchReading() {
+      try {
+        const res = await fetch('/api/reading');
+        this.reading = await res.json();
+        this.lastReadingMs = Date.now();
+      } catch (e) { /* leaves the last-known reading up, isStale reflects the gap */ }
+    },
+
+    async fetchSettings() {
+      try {
+        const res = await fetch('/api/settings');
+        this.settings = await res.json();
+        this.draft = { ...this.settings };
+      } catch (e) { /* keeps whatever was loaded before, if anything */ }
+    },
+
+    async fetchEvents() {
+      try {
+        const res = await fetch('/api/events');
+        this.events = await res.json();
+      } catch (e) {
+        this.events = [];
+      }
+    },
+
+    async fetchHistory() {
+      this.historyLoaded = false;
+      try {
+        const res = await fetch('/api/history');
+        this.history = await res.json();
+      } catch (e) {
+        this.history = { now_s: 0, samples: [], events: [] };
+      }
+      this.historyLoaded = true;
+    },
+
+    openSheet() { this.sheetOpen = true; },
+
+    async logEvent(ev) {
+      this.sheetOpen = false;
+      try {
+        const res = await fetch('/api/event', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ event: ev.slug }),
+        });
+        if (!res.ok) throw new Error('failed');
+        this.showToast('Logged: ' + ev.label);
+      } catch (e) {
+        this.showToast("Couldn't log " + ev.label + ' -- check the connection');
+      }
+    },
+
+    showToast(msg) {
+      this.toast = msg;
+      clearTimeout(this.toastTimer);
+      this.toastTimer = setTimeout(() => { this.toast = ''; }, 4000);
+    },
+
+    openGraph() {
+      this.view = 'graph';
+      this.fetchHistory();
+    },
+
+    openSettings() {
+      this.draft = { ...this.settings };
+      this.view = 'settings';
+    },
+
+    closeSettings() {
+      this.view = 'dashboard';
+    },
+
+    changed(key) {
+      return this.draft[key] !== this.settings[key];
+    },
+
+    get changeCount() {
+      return Object.keys(this.draft).filter((k) => this.changed(k)).length;
+    },
+
+    step(key, delta) {
+      this.draft[key] = (Number(this.draft[key]) || 0) + delta;
+    },
+
+    revertDraft() {
+      this.draft = { ...this.settings };
+    },
+
+    async saveSettings() {
+      this.saving = true;
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.draft),
+        });
+        if (!res.ok) throw new Error('rejected');
+        this.settings = { ...this.draft };
+        this.showToast('Settings saved');
+      } catch (e) {
+        this.showToast('Save failed -- check the values');
+      }
+      this.saving = false;
+    },
+
+    // --- Glow animation ---
+    runGlowFrame(nowMs) {
+      const tickMs = this.lastFrameMs ? Math.min(200, nowMs - this.lastFrameMs) : 33;
+      this.lastFrameMs = nowMs;
+
+      const valid = this.reading.thermocouple_ok;
+      let rate = this.reading.thermocouple_rate_c_per_min || 0;
+      if (Math.abs(rate) < RATE_DEADBAND_C_PER_MIN) rate = 0;
+
+      const periodMs = valid ? ratePulsePeriodMs(rate, this.settings.fast_rise_c_per_min || 20) : IDLE_PULSE_PERIOD_MS;
+      this.cyclePos += tickMs / periodMs;
+      if (this.cyclePos > 1) this.cyclePos -= 1;
+      const envelope = breathEnvelope(this.cyclePos);
+
+      if (valid) {
+        const zone = this.reading.thermocouple_zone;
+        const trough = zoneColor(zone);
+        const peak = peakZoneColor(zone, rate);
+        const colorT = Math.pow(envelope, COLOR_TRANSITION_EXPONENT);
+        const bg = lerpRgb(trough.bg, peak.bg, colorT);
+        const text = lerpRgb(trough.text, peak.text, colorT);
+        const haloAlpha = lerp(0.25, 0.7, envelope);
+        const haloSpread = Math.round(lerp(14, 26, envelope));
+        this.glowInnerStyle = `background-color:${rgbCss(bg)};color:${rgbCss(text)}`;
+        this.glowOuterStyle = `box-shadow:0 0 0 ${haloSpread}px rgba(${Math.round(bg[0])},${Math.round(bg[1])},${Math.round(bg[2])},${haloAlpha.toFixed(2)})`;
+      } else {
+        const alpha = lerp(0.15, 0.4, envelope);
+        this.glowInnerStyle = 'background-color:var(--color-neutral-300);color:var(--color-neutral-700)';
+        this.glowOuterStyle = `box-shadow:0 0 0 18px rgba(160,150,134,${alpha.toFixed(2)})`;
+      }
+
+      requestAnimationFrame((t) => this.runGlowFrame(t));
+    },
+
+    // --- 24h graph SVG ---
+    get graphHeight() { return 230; },
+
+    get graphSvg() {
+      const samples = this.history.samples || [];
+      if (samples.length === 0) return '';
+
+      const W = 342, H = this.graphHeight;
+      const temps = samples.map((s) => s[1]);
+      const coldMax = this.settings.zone_cold_max_c || 150;
+      const optimalMax = this.settings.zone_optimal_max_c || 280;
+      const dataMin = Math.min(...temps, coldMax);
+      const dataMax = Math.max(...temps, optimalMax);
+      const pad = Math.max(10, (dataMax - dataMin) * 0.1);
+      const yMin = dataMin - pad, yMax = dataMax + pad;
+      const yOf = (t) => H - ((t - yMin) / (yMax - yMin)) * H;
+      const maxAgeS = Math.max(1, samples[0][0]);
+      const xOf = (ageS) => W - (ageS / maxAgeS) * W;
+
+      const ZONE_FILL = { 1: 'var(--color-neutral-200)', 2: 'var(--color-accent-2-200)', 3: 'var(--color-accent-200)' };
+      let svg = '';
+      // Zone bands, cold at the bottom
+      const bandTop = [yOf(yMax), yOf(optimalMax), yOf(coldMax)];
+      const bandBottom = [yOf(optimalMax), yOf(coldMax), yOf(yMin)];
+      const bandZone = [3, 2, 1];
+      for (let i = 0; i < 3; i++) {
+        const top = Math.min(bandTop[i], bandBottom[i]);
+        const h = Math.abs(bandBottom[i] - bandTop[i]);
+        if (h <= 0) continue;
+        svg += `<rect x="0" y="${top.toFixed(1)}" width="${W}" height="${h.toFixed(1)}" fill="${ZONE_FILL[bandZone[i]]}"></rect>`;
+      }
+
+      const points = samples.map((s) => `${xOf(s[0]).toFixed(1)},${yOf(s[1]).toFixed(1)}`).join(' ');
+      svg += `<polyline points="${points}" fill="none" stroke="var(--color-text)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>`;
+
+      const last = samples[samples.length - 1];
+      svg += `<circle cx="${xOf(last[0]).toFixed(1)}" cy="${yOf(last[1]).toFixed(1)}" r="6" fill="var(--color-accent)" stroke="var(--color-bg)" stroke-width="2.5"></circle>`;
+
+      for (const ev of (this.history.events || [])) {
+        if (ev[0] > maxAgeS) continue;
+        const x = xOf(ev[0]);
+        // Nearest sample's temperature, so the marker sits on the curve.
+        let nearest = samples[0];
+        for (const s of samples) { if (Math.abs(s[0] - ev[0]) < Math.abs(nearest[0] - ev[0])) nearest = s; }
+        const y = yOf(nearest[1]);
+        svg += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="6" fill="var(--color-bg)" stroke="var(--color-text)" stroke-width="2.5"></circle>`;
+        svg += `<text x="${x.toFixed(1)}" y="${(y - 12).toFixed(1)}" font-size="10" font-weight="600" fill="var(--color-text)" font-family="Figtree" text-anchor="middle">${escapeXml(ev[1])}</text>`;
+      }
+
+      svg += `<text x="4" y="${H - 6}" font-size="10" fill="var(--color-neutral-700)" font-family="Figtree">${Math.round(maxAgeS / 3600)}h ago</text>`;
+      svg += `<text x="${W - 4}" y="${H - 6}" font-size="10" fill="var(--color-neutral-700)" font-family="Figtree" text-anchor="end">now</text>`;
+      return svg;
+    },
+  };
+}
+
+function escapeXml(s) {
+  return String(s).replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
+}

@@ -15,14 +15,15 @@ alongside it, but has since been physically removed — its ambient
 temperature reading was almost a duplicate of the MCP9601's own cold-junction
 reading, so it wasn't earning its board space. No BMP581 code remains.
 
-**Status: Milestones 1-5 and 7 done and verified on real hardware** (WiFi +
-captive portal + mDNS + OTA; MCP9601 sensor; NVS-backed settings + REST API +
+**Status: Milestones 1-5 and 7 done and verified on real hardware; Milestone
+6 built and flashed, visual verification still pending** (WiFi + captive
+portal + mDNS + OTA; MCP9601 sensor; NVS-backed settings + REST API +
 rate/zone regression; WebSocket broadcast, now consumed by `../flu-display/`
-instead of it polling REST; Google Sheets logging, verified against the real
-production webhook; woodstove event logging via `POST /api/event`, verified
-against the real production webhook too). Milestone 6 (web UI) not yet
-built -- the event buttons currently need a raw `curl`/HTTP client, no UI
-to tap yet.
+instead of it polling REST; Google Sheets logging + woodstove event logging,
+both verified against the real production webhook; an embedded web UI --
+dashboard, 24h graph, settings, all served from the device itself at `/` --
+whose REST endpoints are confirmed working live, but whose actual rendering/
+interaction hasn't yet been checked in a real browser).
 
 ## Files
 
@@ -34,7 +35,12 @@ to tap yet.
   fast-rise rate, deadband, heartbeat, Google Sheets webhook/secret)
 - `main/sensors.c/.h` — MCP9601 init/read, I2C bus recovery, and the
   rate/zone regression (ported from the ESPHome sidecar's own lambda)
-- `main/rest_api.c/.h` — `GET /api/reading`, `GET`/`POST /api/settings`
+- `main/rest_api.c/.h` — `GET /api/reading`, `GET`/`POST /api/settings`,
+  `GET /api/events`, `POST /api/event`, `GET /api/history`, and serves the
+  embedded web UI (`main/web_ui/`)
+- `main/web_ui/` — the embedded dashboard/graph/settings web UI (HTML +
+  Alpine.js + the shared design-system CSS, no build step -- see "Web UI"
+  below)
 - `main/ws_server.c/.h` — `/ws` broadcast endpoint (reading + settings-changed
   events), registered onto the same shared HTTP server
 - `main/sheets_logger.c/.h` — periodic (deadband/heartbeat-gated) + event-
@@ -120,6 +126,28 @@ every ~30s (matching the sensor's own update cadence), and
 `{"type":"settings_changed"}` immediately after a successful
 `POST /api/settings` — `flu-display` uses this instead of polling REST, and
 re-fetches `/api/settings` on the latter event.
+
+## Web UI
+
+Open `http://flu-monitor.local/` — a dashboard (a glowing circle mirroring
+`flu-display`'s own LED ring, pulsing zone-color/speed via the same math
+ported from `led_display.c`), a 24h graph, and a settings page, all one
+embedded HTML/Alpine.js page (`main/web_ui/`, no build step, REST-polled
+every 5s — WS is reserved for the `flu-display` link, not this human-facing
+UI). The event-log bottom sheet uses the same `GET /api/events`/
+`POST /api/event` as any other client. Settings edits use a draft/Save-bar
+pattern (nothing is sent until you tap Save).
+
+```sh
+curl http://flu-monitor.local/api/history
+```
+
+Backs the 24h graph: `{"now_s": <uptime>, "samples": [[age_s, temp_c, rate,
+zone_code], ...], "events": [[age_s, slug], ...]}`, oldest first,
+downsampled to ~4min resolution (360 points for 24h — a phone-width graph
+has no use for the sensor's raw ~30s cadence, and `zone_code` is a raw
+numeric 0-3, unlike `GET /api/reading`'s string `thermocouple_zone` — see
+`rest_api.c`'s own comment on why these two endpoints differ).
 
 ## Google Sheets logging
 

@@ -56,8 +56,17 @@ board:**
   -- verified against the real production webhook (a real row logged,
   status 200, event=`added_wood`). No physical buttons or web UI to trigger
   these yet -- just the REST endpoint, per the plan's "at minimum" scope.
-
-Milestone 6 (web UI) not yet built.
+- **Milestone 6**: the embedded web UI (`main/web_ui/`) -- dashboard (glow
+  circle, pulse math ported from `flu-display/main/led_display.c`), 24h
+  graph (`GET /api/history`, a new downsampled ring buffer in `sensors.c`),
+  and settings, all one Alpine.js page with no build step, served from `/`.
+  Every backing endpoint confirmed responding correctly live (`/`,
+  `/dashboard.js`, `/dashboard.css`, `/alpinejs.min.js`, `/api/history` all
+  return real content/data over HTTP). **The actual rendering/interaction
+  has not yet been checked in a real browser** -- the Chrome extension
+  wasn't connected when this was built; only static checks (`node --check`
+  on the JS, balanced HTML tags) ran. Treat the UI itself as unverified
+  until someone's actually looked at it on the device.
 
 ## STEMMA QT power (GPIO2) — the single biggest time sink so far
 
@@ -178,6 +187,24 @@ normal running state (once connected to WiFi); `ota_server_register()` and
 instead of each starting their own. The captive portal's own server
 (setup-time only, never running at the same time as the connected-state
 server) is separate and unaffected.
+
+## `EMBED_FILES` collides on basename, not full path
+
+`main/web_ui/`'s first attempt named its copies of the shared design-system
+assets `styles.css` and `alpine.min.js` -- the same basenames
+`components/captive_portal/` already uses for its own, *different*, copies
+of those files. Build failed with `ninja: error: ... multiple rules
+generate styles.css.S`. ESP-IDF's `EMBED_FILES` generates an intermediate
+`<basename>.S`/`.o` pair per embedded file, and that intermediate filename
+is derived from the basename only, dropping the directory -- so two
+different components each embedding their own `styles.css` collide in the
+same build tree even though the source files live in entirely different
+directories and neither component references the other's copy. Fixed by
+renaming `main/web_ui/`'s copies to `dashboard.css`/`alpinejs.min.js`
+(also updates the extern symbol names, e.g. `_binary_dashboard_css_start`
+-- the symbol name is derived from this same intermediate basename).
+Anything else embedding files across multiple components needs basenames
+unique across the *whole* build, not just within its own directory.
 
 ## The woodstove-event taxonomy is a closed set, not free text
 

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 
@@ -60,6 +62,31 @@ void sensors_read(sensor_reading_t *out);
 // I2C traffic, no window mutation. What GET /api/reading (Milestone 3) and
 // any future WS broadcast (Milestone 4) should actually call.
 void sensors_get_last_reading(sensor_reading_t *out);
+
+// Ring buffer capacity for sensors_get_history() below -- ~4min resolution
+// * 360 = 24h. Deliberately coarser than sensors_read()'s own ~30s cadence
+// (see sensors.c's HISTORY_PUSH_EVERY_N): a phone-width graph has no use
+// for 2880 raw samples, and building a cJSON tree that large risks
+// exhausting heap. Exposed (not just a private sensors.c define) so
+// rest_api.c's GET /api/history handler can size its own output buffer to
+// match.
+#define SENSORS_HISTORY_CAPACITY 360
+
+// One point in the 24h history ring buffer. uptime_s is
+// esp_timer_get_time() at the time of this sample, seconds since boot (no
+// RTC/NTP on this device, so not wall-clock time) -- GET /api/history's
+// own handler converts these to "seconds ago" relative to now.
+typedef struct {
+  uint32_t uptime_s;
+  float thermocouple_c;
+  float thermocouple_rate_c_per_min;
+  thermocouple_zone_t thermocouple_zone;
+} history_sample_t;
+
+// Copies up to max_out of the most recent history samples, oldest first,
+// into out. Returns how many were actually copied (<= max_out, and <= the
+// ring buffer's own current fill level). Thread-safe.
+size_t sensors_get_history(history_sample_t *out, size_t max_out);
 
 #ifdef __cplusplus
 }

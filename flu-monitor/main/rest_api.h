@@ -18,6 +18,12 @@ extern "C" {
 //   GET  /api/events   -- the fixed woodstove-event taxonomy (slug + label)
 //   POST /api/event    -- log an immediate, un-gated Sheets row for one of
 //                         those events (JSON body {"event": "<slug>"})
+//   GET  /api/history  -- ~24h of downsampled readings + recent logged
+//                         events, for the web UI's graph
+//   GET  /                -- the embedded web UI (dashboard/graph/settings)
+//   GET  /dashboard.js,
+//        /dashboard.css,
+//        /alpinejs.min.js  -- the web UI's own JS/CSS/Alpine.js assets
 // Returns the server handle so other modules (ota_server, ws_server) can
 // register their own endpoints onto the same server instead of each
 // starting their own (only one httpd can bind port 80 at a time).
