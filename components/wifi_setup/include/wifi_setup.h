@@ -24,8 +24,21 @@ esp_err_t wifi_creds_save(const char *ssid, const char *pass);
 // Attempts to join the given network in STA mode, waiting up to
 // timeout_ms for either a successful IP acquisition or a connection
 // failure. Returns true on success. Leaves WiFi running in STA mode either
-// way (caller decides what to do next on failure, e.g. fall back to AP).
+// way (caller decides what to do next on failure, e.g. fall back to AP --
+// see wifi_sta_teardown() below, required before doing so).
 bool wifi_sta_try_connect(const char *ssid, const char *pass, uint32_t timeout_ms);
+
+// Reverses wifi_sta_try_connect()'s esp_wifi_init()/esp_netif_create_
+// default_wifi_sta()/esp_wifi_start() after a failed attempt, so a
+// subsequent captive_portal_start() call (which does its own from-scratch
+// esp_wifi_init()/esp_netif_create_default_wifi_sta()) starts from a clean
+// slate instead of colliding with still-live STA state from the failed
+// attempt -- confirmed live on real hardware that skipping this crashes
+// captive_portal.c's wifi_init_softap() with a duplicate-netif assertion
+// (esp_netif_create_default_wifi_sta: "config or if_key is NULL or
+// duplicate key"). Call this only after wifi_sta_try_connect() has
+// returned false and before calling captive_portal_start().
+void wifi_sta_teardown(void);
 
 // Tests the given credentials by connecting as STA while the setup AP (and
 // its captive portal) stays up, instead of blindly saving and rebooting to

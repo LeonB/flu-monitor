@@ -394,6 +394,20 @@ broadcast" below.
   pattern) and passing `STA_CONNECT_TIMEOUT_MS` as
   `captive_portal_start()`'s new fourth argument.
 
+- **A genuinely weak signal (rssi -89, not artificial) once made the initial
+  STA connect attempt fail on this exact device, and it recovered cleanly**
+  instead of crashing -- confirms `wifi_setup.c`'s `wifi_sta_teardown()` fix
+  (see `../flu-monitor/CLAUDE.md`'s "A failed WiFi connect attempt left
+  stale WiFi/netif state for the captive portal fallback" section) works
+  here too, not just on `flu-monitor`. `main.c` now calls it in the
+  `have_creds && !connected` branch, right where `wifi_mark_attempt_failed()`
+  already was. Without it, this exact boot would have crashed on a
+  duplicate-netif assertion inside `wifi_init_softap()` instead of falling
+  back to the setup AP as designed. This device's own signal strength has
+  varied wildly boot to boot this session (rssi -46 at one point, -89 at
+  another, same physical location) -- a real reminder that this failure
+  path isn't a rare edge case here, it's a matter of when, not if.
+
 - **`httpd_query_key_value()` does NOT URL-decode.** Its own doc comment in
   `esp_http_server.h` says so explicitly: keys/values from a
   `x-www-form-urlencoded` POST body come back with `+` and `%XX` still

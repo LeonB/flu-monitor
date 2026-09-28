@@ -95,6 +95,11 @@ void app_main(void) {
     if (have_creds) {
       ESP_LOGW(TAG, "Failed to join '%s' -- recording for the setup portal's failure screen", ssid);
       wifi_mark_attempt_failed(ssid);
+      // wifi_sta_try_connect() leaves WiFi initialized and running in STA
+      // mode even on failure -- undo that before captive_portal_start()
+      // does its own from-scratch WiFi/netif setup, or it crashes on a
+      // duplicate-netif assertion (see wifi_sta_teardown()'s doc comment).
+      wifi_sta_teardown();
     }
     ESP_LOGW(TAG, "Not connected -- starting setup access point + captive portal");
     status_led_set(STATUS_LED_AP_MODE);

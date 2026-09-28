@@ -25,6 +25,9 @@ static EventGroupHandle_t s_sta_event_group;
 #define STA_CONNECTED_BIT BIT0
 #define STA_FAILED_BIT    BIT1
 
+// Set by wifi_sta_try_connect(), read/cleared by wifi_sta_teardown().
+static esp_netif_t *s_sta_netif = NULL;
+
 static void sta_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
     esp_wifi_connect();
@@ -81,7 +84,7 @@ esp_err_t wifi_creds_save(const char *ssid, const char *pass) {
 bool wifi_sta_try_connect(const char *ssid, const char *pass, uint32_t timeout_ms) {
   s_sta_event_group = xEventGroupCreate();
 
-  esp_netif_create_default_wifi_sta();
+  s_sta_netif = esp_netif_create_default_wifi_sta();
 
   wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&init_cfg));
@@ -116,6 +119,19 @@ bool wifi_sta_try_connect(const char *ssid, const char *pass, uint32_t timeout_m
   vEventGroupDelete(s_sta_event_group);
   s_sta_event_group = NULL;
   return connected;
+}
+
+void wifi_sta_teardown(void) {
+  ESP_ERROR_CHECK(esp_wifi_stop());
+  ESP_ERROR_CHECK(esp_wifi_deinit());
+  if (s_sta_netif != NULL) {
+    // The documented counterpart to esp_netif_create_default_wifi_sta() --
+    // unregisters its handlers and destroys the netif, so
+    // captive_portal.c's wifi_init_softap() can create its own STA+AP
+    // netifs from scratch without hitting a duplicate-netif assertion.
+    esp_netif_destroy_default_wifi(s_sta_netif);
+    s_sta_netif = NULL;
+  }
 }
 
 bool wifi_sta_test_connect(const char *ssid, const char *pass, uint32_t timeout_ms) {

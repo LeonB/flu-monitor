@@ -572,9 +572,13 @@ doesn't silently repeat this. **Any future change adding a new
 `httpd_register_uri_handler()` call anywhere on this shared server should
 double check the total against this ceiling.**
 
-Also worth knowing, discovered while chasing this: **the very first boot
-after this same OTA push hit a second, unrelated, pre-existing crash** --
-weak WiFi (rssi -77 on this network, see "The REST API server is
+Also discovered while chasing this, but unrelated to `max_uri_handlers`
+itself -- see the next section.
+
+## A failed WiFi connect attempt left stale WiFi/netif state for the captive portal fallback
+
+Found on the very first boot after the `max_uri_handlers` fix above's OTA
+push: weak WiFi (rssi -77 on this network, see "The REST API server is
 single-threaded..." above for prior weak-signal history) caused the
 *initial* STA connect attempt to genuinely fail, and `main.c` fell back to
 `captive_portal_start()` per its designed failure path -- which then
@@ -585,12 +589,29 @@ if_key is NULL or duplicate key`). Root cause: `wifi_setup.c`'s
 `esp_netif_create_default_wifi_sta()` earlier in the very same boot --
 `wifi_init_softap()` unconditionally calls it again, unaware a STA netif
 already exists from the failed connect attempt, and the duplicate
-registration aborts. **Not fixed yet** -- didn't recur on any of the
-several subsequent reboots (WiFi reconnected fine every other time), and
-fixing it isn't a prerequisite for the `max_uri_handlers` fix above, but
-it's a real crash on the captive portal's own failure-recovery path,
-exactly the path meant to handle a bad connection gracefully. Worth fixing
-before the next time weak WiFi coincides with a fresh boot.
+registration aborts.
+
+**Fixed**: `wifi_sta_try_connect()`'s own doc comment already said it
+"leaves WiFi running in STA mode either way (caller decides what to do
+next on failure)" -- the missing half was that no caller ever actually did
+anything with that. Added `wifi_sta_teardown()` (`components/wifi_setup/`):
+`esp_wifi_stop()` + `esp_wifi_deinit()` + `esp_netif_destroy_default_wifi()`
+on the STA netif captured from `wifi_sta_try_connect()`'s own return value
+(previously discarded) -- the documented, symmetric counterpart to
+`esp_netif_create_default_wifi_sta()`, not a guess at undocumented
+behavior. Both `main.c`s now call it in the `have_creds && !connected`
+branch, right where `wifi_mark_attempt_failed()` already was, before
+falling through to `captive_portal_start()`.
+
+**Verified on real hardware, not just by reasoning about the fix**: forced
+a deterministic connect failure (`STA_CONNECT_TIMEOUT_MS` temporarily set
+to `1` for one test build/flash, reverted immediately after) and confirmed
+via serial log a clean teardown (`wifi:stop sw txq`, `wifi:Deinit lldesc
+rx mblock:10`, no assertion) followed by `captive_portal: SoftAP started`
+-- no crash. Separately, `flu-display` then hit this exact failure path
+*for real* (genuine rssi -89 on a later boot, not the artificial test) and
+recovered the same clean way, entering its own setup AP instead of
+crashing -- a second, independent, non-artificial confirmation.
 
 ## Misc
 
