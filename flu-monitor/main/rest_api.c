@@ -8,6 +8,7 @@
 #include "cJSON.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 
 #include "sensors.h"
 #include "settings.h"
@@ -95,6 +96,43 @@ static const httpd_uri_t reading_uri = {
     .uri = "/api/reading",
     .method = HTTP_GET,
     .handler = reading_get_handler,
+};
+
+// Live WiFi link quality -- esp_wifi_sta_get_ap_info() queries the current
+// association fresh on every call (unlike RSSI, which the WiFi driver only
+// ever logs once, at the moment it associates -- see CLAUDE.md's own
+// writeup of chasing an apparent REST API hang that turned out to be a
+// weak signal after roaming to a farther AP within the same SSID). No
+// caching here: this is meant to answer "how's the signal right now," not
+// "how was it at boot."
+static esp_err_t wifi_get_handler(httpd_req_t *req) {
+  wifi_ap_record_t info;
+  esp_err_t err = esp_wifi_sta_get_ap_info(&info);
+
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddBoolToObject(root, "connected", err == ESP_OK);
+  if (err == ESP_OK) {
+    cJSON_AddStringToObject(root, "ssid", (const char *) info.ssid);
+    char bssid[18];
+    snprintf(bssid, sizeof(bssid), "%02x:%02x:%02x:%02x:%02x:%02x", info.bssid[0], info.bssid[1], info.bssid[2],
+             info.bssid[3], info.bssid[4], info.bssid[5]);
+    cJSON_AddStringToObject(root, "bssid", bssid);
+    cJSON_AddNumberToObject(root, "channel", info.primary);
+    cJSON_AddNumberToObject(root, "rssi", info.rssi);
+  }
+
+  char *json = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, json);
+  free(json);
+  return ESP_OK;
+}
+
+static const httpd_uri_t wifi_get_uri = {
+    .uri = "/api/wifi",
+    .method = HTTP_GET,
+    .handler = wifi_get_handler,
 };
 
 static void settings_to_json(const settings_t *s, cJSON *root) {
@@ -412,6 +450,7 @@ httpd_handle_t rest_api_start(void) {
   ESP_LOGI(TAG, "Starting REST API server on port %d", config.server_port);
   ESP_ERROR_CHECK(httpd_start(&server, &config));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &reading_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &wifi_get_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &settings_get_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &settings_post_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &events_get_uri));

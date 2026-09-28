@@ -188,6 +188,38 @@ instead of each starting their own. The captive portal's own server
 (setup-time only, never running at the same time as the connected-state
 server) is separate and unaffected.
 
+## The REST API server is single-threaded, and a weak WiFi signal can look exactly like a hang
+
+`rest_api_start()` never overrides `max_open_sockets` (default 7 --
+`HTTPD_DEFAULT_CONFIG()`), so up to 7 clients can have a socket open at
+once (plus `ws_server.c`'s own separate `WS_MAX_CLIENTS = 8` cap on
+broadcast fan-out). But `esp_http_server` here runs as a single FreeRTOS
+task -- `HTTPD_DEFAULT_CONFIG()` only has one `task_priority`/`stack_size`/
+`core_id`, no thread pool -- so it services one HTTP request at a time,
+serially, even with several sockets open simultaneously. `POST /ota`
+writing firmware to flash in a loop on that same task is the one handler
+long enough for this to matter in practice: during an OTA push, the
+dashboard/REST API/WS are effectively unresponsive to everyone else until
+it finishes (Google Sheets logging is deliberately exempt -- `sheets_logger.c`
+runs on its own task for exactly this reason).
+
+This came up for a more surprising reason once, live: `GET /api/reading`
+hung completely for 15-20s (past `curl`'s own timeout, `HTTP 000`), even
+though a raw TCP connect to port 80 succeeded and the device still
+answered ping normally. Looked exactly like a wedged httpd task. It
+wasn't -- the boot log (captured by attaching serial *during* a fresh
+reset, not after) showed the device had roamed to a different AP within
+the same SSID with `rssi: -88`, a genuinely weak signal (the WiFi driver
+only logs RSSI once, at association -- there's no live way to check it
+without this). A request that DOES eventually respond, just after 5+
+seconds, only from a real client (not a synthetic one that gives up early)
+proves it's a slow/lossy link and not a stuck task -- a truly deadlocked
+task would never respond no matter how long you wait. `GET /api/wifi`
+(queries `esp_wifi_sta_get_ap_info()` fresh on every call, not cached)
+exists specifically so this can be checked on demand going forward,
+without needing to force a reboot and catch the one-shot boot-time log
+line.
+
 ## `EMBED_FILES` collides on basename, not full path
 
 `main/web_ui/`'s first attempt named its copies of the shared design-system

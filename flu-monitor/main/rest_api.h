@@ -13,6 +13,8 @@ extern "C" {
 // server covers initial setup) and registers this project's REST
 // endpoints on it:
 //   GET  /api/reading  -- latest sensor reading + derived rate/zone
+//   GET  /api/wifi     -- live WiFi link info (SSID/BSSID/channel/RSSI),
+//                         queried fresh on every call, not cached
 //   GET  /api/settings -- current runtime settings
 //   POST /api/settings -- replace settings wholesale (JSON body)
 //   GET  /api/events   -- the fixed woodstove-event taxonomy (slug + label)

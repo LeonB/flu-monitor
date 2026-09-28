@@ -87,6 +87,7 @@ machine that pushes updates.
 
 ```sh
 curl http://flu-monitor.local/api/reading
+curl http://flu-monitor.local/api/wifi       # live SSID/BSSID/channel/RSSI, not cached
 curl http://flu-monitor.local/api/settings
 curl -X POST http://flu-monitor.local/api/settings \
   -H "Content-Type: application/json" \
