@@ -18,10 +18,10 @@ made of two physical devices/firmware folders:
   physically removed (see `flu-monitor/CLAUDE.md`), the ESPHome version was
   retired and removed entirely, and this folder renamed to take its place.
   Milestone 7 (woodstove event logging via `POST /api/event`) is also done.
-  Milestone 6 (embedded web UI at `/` -- dashboard, 24h graph, settings)
-  is built and flashed, all its REST endpoints confirmed live, but its
-  actual rendering/interaction hasn't been checked in a real browser yet
-  (see `flu-monitor/CLAUDE.md`'s own Status section).
+  Milestone 6 (embedded web UI at `/` -- dashboard, 24h graph, settings,
+  event-log sheet) is also done, visually verified in a real browser (see
+  `flu-monitor/CLAUDE.md`'s own Status section) -- all 7 planned milestones
+  for this sidecar are now complete.
 - **`flu-display/`** — the plain-ESP-IDF **display**: a screen-less ambient
   light box that subscribes to the sidecar's live broadcast and shows the
   reading as a color/pulse gradient. See `flu-display/README.md` for
@@ -50,8 +50,8 @@ Full intended system:
   window..." section) via NVS-backed settings + a REST API + Google Sheets
   logging, including woodstove event annotations via `POST /api/event`
   (Milestones 1-5 and 7), plus an embedded web UI to actually tap those
-  events from a phone at the stove (Milestone 6 -- built, not yet visually
-  verified in a browser).
+  events from a phone at the stove (Milestone 6) -- all seven of this
+  sidecar's planned milestones are done.
 - **Display (`flu-display/`)**, a separate physical device (Lolin D32 Pro +
   24-LED SK6812 RGBW ring): all three build milestones done, see
   `flu-display/README.md`/`flu-display/CLAUDE.md` for status. Screen-less

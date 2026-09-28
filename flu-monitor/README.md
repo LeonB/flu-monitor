@@ -15,15 +15,13 @@ alongside it, but has since been physically removed — its ambient
 temperature reading was almost a duplicate of the MCP9601's own cold-junction
 reading, so it wasn't earning its board space. No BMP581 code remains.
 
-**Status: Milestones 1-5 and 7 done and verified on real hardware; Milestone
-6 built and flashed, visual verification still pending** (WiFi + captive
-portal + mDNS + OTA; MCP9601 sensor; NVS-backed settings + REST API +
+**Status: Milestones 1-7 all done and verified on real hardware** (WiFi +
+captive portal + mDNS + OTA; MCP9601 sensor; NVS-backed settings + REST API +
 rate/zone regression; WebSocket broadcast, now consumed by `../flu-display/`
 instead of it polling REST; Google Sheets logging + woodstove event logging,
 both verified against the real production webhook; an embedded web UI --
-dashboard, 24h graph, settings, all served from the device itself at `/` --
-whose REST endpoints are confirmed working live, but whose actual rendering/
-interaction hasn't yet been checked in a real browser).
+dashboard, 24h graph, settings, event-log sheet, all served from the device
+itself at `/` -- visually verified in a real browser).
 
 ## Files
 

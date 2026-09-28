@@ -59,14 +59,14 @@ board:**
 - **Milestone 6**: the embedded web UI (`main/web_ui/`) -- dashboard (glow
   circle, pulse math ported from `flu-display/main/led_display.c`), 24h
   graph (`GET /api/history`, a new downsampled ring buffer in `sensors.c`),
-  and settings, all one Alpine.js page with no build step, served from `/`.
-  Every backing endpoint confirmed responding correctly live (`/`,
-  `/dashboard.js`, `/dashboard.css`, `/alpinejs.min.js`, `/api/history` all
-  return real content/data over HTTP). **The actual rendering/interaction
-  has not yet been checked in a real browser** -- the Chrome extension
-  wasn't connected when this was built; only static checks (`node --check`
-  on the JS, balanced HTML tags) ran. Treat the UI itself as unverified
-  until someone's actually looked at it on the device.
+  settings, and the event-log bottom sheet, all one Alpine.js page with no
+  build step, served from `/`. Visually verified live in a real browser
+  (Chrome, via the Claude Code Chrome extension) -- dashboard glow,
+  settings steppers/save-bar/undo, the 24h graph, and the event sheet
+  (a real row logged: `added_wood`) all confirmed working end to end. Three
+  real bugs only showed up once actually rendered (static checks alone
+  missed all of them) -- see "Three real bugs only a real browser caught"
+  below.
 
 ## STEMMA QT power (GPIO2) — the single biggest time sink so far
 
@@ -205,6 +205,64 @@ renaming `main/web_ui/`'s copies to `dashboard.css`/`alpinejs.min.js`
 -- the symbol name is derived from this same intermediate basename).
 Anything else embedding files across multiple components needs basenames
 unique across the *whole* build, not just within its own directory.
+
+## Three real bugs only a real browser caught
+
+`main/web_ui/` built cleanly, and every backing REST endpoint tested fine
+via `curl`, but the page itself rendered completely blank when actually
+opened in Chrome (visual verification was flagged as pending in an earlier
+commit -- this is what turned up once it happened). None of these three
+would have been caught by static checks (`node --check`, balanced-tag
+counting) -- only a live browser, console errors, and screenshots surfaced
+them:
+
+- **`dashboard.js` must load (and define `app()` on `window`) *before*
+  `alpinejs.min.js` runs**, not after, even though both are
+  `<script defer>` and `defer` preserves *document* order. Alpine
+  auto-starts synchronously at the end of its own script -- scanning the
+  DOM and evaluating `x-data="app()"` immediately -- which happens before a
+  *later* deferred script gets a chance to execute. With
+  `<script src="/alpinejs.min.js" defer>` listed first, Alpine scanned the
+  DOM and threw `ReferenceError: app is not defined` on every directive,
+  leaving the whole page unrendered. Fixed by swapping the two `<script>`
+  tags' order. `components/captive_portal/root.html` never hit this because
+  its own data function is inline (no `src`, no `defer`), which executes
+  synchronously at its position in the parse -- before any deferred script
+  runs at all.
+- **A CSS `transition` on an element whose inline style is rewritten every
+  animation frame fights the animation instead of smoothing it.**
+  `.glow-outer`/`.glow-inner` had `transition: box-shadow .3s ease` /
+  `transition: background-color .15s linear, color .15s linear` -- looked
+  like reasonable general-purpose polish, copied without thinking through
+  the interaction. `dashboard.js`'s `runGlowFrame()` already writes a new
+  inline `background-color`/`box-shadow` value ~30 times a second via
+  `requestAnimationFrame`; each write restarted a new CSS transition before
+  the previous one finished, so the rendered color perpetually chased a
+  moving target and never reached it -- rendered as a barely-visible,
+  washed-out near-transparent blend instead of the real zone color. The
+  glow circle was there, just practically invisible. Fixed by removing
+  both `transition` declarations -- the JS's own envelope-curve
+  interpolation already provides all the smoothness needed.
+- **`:viewBox="..."` (Alpine's dynamic attribute binding) silently produces
+  a lowercase `viewbox` attribute, which SVG does not recognize** (SVG
+  attribute names are case-sensitive). A directive attribute like
+  `:viewBox` isn't on the browser's fixed allowlist of camelCase SVG
+  attributes preserved during HTML parsing -- only a bare, statically-
+  written `viewBox="..."` is -- so the HTML parser lowercases the
+  *directive's own attribute name* to `:viewbox` before Alpine ever reads
+  it, and Alpine's `setAttribute` call inherits that already-lowercased
+  name. Confirmed via `element.getAttribute('viewbox')` (lowercase)
+  returning the value while `getAttribute('viewBox')` returned `null`. The
+  graph's `<svg>` rendered at a tiny fixed intrinsic size instead of
+  stretching to its container, with the drawn content confined to a small
+  corner. Fixed by hardcoding `viewBox="0 0 342 230"` as a static literal
+  instead of binding it (`graphHeight` was always a fixed 230 anyway, so
+  there was nothing that actually needed to be dynamic). General lesson: 
+  never bind SVG's camelCase presentation attributes (`viewBox`,
+  `preserveAspectRatio`, etc.) dynamically via `:attr` in Alpine (or likely
+  any framework using plain `setAttribute` off an HTML-parsed directive
+  name) -- keep them static, or set them via the SVG DOM's own typed
+  properties (e.g. `svgEl.viewBox.baseVal`) instead of `setAttribute`.
 
 ## The woodstove-event taxonomy is a closed set, not free text
 
