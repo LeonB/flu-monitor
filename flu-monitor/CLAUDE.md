@@ -49,8 +49,15 @@ board:**
   response never blocks sensor sampling or the REST/WS servers -- verified
   against the real production webhook (a real row logged, status 200) after
   fixing a missing TLS cert bundle attachment (see below).
+- **Milestone 7**: `POST /api/event` + `GET /api/events` (`rest_api.c`'s
+  `EVENTS[]`), the fixed woodstove-event taxonomy ported verbatim from the
+  ESPHome sidecar's own template buttons (same slugs, e.g. `cold_start`,
+  `added_wood` -- see "The woodstove-event taxonomy is a closed set" below)
+  -- verified against the real production webhook (a real row logged,
+  status 200, event=`added_wood`). No physical buttons or web UI to trigger
+  these yet -- just the REST endpoint, per the plan's "at minimum" scope.
 
-Milestones 6-7 (web UI, event buttons) not yet built.
+Milestone 6 (web UI) not yet built.
 
 ## STEMMA QT power (GPIO2) — the single biggest time sink so far
 
@@ -171,6 +178,23 @@ normal running state (once connected to WiFi); `ota_server_register()` and
 instead of each starting their own. The captive portal's own server
 (setup-time only, never running at the same time as the connected-state
 server) is separate and unaffected.
+
+## The woodstove-event taxonomy is a closed set, not free text
+
+`rest_api.c`'s `POST /api/event` validates the request's `event` field
+against a fixed `EVENTS[]` list (`cold_start`, `opened_stove`, `added_wood`,
+`damper_up`, `damper_down`, `burning_optimally`, `roaring`, `dying_down`,
+`fire_out`, `stove_off`) and rejects anything else with a `400`, rather than
+logging whatever string a caller sends. Deliberate: per the repo root
+`CLAUDE.md`'s "Current phase is data-gathering" section, the whole point of
+these annotations is correlating burns against each other later, which
+needs a consistent, known vocabulary -- free-text labels from a rushed tap
+at the stove wouldn't reliably give that. The slugs are ported verbatim
+from the original ESPHome sidecar's own template buttons (`GET
+/api/events` exposes both the slug and a human-readable label, e.g.
+`{"slug":"roaring","label":"Stove Roaring"}` -- note the slug/label mismatch
+on that one specifically, carried over as-is from the ESPHome config rather
+than "fixed" to match, since any existing Sheets data already uses `roaring`).
 
 ## A WebSocket URI handler is never called for its own handshake
 

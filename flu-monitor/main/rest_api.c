@@ -1,6 +1,7 @@
 #include "rest_api.h"
 
 #include <math.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -9,9 +10,16 @@
 
 #include "sensors.h"
 #include "settings.h"
+#include "sheets_logger.h"
 #include "ws_server.h"
 
 static const char *TAG = "rest_api";
+
+// Matches sheets_logger.c's own private EVENT_LABEL_MAX_LEN -- not shared
+// via its header, but sheets_logger_log_event() truncates safely to its own
+// buffer regardless, so this only needs to comfortably fit every EVENTS[]
+// slug below (longest is "burning_optimally", 18 chars), not match exactly.
+#define EVENT_SLUG_MAX_LEN 32
 
 // cJSON_AddNumberToObject widens our floats to double and prints the
 // shortest round-tripping decimal for *that* double -- which surfaces the
@@ -167,16 +175,131 @@ static const httpd_uri_t settings_post_uri = {
     .handler = settings_post_handler,
 };
 
+// The fixed woodstove-event taxonomy, ported verbatim from the original
+// ESPHome sidecar's own template buttons (same slugs, so any future
+// analysis joining against old Sheets data doesn't need a mapping table).
+// A closed set rather than free-text event labels, deliberately: this is
+// the data-gathering phase's whole point (see the repo root CLAUDE.md) --
+// a consistent, known taxonomy is what makes burns comparable to each
+// other later, which free-text annotations from a rushed tap at the stove
+// would not reliably give.
+typedef struct {
+  const char *slug;
+  const char *label;
+} woodstove_event_t;
+
+static const woodstove_event_t EVENTS[] = {
+    {"cold_start", "Cold Start"},
+    {"opened_stove", "Opened Stove"},
+    {"added_wood", "Added Wood"},
+    {"damper_up", "Damper Up"},
+    {"damper_down", "Damper Down"},
+    {"burning_optimally", "Burning Optimally"},
+    {"roaring", "Stove Roaring"},
+    {"dying_down", "Dying Down"},
+    {"fire_out", "Fire Out"},
+    {"stove_off", "Stove Off"},
+};
+#define EVENT_COUNT (sizeof(EVENTS) / sizeof(EVENTS[0]))
+
+static bool event_slug_valid(const char *slug) {
+  for (size_t i = 0; i < EVENT_COUNT; i++) {
+    if (strcmp(EVENTS[i].slug, slug) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static esp_err_t events_get_handler(httpd_req_t *req) {
+  cJSON *root = cJSON_CreateArray();
+  for (size_t i = 0; i < EVENT_COUNT; i++) {
+    cJSON *item = cJSON_CreateObject();
+    cJSON_AddStringToObject(item, "slug", EVENTS[i].slug);
+    cJSON_AddStringToObject(item, "label", EVENTS[i].label);
+    cJSON_AddItemToArray(root, item);
+  }
+
+  char *json = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, json);
+  free(json);
+  return ESP_OK;
+}
+
+static const httpd_uri_t events_get_uri = {
+    .uri = "/api/events",
+    .method = HTTP_GET,
+    .handler = events_get_handler,
+};
+
+// Queues an immediate, un-gated Sheets log tagged with the given event slug
+// -- see sheets_logger_log_event()'s own doc comment for why this bypasses
+// the periodic deadband/heartbeat check and doesn't reset its clock.
+static esp_err_t event_post_handler(httpd_req_t *req) {
+  if (req->content_len <= 0 || req->content_len >= 128) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Request body too large");
+    return ESP_FAIL;
+  }
+
+  char body[128] = {0};
+  int received = 0;
+  while (received < req->content_len) {
+    int ret = httpd_req_recv(req, body + received, req->content_len - received);
+    if (ret <= 0) {
+      if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+        continue;
+      }
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to read request body");
+      return ESP_FAIL;
+    }
+    received += ret;
+  }
+  body[received] = '\0';
+
+  cJSON *root = cJSON_Parse(body);
+  if (root == NULL) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+
+  cJSON *item = cJSON_GetObjectItem(root, "event");
+  if (!cJSON_IsString(item) || !event_slug_valid(item->valuestring)) {
+    cJSON_Delete(root);
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Unknown event -- see GET /api/events for valid slugs");
+    return ESP_FAIL;
+  }
+
+  char slug[EVENT_SLUG_MAX_LEN] = {0};
+  strlcpy(slug, item->valuestring, sizeof(slug));
+  cJSON_Delete(root);
+
+  sheets_logger_log_event(slug);
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_sendstr(req, "{\"success\":true}");
+  return ESP_OK;
+}
+
+static const httpd_uri_t event_post_uri = {
+    .uri = "/api/event",
+    .method = HTTP_POST,
+    .handler = event_post_handler,
+};
+
 httpd_handle_t rest_api_start(void) {
   httpd_handle_t server = NULL;
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.stack_size = 8192;  // shared with ota_server's esp_ota_* calls, which need more than the 4096 default
-  config.max_uri_handlers = 12;  // default (8) is too few once ota + this milestone's 3 endpoints are all registered
+  config.max_uri_handlers = 12;  // default (8) is too few once ota + this project's own endpoints are all registered
 
   ESP_LOGI(TAG, "Starting REST API server on port %d", config.server_port);
   ESP_ERROR_CHECK(httpd_start(&server, &config));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &reading_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &settings_get_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &settings_post_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &events_get_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &event_post_uri));
   return server;
 }

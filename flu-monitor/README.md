@@ -15,11 +15,14 @@ alongside it, but has since been physically removed — its ambient
 temperature reading was almost a duplicate of the MCP9601's own cold-junction
 reading, so it wasn't earning its board space. No BMP581 code remains.
 
-**Status: Milestones 1-5 done and verified on real hardware** (WiFi + captive
-portal + mDNS + OTA; MCP9601 sensor; NVS-backed settings + REST API + rate/
-zone regression; WebSocket broadcast, now consumed by `../flu-display/`
+**Status: Milestones 1-5 and 7 done and verified on real hardware** (WiFi +
+captive portal + mDNS + OTA; MCP9601 sensor; NVS-backed settings + REST API +
+rate/zone regression; WebSocket broadcast, now consumed by `../flu-display/`
 instead of it polling REST; Google Sheets logging, verified against the real
-production webhook). Milestones 6-7 (web UI, event buttons) not yet built.
+production webhook; woodstove event logging via `POST /api/event`, verified
+against the real production webhook too). Milestone 6 (web UI) not yet
+built -- the event buttons currently need a raw `curl`/HTTP client, no UI
+to tap yet.
 
 ## Files
 
@@ -92,6 +95,20 @@ semantics) and validates before persisting — an invalid payload (e.g.
 settings untouched. On success, it also broadcasts `{"type":"settings_changed"}`
 over `/ws` (see below).
 
+## Woodstove event logging (once connected to WiFi)
+
+```sh
+curl http://flu-monitor.local/api/events   # the fixed taxonomy: [{"slug":"cold_start","label":"Cold Start"}, ...]
+curl -X POST http://flu-monitor.local/api/event \
+  -H "Content-Type: application/json" \
+  -d '{"event":"cold_start"}'
+```
+
+`POST /api/event` logs an immediate, un-gated Sheets row (see "Google Sheets
+logging" below) for one of the fixed event slugs `GET /api/events` lists --
+an unknown slug gets a `400`. No web UI exists yet to tap these from a
+phone at the stove (Milestone 6); for now this needs a raw HTTP client.
+
 ## WebSocket broadcast (once connected to WiFi)
 
 ```sh
@@ -117,11 +134,11 @@ a row on its own ~30s-tick task whenever either is true:
 
 The dedup baseline (`s_last_logged_thermocouple_c`) is in-RAM only, not
 NVS-persisted, so a reboot always logs one row immediately on the first tick
-— matching the ESPHome sidecar's own `restore_value: false` behavior. A
-future `POST /api/event` (Milestone 7) will call
-`sheets_logger_log_event()` to log an immediate, un-gated row for a
-woodstove annotation (Cold Start, Added Wood, etc.), already wired up on its
-own queue.
+— matching the ESPHome sidecar's own `restore_value: false` behavior.
+`POST /api/event` (see "Woodstove event logging" above) logs a fourth kind
+of row, tagged with one of the fixed event slugs instead of `temp_change`/
+`heartbeat` -- immediate and un-gated, bypassing the deadband/heartbeat
+check entirely and not resetting either's clock.
 
 ## Onboard NeoPixel: WiFi status at a glance
 

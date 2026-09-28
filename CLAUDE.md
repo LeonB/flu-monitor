@@ -17,7 +17,9 @@ made of two physical devices/firmware folders:
   logging) and a BMP581 sensor originally alongside the MCP9601 was
   physically removed (see `flu-monitor/CLAUDE.md`), the ESPHome version was
   retired and removed entirely, and this folder renamed to take its place.
-  Milestones 6-7 (web UI, event buttons) not yet built.
+  Milestone 7 (woodstove event logging via `POST /api/event`) is also done.
+  Milestone 6 (web UI) not yet built -- event logging currently needs a raw
+  `curl`/HTTP client, no UI to tap yet.
 - **`flu-display/`** — the plain-ESP-IDF **display**: a screen-less ambient
   light box that subscribes to the sidecar's live broadcast and shows the
   reading as a color/pulse gradient. See `flu-display/README.md` for
@@ -44,8 +46,9 @@ Full intended system:
 - **Process**: the ESP32 sidecar reads it over I2C, tracks rate-of-change/
   zone itself, and logs it (see `flu-monitor/CLAUDE.md`'s "The regression
   window..." section) via NVS-backed settings + a REST API + Google Sheets
-  logging (Milestones 1-5) — no web UI or event buttons yet (its own
-  Milestones 6-7).
+  logging, including woodstove event annotations via `POST /api/event`
+  (Milestones 1-5 and 7) — no web UI yet to actually tap those events from a
+  phone at the stove (its own Milestone 6).
 - **Display (`flu-display/`)**, a separate physical device (Lolin D32 Pro +
   24-LED SK6812 RGBW ring): all three build milestones done, see
   `flu-display/README.md`/`flu-display/CLAUDE.md` for status. Screen-less

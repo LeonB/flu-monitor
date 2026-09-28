@@ -20,13 +20,14 @@ extern "C" {
 void sheets_logger_init(void);
 
 // Queues an immediate log tagged with the given event label (e.g.
-// "cold_start", "added_wood") -- bypasses the periodic deadband/heartbeat
-// gating entirely and does not reset either's clock, matching the ESPHome
-// sidecar's own woodstove event-button behavior: these are deliberate
-// annotations, not routine samples, so they shouldn't delay or restart the
-// next scheduled heartbeat/deadband check. Safe to call from any task
-// (e.g. a future POST /api/event handler, Milestone 7) -- the actual HTTP
-// request always runs on this module's own task, never the caller's.
+// "cold_start", "added_wood" -- see rest_api.c's EVENTS[] for the full
+// taxonomy) -- bypasses the periodic deadband/heartbeat gating entirely and
+// does not reset either's clock, matching the ESPHome sidecar's own
+// woodstove event-button behavior: these are deliberate annotations, not
+// routine samples, so they shouldn't delay or restart the next scheduled
+// heartbeat/deadband check. Safe to call from any task (rest_api.c's own
+// POST /api/event handler calls this directly) -- the actual HTTP request
+// always runs on this module's own task, never the caller's.
 void sheets_logger_log_event(const char *event);
 
 #ifdef __cplusplus
