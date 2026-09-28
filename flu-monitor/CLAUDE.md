@@ -157,6 +157,11 @@ bits 20/22 genuinely unset. Don't chase this warning as a real bug.
 
 ## Live WiFi test-connect-before-save (captive portal)
 
+`wifi_setup.c`/`captive_portal.c`/`dns_server.c` now live in `../components/`,
+shared with `../flu-display/` (see the repo root `CLAUDE.md`'s "Shared
+components" section) -- this section's description of the test-connect
+design is unchanged, just no longer specific to this folder alone.
+
 `wifi_setup.c`'s `wifi_sta_test_connect()` attempts the real STA connection
 *while the setup AP stays up* (both possible simultaneously in
 `WIFI_MODE_APSTA`, already needed for the network-scan feature), and
@@ -285,7 +290,7 @@ confirmed fixed.
 
 `main/web_ui/`'s first attempt named its copies of the shared design-system
 assets `styles.css` and `alpine.min.js` -- the same basenames
-`components/captive_portal/` already uses for its own, *different*, copies
+`../components/captive_portal/` already uses for its own, *different*, copies
 of those files. Build failed with `ninja: error: ... multiple rules
 generate styles.css.S`. ESP-IDF's `EMBED_FILES` generates an intermediate
 `<basename>.S`/`.o` pair per embedded file, and that intermediate filename
@@ -318,7 +323,7 @@ them:
   `<script src="/alpinejs.min.js" defer>` listed first, Alpine scanned the
   DOM and threw `ReferenceError: app is not defined` on every directive,
   leaving the whole page unrendered. Fixed by swapping the two `<script>`
-  tags' order. `components/captive_portal/root.html` never hit this because
+  tags' order. `../components/captive_portal/root.html` never hit this because
   its own data function is inline (no `src`, no `defer`), which executes
   synchronously at its position in the parse -- before any deferred script
   runs at all.

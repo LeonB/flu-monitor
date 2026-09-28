@@ -69,6 +69,12 @@ void app_main(void) {
     // config this depends on.
     esp_ota_mark_app_valid_cancel_rollback();
 
+    // Clears any stale failure flag from an earlier, unrelated attempt --
+    // the shared captive portal's own /save handler already clears this
+    // when a *new* attempt starts, but a successful connect is also a
+    // clean signal that whatever was recorded before no longer applies.
+    wifi_clear_attempt_failed();
+
     ota_server_start();
     led_display_init();
     flue_poll_init();
@@ -85,8 +91,12 @@ void app_main(void) {
       vTaskDelay(pdMS_TO_TICKS(STALENESS_CHECK_INTERVAL_MS));
     }
   } else {
+    if (have_creds) {
+      ESP_LOGW(TAG, "Failed to join '%s' -- recording for the setup portal's failure screen", ssid);
+      wifi_mark_attempt_failed(ssid);
+    }
     ESP_LOGW(TAG, "Not connected -- starting setup access point + captive portal");
     status_led_set(STATUS_LED_AP_MODE);
-    captive_portal_start(SETUP_AP_SSID, SETUP_AP_PASSWORD, SETUP_AP_MAX_CONN);
+    captive_portal_start(SETUP_AP_SSID, SETUP_AP_PASSWORD, SETUP_AP_MAX_CONN, STA_CONNECT_TIMEOUT_MS);
   }
 }

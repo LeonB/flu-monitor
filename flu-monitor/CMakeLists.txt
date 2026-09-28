@@ -5,5 +5,9 @@
 # project template exactly.
 cmake_minimum_required(VERSION 3.16)
 
+# wifi_setup/captive_portal/dns_server live in ../components/, shared with
+# ../flu-display/ -- see ../CLAUDE.md's "Shared components" section.
+set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../components")
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(flu-monitor)

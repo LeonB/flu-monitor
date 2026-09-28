@@ -10,8 +10,11 @@ Plain ESP-IDF firmware (not ESPHome/Arduino) for a **Lolin D32 Pro** driving a
   `flue_poll.c/.h` (subscribes to `flu-monitor`'s WebSocket broadcast and
   fetches its zone/rate settings over REST), `led_display.c/.h` (renders the
   ring)
-- `components/wifi_setup/`, `components/captive_portal/`, `components/dns_server/`
-  — WiFi credential storage (NVS) and the fallback setup access point
+- `../components/wifi_setup/`, `../components/captive_portal/`,
+  `../components/dns_server/` — WiFi credential storage (NVS) and the
+  fallback setup access point, with a live test-connect-before-save flow;
+  shared with `../flu-monitor/` (see the repo root `CLAUDE.md`'s "Shared
+  components" section)
 - `main/ota_server.c/.h` — authenticated `POST /ota` endpoint for pushing
   firmware updates over WiFi
 - `activate-idf.sh` — sources the cached ESP-IDF toolchain (see `CLAUDE.md`

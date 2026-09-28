@@ -361,17 +361,29 @@ broadcast" below.
   (`$IDF_PATH/examples/protocols/http_server/captive_portal/`), not a
   third-party library, deliberately, per the "stay in the Espressif ecosystem"
   preference. That example only serves a static page with no way to actually
-  submit/save credentials; `components/captive_portal/` adds the real
-  `POST /save` handler (NVS-backed credential storage, then `esp_restart()` to
-  retry STA with them) on top of it. `components/dns_server/` is copied
-  near-verbatim from that same example.
+  submit/save credentials; `captive_portal/` adds the real `POST /save`
+  handler (NVS-backed credential storage, then `esp_restart()` to retry STA
+  with them) on top of it. `dns_server/` is copied near-verbatim from that
+  same example.
 
 - **`wifi_setup` had to become its own component**, not live inside `main/`
-  as originally sketched -- `components/captive_portal/` also needs
-  `wifi_creds_save()`, and a non-`main` component can't cleanly reach into
-  `main/`'s private headers without `main` explicitly exposing them (and
-  `main` itself depends on `captive_portal`, so that path risks circularity
-  anyway). A small sibling component both can depend on is the clean fix.
+  as originally sketched -- `captive_portal/` also needs `wifi_creds_save()`,
+  and a non-`main` component can't cleanly reach into `main/`'s private
+  headers without `main` explicitly exposing them (and `main` itself depends
+  on `captive_portal`, so that path risks circularity anyway). A small
+  sibling component both can depend on is the clean fix.
+
+- **`wifi_setup`/`captive_portal`/`dns_server` moved out to `../components/`,
+  shared with `../flu-monitor/`** (see the repo root `CLAUDE.md`'s "Shared
+  components" section) -- this project's own copies had stayed at their
+  original Milestone 1 scope (plain HTML form, blind save-then-reboot) while
+  `flu-monitor/`'s grew a live network scan and a test-connect-before-save
+  flow; `flu-monitor/`'s became the shared version since it was a strict
+  superset. This device now gets that scan/test-connect UX too, without any
+  new code of its own beyond `main.c` marking/clearing the "last attempt
+  failed" NVS flag on boot (mirroring `flu-monitor/main/main.c`'s own
+  pattern) and passing `STA_CONNECT_TIMEOUT_MS` as
+  `captive_portal_start()`'s new fourth argument.
 
 - **`httpd_query_key_value()` does NOT URL-decode.** Its own doc comment in
   `esp_http_server.h` says so explicitly: keys/values from a

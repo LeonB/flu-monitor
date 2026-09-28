@@ -46,9 +46,11 @@ itself at `/` -- visually verified in a real browser).
   Script response never blocks sensor sampling or the REST/WS servers
 - `main/ota_server.c/.h` — authenticated `POST /ota` endpoint, registered onto
   `rest_api`'s shared HTTP server (only one server can bind port 80)
-- `components/wifi_setup/`, `components/captive_portal/`, `components/dns_server/`
-  — WiFi credential storage (NVS) and the fallback setup access point, with a
-  live test-connect-before-save flow (see `CLAUDE.md`)
+- `../components/wifi_setup/`, `../components/captive_portal/`,
+  `../components/dns_server/` — WiFi credential storage (NVS) and the
+  fallback setup access point, with a live test-connect-before-save flow
+  (see `CLAUDE.md`); shared with `../flu-display/` (see the repo root
+  `CLAUDE.md`'s "Shared components" section)
 - `activate-idf.sh` — sources the cached ESP-IDF toolchain (same one
   `flu-display` uses; see `../flu-display/CLAUDE.md` for the one-time setup)
 - `ota_flash.sh` — pushes a build to a running device over WiFi
