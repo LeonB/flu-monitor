@@ -441,11 +441,19 @@ static const httpd_uri_t history_get_uri = {
     .handler = history_get_handler,
 };
 
+// Explicit, not just relying on HTTPD_DEFAULT_CONFIG()'s own default (also
+// 7) -- rest_api_log_socket_usage() below needs to size its client_fds
+// buffer to match whatever this is actually set to.
+#define REST_API_MAX_OPEN_SOCKETS 7
+
+static httpd_handle_t s_server = NULL;
+
 httpd_handle_t rest_api_start(void) {
   httpd_handle_t server = NULL;
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.stack_size = 8192;  // shared with ota_server's esp_ota_* calls, which need more than the 4096 default
   config.max_uri_handlers = 16;  // default (8) is too few once ota + web_ui + this project's own endpoints are all registered
+  config.max_open_sockets = REST_API_MAX_OPEN_SOCKETS;
 
   ESP_LOGI(TAG, "Starting REST API server on port %d", config.server_port);
   ESP_ERROR_CHECK(httpd_start(&server, &config));
@@ -460,5 +468,34 @@ httpd_handle_t rest_api_start(void) {
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_js_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_css_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_alpine_js_uri));
+  s_server = server;
   return server;
+}
+
+// Diagnostic for chasing an apparent httpd hang (see CLAUDE.md's "The REST
+// API server is single-threaded..." section) -- logs the current open
+// socket count against REST_API_MAX_OPEN_SOCKETS, plus each fd, so a
+// leak/exhaustion pattern (count climbing to the max and staying pinned
+// there) is visible in the serial log over time, distinguishing it from a
+// single genuinely-wedged request (which would show a low, stable count).
+// Called periodically from main.c's sensor_log_task -- no dedicated timer,
+// piggybacking its existing ~30s cadence.
+void rest_api_log_socket_usage(void) {
+  if (s_server == NULL) {
+    return;
+  }
+  int client_fds[REST_API_MAX_OPEN_SOCKETS];
+  size_t count = REST_API_MAX_OPEN_SOCKETS;
+  esp_err_t err = httpd_get_client_list(s_server, &count, client_fds);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "httpd_get_client_list failed: %s", esp_err_to_name(err));
+    return;
+  }
+
+  char fds_str[REST_API_MAX_OPEN_SOCKETS * 5 + 1] = {0};
+  size_t pos = 0;
+  for (size_t i = 0; i < count && pos < sizeof(fds_str) - 5; i++) {
+    pos += snprintf(fds_str + pos, sizeof(fds_str) - pos, "%d ", client_fds[i]);
+  }
+  ESP_LOGI(TAG, "Open sockets: %u/%d [%s]", (unsigned) count, REST_API_MAX_OPEN_SOCKETS, fds_str);
 }

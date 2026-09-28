@@ -36,6 +36,11 @@ httpd_handle_t rest_api_start(void);
 // both surfaces agree on one schema. Caller must free() the returned string.
 char *rest_api_reading_json(const sensor_reading_t *r);
 
+// Logs the REST API server's current open-socket count (see the .c file's
+// own doc comment) -- diagnostic for chasing an apparent server hang.
+// Call periodically; a no-op before rest_api_start() has run.
+void rest_api_log_socket_usage(void);
+
 #ifdef __cplusplus
 }
 #endif

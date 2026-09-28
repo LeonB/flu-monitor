@@ -59,6 +59,11 @@ static void sensor_log_task(void *arg) {
     ws_server_broadcast_reading(reading_json);
     free(reading_json);
 
+    // Diagnostic for chasing an apparent REST API hang (see CLAUDE.md) --
+    // a no-op until rest_api_start() has run. Piggybacking this task's own
+    // cadence rather than a dedicated timer.
+    rest_api_log_socket_usage();
+
     // Matches the ESPHome sidecar's own 30s update_interval for a fair
     // side-by-side comparison.
     vTaskDelay(pdMS_TO_TICKS(30000));

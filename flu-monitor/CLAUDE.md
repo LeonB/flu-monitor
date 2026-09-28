@@ -188,37 +188,74 @@ instead of each starting their own. The captive portal's own server
 (setup-time only, never running at the same time as the connected-state
 server) is separate and unaffected.
 
-## The REST API server is single-threaded, and a weak WiFi signal can look exactly like a hang
+## The REST API server is single-threaded, with an unresolved intermittent full hang
 
-`rest_api_start()` never overrides `max_open_sockets` (default 7 --
-`HTTPD_DEFAULT_CONFIG()`), so up to 7 clients can have a socket open at
-once (plus `ws_server.c`'s own separate `WS_MAX_CLIENTS = 8` cap on
-broadcast fan-out). But `esp_http_server` here runs as a single FreeRTOS
-task -- `HTTPD_DEFAULT_CONFIG()` only has one `task_priority`/`stack_size`/
+`rest_api_start()` explicitly sets `max_open_sockets = REST_API_MAX_OPEN_SOCKETS`
+(7, matching `HTTPD_DEFAULT_CONFIG()`'s own default, but named so
+`rest_api_log_socket_usage()` below can size its buffer correctly rather
+than guessing), so up to 7 clients can have a socket open at once (plus
+`ws_server.c`'s own separate `WS_MAX_CLIENTS = 8` cap on broadcast
+fan-out). But `esp_http_server` here runs as a single FreeRTOS task --
+`HTTPD_DEFAULT_CONFIG()` only has one `task_priority`/`stack_size`/
 `core_id`, no thread pool -- so it services one HTTP request at a time,
 serially, even with several sockets open simultaneously. `POST /ota`
 writing firmware to flash in a loop on that same task is the one handler
-long enough for this to matter in practice: during an OTA push, the
-dashboard/REST API/WS are effectively unresponsive to everyone else until
-it finishes (Google Sheets logging is deliberately exempt -- `sheets_logger.c`
+long enough for this to matter in the ordinary case: during an OTA push,
+the dashboard/REST API/WS are unresponsive to everyone else until it
+finishes (Google Sheets logging is deliberately exempt -- `sheets_logger.c`
 runs on its own task for exactly this reason).
 
-This came up for a more surprising reason once, live: `GET /api/reading`
-hung completely for 15-20s (past `curl`'s own timeout, `HTTP 000`), even
-though a raw TCP connect to port 80 succeeded and the device still
-answered ping normally. Looked exactly like a wedged httpd task. It
-wasn't -- the boot log (captured by attaching serial *during* a fresh
-reset, not after) showed the device had roamed to a different AP within
-the same SSID with `rssi: -88`, a genuinely weak signal (the WiFi driver
-only logs RSSI once, at association -- there's no live way to check it
-without this). A request that DOES eventually respond, just after 5+
-seconds, only from a real client (not a synthetic one that gives up early)
-proves it's a slow/lossy link and not a stuck task -- a truly deadlocked
-task would never respond no matter how long you wait. `GET /api/wifi`
-(queries `esp_wifi_sta_get_ap_info()` fresh on every call, not cached)
-exists specifically so this can be checked on demand going forward,
-without needing to force a reboot and catch the one-shot boot-time log
-line.
+Beyond that ordinary case, this server has hung completely at least twice,
+under real usage, for reasons not yet fully root-caused:
+
+- **First time**: `GET /api/reading` took 15-20s (past `curl`'s own
+  timeout, `HTTP 000`), but a raw TCP connect succeeded and ping was
+  normal. Looked exactly like a wedged httpd task. Wasn't (this time) --
+  the boot log (captured by attaching serial *during* a fresh reset, not
+  after) showed the device had roamed to a different AP within the same
+  SSID at `rssi: -88`, a genuinely weak signal. A request that DID
+  eventually respond, just after 5+ seconds, from a real client (not a
+  synthetic one that gives up early) is what proved it was a slow/lossy
+  link rather than a stuck task -- a truly deadlocked task would never
+  respond no matter how long you wait. `GET /api/wifi` (queries
+  `esp_wifi_sta_get_ap_info()` fresh on every call, not cached, unlike
+  RSSI, which the WiFi driver only ever logs once at association) exists
+  specifically so this can be checked on demand, without forcing a reboot
+  to catch that one-shot boot-time log line.
+- **Second time, shortly after (same boot)**: every request hung
+  completely -- including using the bare IP (ruling out mDNS, see below)
+  and a fresh `nc -zv` TCP-only probe (which eventually succeeded, after
+  10+ seconds, meaning the TCP handshake itself was also slow). Crucially,
+  **the device's own serial log showed nothing at all** for any of these
+  attempts -- not even a warning, whereas a normal 404 (e.g. a browser's
+  `/favicon.ico` request) does get logged. Multiple consecutive attempts
+  over several minutes all failed identically, with the pattern getting
+  *worse* over time rather than being randomly intermittent like the RSSI
+  case -- consistent with some kind of accumulating resource exhaustion,
+  not (just) signal quality. `POST /ota` was also affected at this point
+  (`curl: (56) Recv failure: Connection reset by peer`), forcing a USB
+  reflash instead to get diagnostics onto the device. Also confirmed mDNS
+  was not the cause despite the symptom's obvious resemblance to this
+  project's own documented mDNS flakiness (`../flu-display/CLAUDE.md`):
+  `dns-sd -G v4 flu-monitor.local` resolved essentially instantly, and the
+  hang persisted identically when hitting the bare IP directly (no
+  hostname resolution involved at all).
+
+`rest_api_log_socket_usage()` (called every ~30s from `main.c`'s own
+`sensor_log_task`, piggybacking its cadence -- no dedicated timer) logs
+the current open-socket count via `httpd_get_client_list()`, specifically
+to catch this in the act next time: a count climbing toward 7 and staying
+pinned there would confirm socket/resource exhaustion; a low, stable count
+during a hang would point at something else (a genuinely wedged task, not
+a resource leak). Deliberately synthetic load right after adding this
+(sequential and concurrent `curl` bursts) did **not** reproduce either
+hang, and the socket count stayed low (2-3) throughout -- whatever
+triggers the second failure mode likely needs something closer to the
+original real-world condition (an extended real browser session actively
+polling the dashboard every 5s for several minutes) rather than short
+scripted request bursts. Unresolved as of this writing; the logging is in
+place to gather real data the next time it happens rather than continuing
+to guess.
 
 ## `EMBED_FILES` collides on basename, not full path
 
