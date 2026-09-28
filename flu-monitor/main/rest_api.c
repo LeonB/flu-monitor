@@ -510,7 +510,15 @@ httpd_handle_t rest_api_start(void) {
   httpd_handle_t server = NULL;
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.stack_size = 8192;  // shared with ota_server's esp_ota_* calls, which need more than the 4096 default
-  config.max_uri_handlers = 16;  // default (8) is too few once ota + web_ui + this project's own endpoints are all registered
+  // default (8) is too few once ota + ws + web_ui + this project's own
+  // endpoints are all registered -- 17 handlers as of the 4 embedded-font
+  // routes added alongside this comment; sized with headroom rather than
+  // exactly 17 so the next endpoint added doesn't silently repeat this same
+  // ESP_ERR_HTTPD_HANDLERS_FULL crash-loop (see CLAUDE.md's "max_uri_handlers
+  // must cover every endpoint on this server" section for how this was
+  // caught: ws_server_register(), always the last one registered, is the
+  // one that fails once the ceiling is hit).
+  config.max_uri_handlers = 24;
   config.max_open_sockets = REST_API_MAX_OPEN_SOCKETS;
 
   ESP_LOGI(TAG, "Starting REST API server on port %d", config.server_port);

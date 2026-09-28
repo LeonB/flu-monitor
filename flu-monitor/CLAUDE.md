@@ -540,6 +540,58 @@ re-tuned fresh) is actually correct on the real hardware is still an open
 question, now answerable by changing exactly one NVS-backed value instead
 of two hardcoded ones.
 
+## `max_uri_handlers` must cover every endpoint on this server
+
+Adding the 4 embedded-font routes (see the web UI section above) pushed
+this server's total registered handler count from 13 to 17 -- `rest_api.c`
+registers 15 of its own (10 REST endpoints + 5 static assets), plus
+`ota_server_register()` (1) and `ws_server_register()` (1), all onto the
+same shared `httpd_handle_t`. `rest_api_start()`'s `config.max_uri_handlers`
+was already explicitly bumped from `HTTPD_DEFAULT_CONFIG()`'s default of 8
+to 16 once before, for exactly this reason (see the comment history) --
+but 16 wasn't enough headroom, and 17 > 16 silently wasn't caught by the
+build. **The actual failure mode on real hardware: an immediate,
+permanent boot crash-loop.** `httpd_register_uri_handler()` fails with
+`ESP_ERR_HTTPD_HANDLERS_FULL` once the ceiling is hit; every registration
+call is wrapped in `ESP_ERROR_CHECK`, so the *last* one registered --
+`ws_server_register()`, called after `rest_api_start()` and
+`ota_server_register()` in `main.c` -- is the one that aborts. The device
+reboots roughly every 3 seconds forever, re-hitting the identical assert
+each time, `esp_ota_mark_app_valid_cancel_rollback()` never being reached
+(it's later in `main.c`, after this line) meaning the bootloader's OTA
+rollback safety net would eventually have kicked in on its own too, given
+enough failed-boot cycles -- caught first via a serial boot log instead of
+waiting for that. `POST /ota` is also a registered handler on this exact
+same server, so **OTA cannot recover from this failure mode** -- the crash
+happens within ~10-20ms of the server starting, before there's any
+practical window to push a whole new firmware image through; a USB
+reflash (`idf.py -p <port> flash`) was required. Fixed by raising
+`max_uri_handlers` to 24, with real headroom above the current count
+rather than the exact number, specifically so the next endpoint added
+doesn't silently repeat this. **Any future change adding a new
+`httpd_register_uri_handler()` call anywhere on this shared server should
+double check the total against this ceiling.**
+
+Also worth knowing, discovered while chasing this: **the very first boot
+after this same OTA push hit a second, unrelated, pre-existing crash** --
+weak WiFi (rssi -77 on this network, see "The REST API server is
+single-threaded..." above for prior weak-signal history) caused the
+*initial* STA connect attempt to genuinely fail, and `main.c` fell back to
+`captive_portal_start()` per its designed failure path -- which then
+itself crashed, on `wifi_init_softap()`'s call to
+`esp_netif_create_default_wifi_sta()` (`assert failed: ... config or
+if_key is NULL or duplicate key`). Root cause: `wifi_setup.c`'s
+`wifi_sta_try_connect()` (which just failed) already called
+`esp_netif_create_default_wifi_sta()` earlier in the very same boot --
+`wifi_init_softap()` unconditionally calls it again, unaware a STA netif
+already exists from the failed connect attempt, and the duplicate
+registration aborts. **Not fixed yet** -- didn't recur on any of the
+several subsequent reboots (WiFi reconnected fine every other time), and
+fixing it isn't a prerequisite for the `max_uri_handlers` fix above, but
+it's a real crash on the captive portal's own failure-recovery path,
+exactly the path meant to handle a bad connection gracefully. Worth fixing
+before the next time weak WiFi coincides with a fresh boot.
+
 ## Misc
 
 - **`idf.py monitor` exits with Ctrl+], not Ctrl+C.** Ctrl+C is intercepted
