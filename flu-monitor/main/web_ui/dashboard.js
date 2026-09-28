@@ -16,10 +16,17 @@
 // opacity/size instead, while the inner circle's color stays fully
 // saturated throughout -- same signals (speed, trend direction, zone),
 // adapted for a screen instead of a light source.
-const IDLE_PULSE_PERIOD_MS = 8000;
-const FAST_PULSE_PERIOD_MS = 1400;
-const RATE_DEADBAND_C_PER_MIN = 3.0;
-const COLOR_TRANSITION_EXPONENT = 3.0;
+// Pulse-tuning constants (idle/fast period, rate deadband, color-transition
+// exponent) live in this.settings now, fetched from GET /api/settings (same
+// live-fetch mechanism already used for zone_cold_max_c/zone_optimal_max_c/
+// fast_rise_c_per_min) -- previously hardcoded here AND in
+// flu-display/main/config.h independently, which had already drifted out of
+// sync with flu-display/CLAUDE.md's own documented on-hardware tuning
+// history. The literals below are only the pre-first-fetch fallback.
+const DEFAULT_IDLE_PULSE_PERIOD_MS = 8000;
+const DEFAULT_FAST_PULSE_PERIOD_MS = 1400;
+const DEFAULT_RATE_DEADBAND_C_PER_MIN = 3.0;
+const DEFAULT_COLOR_TRANSITION_EXPONENT = 3.0;
 
 // Zone colors: the physical LED ring uses saturated blue/amber/red (tuned
 // for a diffused physical light), but this design system has no blue token
@@ -61,9 +68,9 @@ function breathEnvelope(cyclePos) {
   const raw = Math.exp(Math.sin(phase));
   return (raw - kMin) / (kMax - kMin);
 }
-function ratePulsePeriodMs(rateCPerMin, fastRiseCPerMin) {
+function ratePulsePeriodMs(rateCPerMin, fastRiseCPerMin, idlePeriodMs, fastPeriodMs) {
   const t = fastRiseCPerMin > 0 ? clamp(rateCPerMin, 0, fastRiseCPerMin) / fastRiseCPerMin : 0;
-  return lerp(IDLE_PULSE_PERIOD_MS, FAST_PULSE_PERIOD_MS, t);
+  return lerp(idlePeriodMs, fastPeriodMs, t);
 }
 
 function app() {
@@ -98,7 +105,8 @@ function app() {
 
     get rateLabel() {
       const r = this.reading.thermocouple_rate_c_per_min || 0;
-      if (Math.abs(r) < RATE_DEADBAND_C_PER_MIN) return 'Holding steady';
+      const deadband = this.settings.rate_deadband_c_per_min || DEFAULT_RATE_DEADBAND_C_PER_MIN;
+      if (Math.abs(r) < deadband) return 'Holding steady';
       return (r > 0 ? '+' : '') + r.toFixed(1) + ' °C/min';
     },
 
@@ -219,11 +227,18 @@ function app() {
       const tickMs = this.lastFrameMs ? Math.min(200, nowMs - this.lastFrameMs) : 33;
       this.lastFrameMs = nowMs;
 
+      const idlePeriodMs = this.settings.idle_pulse_period_ms || DEFAULT_IDLE_PULSE_PERIOD_MS;
+      const fastPeriodMs = this.settings.fast_pulse_period_ms || DEFAULT_FAST_PULSE_PERIOD_MS;
+      const deadband = this.settings.rate_deadband_c_per_min || DEFAULT_RATE_DEADBAND_C_PER_MIN;
+      const colorExponent = this.settings.color_transition_exponent || DEFAULT_COLOR_TRANSITION_EXPONENT;
+
       const valid = this.reading.thermocouple_ok;
       let rate = this.reading.thermocouple_rate_c_per_min || 0;
-      if (Math.abs(rate) < RATE_DEADBAND_C_PER_MIN) rate = 0;
+      if (Math.abs(rate) < deadband) rate = 0;
 
-      const periodMs = valid ? ratePulsePeriodMs(rate, this.settings.fast_rise_c_per_min || 20) : IDLE_PULSE_PERIOD_MS;
+      const periodMs = valid
+        ? ratePulsePeriodMs(rate, this.settings.fast_rise_c_per_min || 20, idlePeriodMs, fastPeriodMs)
+        : idlePeriodMs;
       this.cyclePos += tickMs / periodMs;
       if (this.cyclePos > 1) this.cyclePos -= 1;
       const envelope = breathEnvelope(this.cyclePos);
@@ -232,7 +247,7 @@ function app() {
         const zone = this.reading.thermocouple_zone;
         const trough = zoneColor(zone);
         const peak = peakZoneColor(zone, rate);
-        const colorT = Math.pow(envelope, COLOR_TRANSITION_EXPONENT);
+        const colorT = Math.pow(envelope, colorExponent);
         const bg = lerpRgb(trough.bg, peak.bg, colorT);
         const text = lerpRgb(trough.text, peak.text, colorT);
         const haloAlpha = lerp(0.25, 0.7, envelope);

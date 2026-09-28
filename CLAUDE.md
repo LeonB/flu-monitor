@@ -34,20 +34,25 @@ This file covers only what's shared context across all of them.
 ## Shared components
 
 `components/` (this level, sibling to both firmware folders) holds
-`wifi_setup/`, `captive_portal/`, and `dns_server/` -- ESP-IDF components
-consumed by both `flu-monitor/` and `flu-display/` via each project's own
-`CMakeLists.txt` setting `EXTRA_COMPONENT_DIRS` to point here. Until this
-was consolidated, each project carried its own copy that had quietly
-diverged: `flu-monitor/`'s captive portal had grown a live network scan, a
-test-connect-before-save flow (see `flu-monitor/CLAUDE.md`'s "Live WiFi
-test-connect-before-save" section), and a proper Alpine.js UI, while
-`flu-display/`'s stayed the original plain-HTML-form version from
+`wifi_setup/`, `captive_portal/`, `dns_server/`, and `ota_server/` --
+ESP-IDF components consumed by both `flu-monitor/` and `flu-display/` via
+each project's own `CMakeLists.txt` setting `EXTRA_COMPONENT_DIRS` to point
+here. Until this was consolidated, each project carried its own copy that
+had quietly diverged: `flu-monitor/`'s captive portal had grown a live
+network scan, a test-connect-before-save flow (see `flu-monitor/CLAUDE.md`'s
+"Live WiFi test-connect-before-save" section), and a proper Alpine.js UI,
+while `flu-display/`'s stayed the original plain-HTML-form version from
 Milestone 1. `flu-monitor/`'s richer version became the shared one (a
 strict superset of what `flu-display/`'s had); `flu-display/`'s `main.c` was
 updated to match `flu-monitor/`'s pattern of marking/clearing the
 "last WiFi attempt failed" NVS flag so the shared portal's failure screen
-works for it too. `dns_server/` was already byte-identical between the two
-projects, so no reconciliation was needed there.
+works for it too. `dns_server/` and `ota_server.c` (113 of ~120 lines
+byte-identical between the two projects' copies -- same auth check, same
+streaming-OTA-write handler) needed no such reconciliation, just a
+straight move; `ota_server_register()`/`ota_server_start()` now take the
+secret as a parameter instead of `#include`-ing a project-private
+`secrets.h` directly, so the shared component itself carries no secret of
+its own.
 
 Each device's captive-portal SoftAP SSID (`SETUP_AP_SSID` in each project's
 own `config.h`, e.g. `"Flu Monitor Setup"` vs. `"Flu Display Setup"`) is
@@ -55,13 +60,19 @@ still what tells you which physical device you're configuring -- the
 portal's own page (`components/captive_portal/root.html`) deliberately
 doesn't brand itself by device name, since it's shared.
 
-Not shared (yet, deliberately): `ota_server.c`, `status_led.c`, and the
-LED-ring zone-color/pulse math (ported into `flu-monitor/main/web_ui/
-dashboard.js` as a *JS reimplementation* of `flu-display/main/led_display.c`'s
-logic, not a shared library) -- these still have real per-project
-differences or live in different languages entirely, so the
-duplication-vs-coupling tradeoff didn't clearly favor extracting them the
-way it did for the captive portal.
+Not shared (deliberately): `status_led.c` (genuinely different hardware --
+flu-display drives a plain GPIO status LED, flu-monitor drives a NeoPixel --
+not just different code for the same job) and the LED-ring zone-color/pulse
+math (ported into `flu-monitor/main/web_ui/dashboard.js` as a *JS
+reimplementation* of `flu-display/main/led_display.c`'s logic, not a shared
+library, since there's no lightweight way to share logic across C and JS on
+this stack). The *tuning constants* that math depends on (pulse periods,
+rate deadband, color-transition exponent) are a different story, though --
+see `flu-monitor/CLAUDE.md`'s "LED/glow pulse-tuning constants now live in
+settings" section: those used to be hardcoded independently in both
+`flu-display/main/config.h` and `dashboard.js`, which had already drifted,
+and now come from one live source the same way the zone/rate thresholds
+already did.
 
 ## Project goal (bigger than either subfolder's code suggests)
 

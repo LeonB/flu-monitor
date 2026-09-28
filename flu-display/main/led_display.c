@@ -18,11 +18,15 @@ static float s_temperature_c = 0.0f;
 static float s_rate_c_per_min = 0.0f;
 
 // Defaults to config.h's own placeholders until flue_poll.c's first
-// settings fetch succeeds -- see led_display_set_thresholds()'s doc comment.
+// settings fetch succeeds -- see led_display_set_tuning()'s doc comment.
 static portMUX_TYPE s_threshold_lock = portMUX_INITIALIZER_UNLOCKED;
 static float s_zone_cold_max_c = ZONE_COLD_MAX_C;
 static float s_zone_optimal_max_c = ZONE_OPTIMAL_MAX_C;
 static float s_fast_rise_c_per_min = FAST_RISE_C_PER_MIN;
+static float s_rate_deadband_c_per_min = RATE_DEADBAND_C_PER_MIN;
+static uint32_t s_idle_pulse_period_ms = IDLE_PULSE_PERIOD_MS;
+static uint32_t s_fast_pulse_period_ms = FAST_PULSE_PERIOD_MS;
+static float s_color_transition_exponent = COLOR_TRANSITION_EXPONENT;
 
 typedef struct {
   uint8_t r, g, b;
@@ -101,12 +105,13 @@ static rgb_t trend_neighbor_color(float temperature_c, float rate_c_per_min, flo
 }
 
 // Maps a rate of rise to a breathing-pulse period: idle pace normally,
-// speeding up toward FAST_PULSE_PERIOD_MS as the rate approaches
+// speeding up toward fast_pulse_period_ms as the rate approaches
 // fast_rise_c_per_min. A falling/stable reading (rate <= 0) is clamped to
 // 0 here, so it always gets the slow idle pace.
-static uint32_t rate_to_pulse_period_ms(float rate_c_per_min, float fast_rise_c_per_min) {
+static uint32_t rate_to_pulse_period_ms(float rate_c_per_min, float fast_rise_c_per_min, uint32_t idle_pulse_period_ms,
+                                        uint32_t fast_pulse_period_ms) {
   float t = clampf(rate_c_per_min, 0.0f, fast_rise_c_per_min) / fast_rise_c_per_min;
-  return (uint32_t) lerpf((float) IDLE_PULSE_PERIOD_MS, (float) FAST_PULSE_PERIOD_MS, t);
+  return (uint32_t) lerpf((float) idle_pulse_period_ms, (float) fast_pulse_period_ms, t);
 }
 
 // The "Apple sleep-LED" breathing curve: exp(sin(phase)), normalized from
@@ -135,18 +140,25 @@ static void render_task(void *arg) {
     rate_c_per_min = s_rate_c_per_min;
     portEXIT_CRITICAL(&s_state_lock);
 
-    float zone_cold_max_c, zone_optimal_max_c, fast_rise_c_per_min;
+    float zone_cold_max_c, zone_optimal_max_c, fast_rise_c_per_min, rate_deadband_c_per_min, color_transition_exponent;
+    uint32_t idle_pulse_period_ms, fast_pulse_period_ms;
     portENTER_CRITICAL(&s_threshold_lock);
     zone_cold_max_c = s_zone_cold_max_c;
     zone_optimal_max_c = s_zone_optimal_max_c;
     fast_rise_c_per_min = s_fast_rise_c_per_min;
+    rate_deadband_c_per_min = s_rate_deadband_c_per_min;
+    idle_pulse_period_ms = s_idle_pulse_period_ms;
+    fast_pulse_period_ms = s_fast_pulse_period_ms;
+    color_transition_exponent = s_color_transition_exponent;
     portEXIT_CRITICAL(&s_threshold_lock);
 
-    if (fabsf(rate_c_per_min) < RATE_DEADBAND_C_PER_MIN) {
+    if (fabsf(rate_c_per_min) < rate_deadband_c_per_min) {
       rate_c_per_min = 0.0f;
     }
 
-    uint32_t period_ms = valid ? rate_to_pulse_period_ms(rate_c_per_min, fast_rise_c_per_min) : IDLE_PULSE_PERIOD_MS;
+    uint32_t period_ms = valid ? rate_to_pulse_period_ms(rate_c_per_min, fast_rise_c_per_min, idle_pulse_period_ms,
+                                                          fast_pulse_period_ms)
+                                : idle_pulse_period_ms;
     cycle_pos += (double) LED_RENDER_TICK_MS / (double) period_ms;
     if (cycle_pos > 1.0) {
       cycle_pos -= 1.0;
@@ -163,7 +175,7 @@ static void render_task(void *arg) {
       // through the whole pulse, same as before this was added.
       rgb_t trough_color = temperature_to_color(temperature_c, zone_cold_max_c, zone_optimal_max_c);
       rgb_t peak_color = trend_neighbor_color(temperature_c, rate_c_per_min, zone_cold_max_c, zone_optimal_max_c);
-      float color_t = powf(envelope, COLOR_TRANSITION_EXPONENT);
+      float color_t = powf(envelope, color_transition_exponent);
       rgb_t color = lerp_rgb(trough_color, peak_color, color_t);
       uint32_t r = (uint32_t) color.r * brightness / 255;
       uint32_t g = (uint32_t) color.g * brightness / 255;
@@ -216,10 +228,16 @@ void led_display_set_reading(bool valid, float temperature_c, float rate_c_per_m
   portEXIT_CRITICAL(&s_state_lock);
 }
 
-void led_display_set_thresholds(float zone_cold_max_c, float zone_optimal_max_c, float fast_rise_c_per_min) {
+void led_display_set_tuning(float zone_cold_max_c, float zone_optimal_max_c, float fast_rise_c_per_min,
+                            float rate_deadband_c_per_min, uint32_t idle_pulse_period_ms,
+                            uint32_t fast_pulse_period_ms, float color_transition_exponent) {
   portENTER_CRITICAL(&s_threshold_lock);
   s_zone_cold_max_c = zone_cold_max_c;
   s_zone_optimal_max_c = zone_optimal_max_c;
   s_fast_rise_c_per_min = fast_rise_c_per_min;
+  s_rate_deadband_c_per_min = rate_deadband_c_per_min;
+  s_idle_pulse_period_ms = idle_pulse_period_ms;
+  s_fast_pulse_period_ms = fast_pulse_period_ms;
+  s_color_transition_exponent = color_transition_exponent;
   portEXIT_CRITICAL(&s_threshold_lock);
 }

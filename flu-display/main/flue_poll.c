@@ -147,16 +147,29 @@ static void fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
   cJSON *zone_cold_max_c = cJSON_GetObjectItemCaseSensitive(root, "zone_cold_max_c");
   cJSON *zone_optimal_max_c = cJSON_GetObjectItemCaseSensitive(root, "zone_optimal_max_c");
   cJSON *fast_rise_c_per_min = cJSON_GetObjectItemCaseSensitive(root, "fast_rise_c_per_min");
-  if (!cJSON_IsNumber(zone_cold_max_c) || !cJSON_IsNumber(zone_optimal_max_c) || !cJSON_IsNumber(fast_rise_c_per_min)) {
+  cJSON *rate_deadband_c_per_min = cJSON_GetObjectItemCaseSensitive(root, "rate_deadband_c_per_min");
+  cJSON *idle_pulse_period_ms = cJSON_GetObjectItemCaseSensitive(root, "idle_pulse_period_ms");
+  cJSON *fast_pulse_period_ms = cJSON_GetObjectItemCaseSensitive(root, "fast_pulse_period_ms");
+  cJSON *color_transition_exponent = cJSON_GetObjectItemCaseSensitive(root, "color_transition_exponent");
+  if (!cJSON_IsNumber(zone_cold_max_c) || !cJSON_IsNumber(zone_optimal_max_c) || !cJSON_IsNumber(fast_rise_c_per_min) ||
+      !cJSON_IsNumber(rate_deadband_c_per_min) || !cJSON_IsNumber(idle_pulse_period_ms) ||
+      !cJSON_IsNumber(fast_pulse_period_ms) || !cJSON_IsNumber(color_transition_exponent)) {
     ESP_LOGW(TAG, "/api/settings response missing expected numeric fields: '%.*s'", s_response_len, s_response_buf);
     cJSON_Delete(root);
     return;
   }
 
-  ESP_LOGI(TAG, "Applying settings: zone_cold_max_c=%.1f zone_optimal_max_c=%.1f fast_rise_c_per_min=%.1f",
-           zone_cold_max_c->valuedouble, zone_optimal_max_c->valuedouble, fast_rise_c_per_min->valuedouble);
-  led_display_set_thresholds((float) zone_cold_max_c->valuedouble, (float) zone_optimal_max_c->valuedouble,
-                             (float) fast_rise_c_per_min->valuedouble);
+  ESP_LOGI(TAG,
+           "Applying settings: zone_cold_max_c=%.1f zone_optimal_max_c=%.1f fast_rise_c_per_min=%.1f "
+           "rate_deadband_c_per_min=%.1f idle_pulse_period_ms=%.0f fast_pulse_period_ms=%.0f "
+           "color_transition_exponent=%.1f",
+           zone_cold_max_c->valuedouble, zone_optimal_max_c->valuedouble, fast_rise_c_per_min->valuedouble,
+           rate_deadband_c_per_min->valuedouble, idle_pulse_period_ms->valuedouble, fast_pulse_period_ms->valuedouble,
+           color_transition_exponent->valuedouble);
+  led_display_set_tuning((float) zone_cold_max_c->valuedouble, (float) zone_optimal_max_c->valuedouble,
+                         (float) fast_rise_c_per_min->valuedouble, (float) rate_deadband_c_per_min->valuedouble,
+                         (uint32_t) idle_pulse_period_ms->valuedouble, (uint32_t) fast_pulse_period_ms->valuedouble,
+                         (float) color_transition_exponent->valuedouble);
 
   cJSON_Delete(root);
 }

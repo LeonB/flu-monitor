@@ -27,6 +27,10 @@ static void set_defaults(settings_t *s) {
   // google_sheets_webhook_url/secret left empty -- no safe compile-time
   // default; Milestone 5's Sheets logging has nothing to do until these are
   // set via POST /api/settings.
+  s->idle_pulse_period_ms = DEFAULT_IDLE_PULSE_PERIOD_MS;
+  s->fast_pulse_period_ms = DEFAULT_FAST_PULSE_PERIOD_MS;
+  s->rate_deadband_c_per_min = DEFAULT_RATE_DEADBAND_C_PER_MIN;
+  s->color_transition_exponent = DEFAULT_COLOR_TRANSITION_EXPONENT;
 }
 
 static bool validate(const settings_t *s) {
@@ -40,6 +44,15 @@ static bool validate(const settings_t *s) {
     return false;
   }
   if (s->thermocouple_deadband_c < 0.0f) {
+    return false;
+  }
+  if (s->idle_pulse_period_ms == 0 || s->fast_pulse_period_ms == 0) {
+    return false;
+  }
+  if (s->rate_deadband_c_per_min < 0.0f) {
+    return false;
+  }
+  if (s->color_transition_exponent <= 0.0f) {
     return false;
   }
   return true;

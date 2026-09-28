@@ -28,6 +28,7 @@
 #include "config.h"
 #include "ota_server.h"
 #include "rest_api.h"
+#include "secrets.h"
 #include "sensors.h"
 #include "settings.h"
 #include "sheets_logger.h"
@@ -128,7 +129,7 @@ void app_main(void) {
 
     start_mdns();
     httpd_handle_t server = rest_api_start();
-    ota_server_register(server);
+    ota_server_register(server, OTA_SECRET);
     ws_server_register(server);
     sheets_logger_init();
 

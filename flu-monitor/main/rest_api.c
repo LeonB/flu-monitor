@@ -28,6 +28,14 @@ extern const char web_ui_css_start[] asm("_binary_dashboard_css_start");
 extern const char web_ui_css_end[] asm("_binary_dashboard_css_end");
 extern const char web_ui_alpine_js_start[] asm("_binary_alpinejs_min_js_start");
 extern const char web_ui_alpine_js_end[] asm("_binary_alpinejs_min_js_end");
+extern const char web_ui_font_caprasimo_400_start[] asm("_binary_caprasimo_400_woff2_start");
+extern const char web_ui_font_caprasimo_400_end[] asm("_binary_caprasimo_400_woff2_end");
+extern const char web_ui_font_figtree_400_start[] asm("_binary_figtree_400_woff2_start");
+extern const char web_ui_font_figtree_400_end[] asm("_binary_figtree_400_woff2_end");
+extern const char web_ui_font_figtree_600_start[] asm("_binary_figtree_600_woff2_start");
+extern const char web_ui_font_figtree_600_end[] asm("_binary_figtree_600_woff2_end");
+extern const char web_ui_font_figtree_700_start[] asm("_binary_figtree_700_woff2_start");
+extern const char web_ui_font_figtree_700_end[] asm("_binary_figtree_700_woff2_end");
 
 static esp_err_t web_ui_html_get_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/html");
@@ -57,6 +65,40 @@ static esp_err_t web_ui_alpine_js_get_handler(httpd_req_t *req) {
 }
 static const httpd_uri_t web_ui_alpine_js_uri = {
     .uri = "/alpinejs.min.js", .method = HTTP_GET, .handler = web_ui_alpine_js_get_handler};
+
+// Self-hosted Caprasimo/Figtree woff2 files -- see dashboard.html's own
+// comment for why these are embedded rather than loaded from Google's CDN.
+static esp_err_t web_ui_font_caprasimo_400_get_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "font/woff2");
+  httpd_resp_send(req, web_ui_font_caprasimo_400_start, web_ui_font_caprasimo_400_end - web_ui_font_caprasimo_400_start);
+  return ESP_OK;
+}
+static const httpd_uri_t web_ui_font_caprasimo_400_uri = {
+    .uri = "/fonts/caprasimo-400.woff2", .method = HTTP_GET, .handler = web_ui_font_caprasimo_400_get_handler};
+
+static esp_err_t web_ui_font_figtree_400_get_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "font/woff2");
+  httpd_resp_send(req, web_ui_font_figtree_400_start, web_ui_font_figtree_400_end - web_ui_font_figtree_400_start);
+  return ESP_OK;
+}
+static const httpd_uri_t web_ui_font_figtree_400_uri = {
+    .uri = "/fonts/figtree-400.woff2", .method = HTTP_GET, .handler = web_ui_font_figtree_400_get_handler};
+
+static esp_err_t web_ui_font_figtree_600_get_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "font/woff2");
+  httpd_resp_send(req, web_ui_font_figtree_600_start, web_ui_font_figtree_600_end - web_ui_font_figtree_600_start);
+  return ESP_OK;
+}
+static const httpd_uri_t web_ui_font_figtree_600_uri = {
+    .uri = "/fonts/figtree-600.woff2", .method = HTTP_GET, .handler = web_ui_font_figtree_600_get_handler};
+
+static esp_err_t web_ui_font_figtree_700_get_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "font/woff2");
+  httpd_resp_send(req, web_ui_font_figtree_700_start, web_ui_font_figtree_700_end - web_ui_font_figtree_700_start);
+  return ESP_OK;
+}
+static const httpd_uri_t web_ui_font_figtree_700_uri = {
+    .uri = "/fonts/figtree-700.woff2", .method = HTTP_GET, .handler = web_ui_font_figtree_700_get_handler};
 
 // cJSON_AddNumberToObject widens our floats to double and prints the
 // shortest round-tripping decimal for *that* double -- which surfaces the
@@ -143,6 +185,10 @@ static void settings_to_json(const settings_t *s, cJSON *root) {
   cJSON_AddNumberToObject(root, "thermocouple_deadband_c", round_to(s->thermocouple_deadband_c, 0.1));
   cJSON_AddStringToObject(root, "google_sheets_webhook_url", s->google_sheets_webhook_url);
   cJSON_AddStringToObject(root, "google_sheets_secret", s->google_sheets_secret);
+  cJSON_AddNumberToObject(root, "idle_pulse_period_ms", s->idle_pulse_period_ms);
+  cJSON_AddNumberToObject(root, "fast_pulse_period_ms", s->fast_pulse_period_ms);
+  cJSON_AddNumberToObject(root, "rate_deadband_c_per_min", round_to(s->rate_deadband_c_per_min, 0.1));
+  cJSON_AddNumberToObject(root, "color_transition_exponent", round_to(s->color_transition_exponent, 0.1));
 }
 
 static esp_err_t settings_get_handler(httpd_req_t *req) {
@@ -224,6 +270,18 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
   if (cJSON_IsString(item)) {
     strlcpy(s.google_sheets_secret, item->valuestring, sizeof(s.google_sheets_secret));
   }
+
+  item = cJSON_GetObjectItem(root, "idle_pulse_period_ms");
+  s.idle_pulse_period_ms = cJSON_IsNumber(item) ? (uint16_t) item->valuedouble : 0;
+
+  item = cJSON_GetObjectItem(root, "fast_pulse_period_ms");
+  s.fast_pulse_period_ms = cJSON_IsNumber(item) ? (uint16_t) item->valuedouble : 0;
+
+  item = cJSON_GetObjectItem(root, "rate_deadband_c_per_min");
+  s.rate_deadband_c_per_min = cJSON_IsNumber(item) ? (float) item->valuedouble : 0.0f;
+
+  item = cJSON_GetObjectItem(root, "color_transition_exponent");
+  s.color_transition_exponent = cJSON_IsNumber(item) ? (float) item->valuedouble : 0.0f;
 
   cJSON_Delete(root);
 
@@ -468,6 +526,10 @@ httpd_handle_t rest_api_start(void) {
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_js_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_css_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_alpine_js_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_font_caprasimo_400_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_font_figtree_400_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_font_figtree_600_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_font_figtree_700_uri));
   s_server = server;
   return server;
 }

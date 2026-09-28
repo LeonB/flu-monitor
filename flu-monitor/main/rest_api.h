@@ -26,6 +26,10 @@ extern "C" {
 //   GET  /dashboard.js,
 //        /dashboard.css,
 //        /alpinejs.min.js  -- the web UI's own JS/CSS/Alpine.js assets
+//   GET  /fonts/caprasimo-400.woff2,
+//        /fonts/figtree-{400,600,700}.woff2
+//                         -- self-hosted design-system fonts (embedded, not
+//                            loaded from Google's CDN -- see dashboard.html)
 // Returns the server handle so other modules (ota_server, ws_server) can
 // register their own endpoints onto the same server instead of each
 // starting their own (only one httpd can bind port 80 at a time).

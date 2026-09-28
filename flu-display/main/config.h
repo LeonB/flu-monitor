@@ -59,6 +59,11 @@
 // sufficient to trigger led_display.c's all-or-nothing trend-color swap
 // (unlike the pulse speed, that swap doesn't scale down for a tiny rate) --
 // observed live as a few spurious amber/blue flashes while sitting stable.
+// First-boot default only -- flu-monitor's GET /api/settings is now the
+// live source (see led_display_set_tuning()), replacing what used to be a
+// second hardcoded copy here with no mechanism keeping it in sync with
+// dashboard.js's own copy (see flu-monitor/CLAUDE.md's "LED/glow
+// pulse-tuning constants now live in settings").
 #define RATE_DEADBAND_C_PER_MIN 3.0f
 
 // --- Milestone 3: LED ring ---
@@ -71,6 +76,8 @@
 // the *positive* rate of change (relative to FAST_RISE_C_PER_MIN, above)
 // increases; a falling or stable reading always stays at the slow idle
 // pace, since a fast drop isn't the failure mode this is watching for.
+// First-boot defaults only -- see RATE_DEADBAND_C_PER_MIN's comment above;
+// same live-settings mechanism applies to these two.
 #define IDLE_PULSE_PERIOD_MS    8000
 #define FAST_PULSE_PERIOD_MS    1400
 
@@ -91,6 +98,15 @@
 // for most of the cycle and only swings to the peak color (e.g. blue) in a
 // quick ramp near the very top of the brightness swing. Higher = longer
 // hold, quicker ramp. 1.0 would be a plain linear crossfade.
+// First-boot default only (see RATE_DEADBAND_C_PER_MIN's comment above) --
+// **this value in particular is worth double-checking against real
+// hardware**: this file's own tuning history (further down) describes this
+// being live-tuned up through 11 for a longer amber hold/quicker ramp, but
+// this macro was still 3.0 (the original untuned guess) when the
+// live-settings mechanism was added, and that's what got carried over as
+// the default rather than 11 -- deliberately not silently changed. Whether
+// 3.0 or 11 (or a fresh retune) is actually correct is unresolved; it's
+// now a single NVS-backed value to change instead of two hardcoded ones.
 #define COLOR_TRANSITION_EXPONENT  3.0f
 
 // How often the render task recomputes the pulse -- fast enough to look

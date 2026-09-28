@@ -4,8 +4,24 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Flu Monitor</title>
+<!-- dashboard.css is byte-identical to ../../../components/captive_portal/styles.css
+     (both copies of the same design system, kept as separate embedded files
+     since ESP-IDF's EMBED_FILES collides on basename across components --
+     see CLAUDE.md's "EMBED_FILES collides on basename" section). The
+     Caprasimo/Figtree font files those tokens name are embedded and
+     self-served from here (below) rather than loaded from Google's CDN --
+     matching how alpinejs.min.js is already vendored, not CDN-loaded, and
+     meaning this page renders correctly with no outside internet access,
+     not just no build step. Kept out of the shared CSS file itself (rather
+     than @font-face rules living in dashboard.css/styles.css) since the
+     captive portal doesn't embed these font files and would otherwise 404
+     on them. -->
 <link rel="stylesheet" href="/dashboard.css">
 <style>
+  @font-face { font-family: 'Caprasimo'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/caprasimo-400.woff2') format('woff2'); }
+  @font-face { font-family: 'Figtree'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/figtree-400.woff2') format('woff2'); }
+  @font-face { font-family: 'Figtree'; font-style: normal; font-weight: 600; font-display: swap; src: url('/fonts/figtree-600.woff2') format('woff2'); }
+  @font-face { font-family: 'Figtree'; font-style: normal; font-weight: 700; font-display: swap; src: url('/fonts/figtree-700.woff2') format('woff2'); }
   body { margin: 0; padding: 0; min-height: 100vh; box-sizing: border-box; overflow-x: hidden; }
   .screen { max-width: 460px; margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; box-sizing: border-box; }
   .topbar { display: flex; align-items: center; justify-content: space-between; padding: 16px 16px 0; }

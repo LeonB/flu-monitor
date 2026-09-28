@@ -68,3 +68,16 @@
 #define DEFAULT_FAST_RISE_C_PER_MIN      20.0f
 #define DEFAULT_THERMOCOUPLE_DEADBAND_C  5.0f
 #define DEFAULT_LOG_HEARTBEAT_MIN        15
+
+// LED/glow pulse-rendering tuning -- flu-monitor itself never reads these
+// (no LED ring of its own), but is the single source of truth both
+// flu-display's physical ring (led_display.c) and this device's own
+// dashboard.js glow fetch live via GET /api/settings, replacing what used
+// to be two independently hardcoded copies (see flu-display/CLAUDE.md and
+// flu-monitor/CLAUDE.md's notes on that drift). Values match what was
+// already hardcoded in both places before this -- a behavior-preserving
+// default, not a retune.
+#define DEFAULT_IDLE_PULSE_PERIOD_MS       8000
+#define DEFAULT_FAST_PULSE_PERIOD_MS       1400
+#define DEFAULT_RATE_DEADBAND_C_PER_MIN    3.0f
+#define DEFAULT_COLOR_TRANSITION_EXPONENT  3.0f

@@ -51,15 +51,24 @@ broadcast" below.
   REST.
 - **Zone/rate thresholds (`ZONE_COLD_MAX_C`/`ZONE_OPTIMAL_MAX_C`/
   `FAST_RISE_C_PER_MIN`) became runtime-mutable** via
-  `led_display_set_thresholds()` instead of being read as compile-time
-  macros inside `led_display.c`'s zone/pulse-speed logic (which now takes
-  them as parameters, refreshed once per render tick from a small
+  `led_display_set_tuning()` (originally `led_display_set_thresholds()` --
+  renamed and extended later, see below, once it grew beyond just zone/rate
+  thresholds) instead of being read as compile-time macros inside
+  `led_display.c`'s zone/pulse-speed logic (which now takes them as
+  parameters, refreshed once per render tick from a small
   critical-section-guarded state, same pattern as the reading itself).
   `flue_poll.c` fetches `GET /api/settings` once at boot and again whenever
   a `{"type":"settings_changed"}` broadcast arrives, so a threshold changed
   via the sidecar's own REST API actually moves the ring's gradient, not
   just its own classification. config.h's macros are now first-boot
-  defaults only, used until the first successful fetch.
+  defaults only, used until the first successful fetch. **Later extended**
+  to also cover `RATE_DEADBAND_C_PER_MIN`/`IDLE_PULSE_PERIOD_MS`/
+  `FAST_PULSE_PERIOD_MS`/`COLOR_TRANSITION_EXPONENT` the same way -- see
+  `../flu-monitor/CLAUDE.md`'s "LED/glow pulse-tuning constants now live in
+  settings" section, including a real drift it caught (this file's own
+  tuning history below says `COLOR_TRANSITION_EXPONENT` was live-tuned to
+  11, but the hardcoded macro had stayed at 3.0 -- carried over as-is into
+  the new default, not silently corrected).
 - **A blocking HTTP GET has no business running directly on the WS client's
   own event-callback context** -- `handle_ws_message()`'s `"settings_changed"`
   branch just gives a semaphore (`s_refetch_settings_sem`); a separate

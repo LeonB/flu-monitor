@@ -304,6 +304,25 @@ renaming `main/web_ui/`'s copies to `dashboard.css`/`alpinejs.min.js`
 Anything else embedding files across multiple components needs basenames
 unique across the *whole* build, not just within its own directory.
 
+**Confirmed by direct experiment: this collision happens even when both
+components' `EMBED_FILES` point at the exact same file on disk** (tried
+pointing `main/`'s own `EMBED_FILES` at `../../components/captive_portal/
+styles.css` directly, to physically de-duplicate `dashboard.css` from it --
+same `ninja: error: ... multiple rules generate styles.css.S`). Each
+component's own `idf_component_register(EMBED_FILES ...)` call independently
+generates a build rule for `<basename>.S` in the shared build tree,
+regardless of whether the underlying source content is identical -- so
+sharing one physical file across two components' embeds isn't possible
+without a bigger restructure (e.g. one component embedding it and exporting
+an accessor the other calls), not just picking the same path. `dashboard.css`
+and `components/captive_portal/styles.css` are instead kept
+*byte-identical in content* (the Google Fonts `@import` that used to be
+dashboard.css-only was moved out into a `<link>` in `dashboard.html`'s own
+`<head>`, since only the connected-mode page has real internet to load it)
+but stay two separate embedded files under different names, kept in sync by
+hand -- there's no way to make ESP-IDF treat them as one without an
+`EMBED_FILES`-level rename/alias facility it doesn't have.
+
 ## Three real bugs only a real browser caught
 
 `main/web_ui/` built cleanly, and every backing REST endpoint tested fine
@@ -480,6 +499,46 @@ also dropped its `temperature`/`pressure` query params, which were sourced
 from the BMP581 -- **the Google Apps Script webhook itself (external to this
 repo) may still expect those params**; not updated here since its source
 isn't tracked in this repo.
+
+## `ota_server.c` moved to `../components/`
+
+Was a near-duplicate of `../flu-display/main/ota_server.c` (113 of ~120
+lines byte-identical -- the auth check and the entire streaming-OTA-write
+handler). Now the shared `components/ota_server/`. The one real difference
+between the two projects' old copies -- flu-monitor already has a shared
+httpd server to register onto (`rest_api_start()`'s handle), flu-display has
+none of its own -- became two entry points on the same component:
+`ota_server_register(server, secret)` for a caller with a server already
+running, `ota_server_start(secret)` (starts its own dedicated 8192-stack
+httpd first) for a caller with none. Each project still keeps its own
+`secrets.h`/`OTA_SECRET` (the two devices' secrets are intentionally
+different values) -- the shared component takes `secret` as a parameter
+rather than including a project-private header itself, so it carries no
+secret of its own and doesn't need visibility into either project's
+`main/secrets.h`.
+
+## LED/glow pulse-tuning constants now live in settings
+
+`settings_t` (see `settings.h`) gained four fields flu-monitor itself never
+reads -- `idle_pulse_period_ms`, `fast_pulse_period_ms`,
+`rate_deadband_c_per_min`, `color_transition_exponent` -- purely to be the
+one live source both `../flu-display/main/led_display.c`'s physical LED
+ring and this device's own `main/web_ui/dashboard.js` glow now fetch via
+`GET /api/settings`, the same mechanism `zone_cold_max_c`/
+`zone_optimal_max_c`/`fast_rise_c_per_min` already used. Before this, all
+four were hardcoded independently in `flu-display/main/config.h` *and*
+`dashboard.js` -- two copies with no mechanism keeping them in sync.
+
+That duplication had already drifted: `flu-display/CLAUDE.md`'s own tuning
+history describes `COLOR_TRANSITION_EXPONENT` being live-tuned on real
+hardware up through **11** ("a longer amber hold, quicker ramp"), but both
+hardcoded copies had `3.0` -- the original, untuned guess. **This refactor
+deliberately did NOT change the value** -- `DEFAULT_COLOR_TRANSITION_EXPONENT`
+in `config.h` is `3.0f`, a behavior-preserving default matching what was
+already running, not a silent retune. Whether `3.0` or `11` (or something
+re-tuned fresh) is actually correct on the real hardware is still an open
+question, now answerable by changing exactly one NVS-backed value instead
+of two hardcoded ones.
 
 ## Misc
 

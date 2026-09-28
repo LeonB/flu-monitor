@@ -22,6 +22,14 @@ typedef struct {
   float thermocouple_deadband_c;
   char google_sheets_webhook_url[SETTINGS_SHEETS_URL_MAX_LEN];
   char google_sheets_secret[SETTINGS_SHEETS_SECRET_MAX_LEN];
+  // LED/glow pulse-rendering tuning -- see config.h's DEFAULT_* comment.
+  // Not used by flu-monitor itself; distributed from here so flu-display's
+  // LED ring and this device's own dashboard.js glow read one live source
+  // instead of each hardcoding their own copy.
+  uint16_t idle_pulse_period_ms;
+  uint16_t fast_pulse_period_ms;
+  float rate_deadband_c_per_min;
+  float color_transition_exponent;
 } settings_t;
 
 // Loads settings from NVS, seeding config.h's compile-time defaults if NVS

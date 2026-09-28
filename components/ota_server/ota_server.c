@@ -7,12 +7,16 @@
 #include "esp_ota_ops.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "secrets.h"
 
 static const char *TAG = "ota_server";
 
+// Set once by ota_server_register()/ota_server_start(), read by
+// secret_ok() -- safe as a single static since each device only ever
+// registers this endpoint once, at boot.
+static const char *s_secret;
+
 // Reads the "secret" query param off the request URL and compares it
-// against OTA_SECRET. This is the only auth here -- a shared secret over
+// against s_secret. This is the only auth here -- a shared secret over
 // plain HTTP on the home LAN, the same trust level flu-monitor's own
 // Google Sheets webhook secret uses, not an encrypted channel like
 // ESPHome's own OTA. Acceptable for a single-home network; wouldn't be if
@@ -26,7 +30,7 @@ static bool secret_ok(httpd_req_t *req) {
   if (httpd_query_key_value(query, "secret", secret, sizeof(secret)) != ESP_OK) {
     return false;
   }
-  return strcmp(secret, OTA_SECRET) == 0;
+  return strcmp(secret, s_secret) == 0;
 }
 
 static esp_err_t ota_post_handler(httpd_req_t *req) {
@@ -112,12 +116,17 @@ static const httpd_uri_t ota_uri = {
     .handler = ota_post_handler,
 };
 
-void ota_server_start(void) {
+void ota_server_register(httpd_handle_t server, const char *secret) {
+  s_secret = secret;
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &ota_uri));
+}
+
+void ota_server_start(const char *secret) {
   httpd_handle_t server = NULL;
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.stack_size = 8192;  // esp_ota_* calls + logging need more than the 4096 default
 
   ESP_LOGI(TAG, "Starting OTA server on port %d", config.server_port);
   ESP_ERROR_CHECK(httpd_start(&server, &config));
-  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &ota_uri));
+  ota_server_register(server, secret);
 }

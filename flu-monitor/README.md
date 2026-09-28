@@ -30,7 +30,9 @@ itself at `/` -- visually verified in a real browser).
   or the captive portal (if not)
 - `main/config.h` — compile-time tunables and first-boot setting defaults
 - `main/settings.c/.h` — NVS-backed runtime settings (zone thresholds,
-  fast-rise rate, deadband, heartbeat, Google Sheets webhook/secret)
+  fast-rise rate, deadband, heartbeat, Google Sheets webhook/secret, and
+  LED/glow pulse-tuning constants this device itself never reads -- see
+  `CLAUDE.md`'s "LED/glow pulse-tuning constants now live in settings")
 - `main/sensors.c/.h` — MCP9601 init/read, I2C bus recovery, and the
   rate/zone regression (ported from the ESPHome sidecar's own lambda)
 - `main/rest_api.c/.h` — `GET /api/reading`, `GET`/`POST /api/settings`,
@@ -44,12 +46,12 @@ itself at `/` -- visually verified in a real browser).
 - `main/sheets_logger.c/.h` — periodic (deadband/heartbeat-gated) + event-
   triggered Google Sheets logging, on its own FreeRTOS task so a slow Apps
   Script response never blocks sensor sampling or the REST/WS servers
-- `main/ota_server.c/.h` — authenticated `POST /ota` endpoint, registered onto
-  `rest_api`'s shared HTTP server (only one server can bind port 80)
 - `../components/wifi_setup/`, `../components/captive_portal/`,
-  `../components/dns_server/` — WiFi credential storage (NVS) and the
-  fallback setup access point, with a live test-connect-before-save flow
-  (see `CLAUDE.md`); shared with `../flu-display/` (see the repo root
+  `../components/dns_server/`, `../components/ota_server/` — WiFi credential
+  storage (NVS) and the fallback setup access point with a live
+  test-connect-before-save flow, and the authenticated `POST /ota` endpoint
+  (registered onto `rest_api`'s shared HTTP server -- only one server can
+  bind port 80); shared with `../flu-display/` (see the repo root
   `CLAUDE.md`'s "Shared components" section)
 - `activate-idf.sh` — sources the cached ESP-IDF toolchain (same one
   `flu-display` uses; see `../flu-display/CLAUDE.md` for the one-time setup)
@@ -93,7 +95,7 @@ curl http://flu-monitor.local/api/wifi       # live SSID/BSSID/channel/RSSI, not
 curl http://flu-monitor.local/api/settings
 curl -X POST http://flu-monitor.local/api/settings \
   -H "Content-Type: application/json" \
-  -d '{"log_heartbeat_min":15,"zone_cold_max_c":150,"zone_optimal_max_c":280,"fast_rise_c_per_min":20,"thermocouple_deadband_c":5,"google_sheets_webhook_url":"","google_sheets_secret":""}'
+  -d '{"log_heartbeat_min":15,"zone_cold_max_c":150,"zone_optimal_max_c":280,"fast_rise_c_per_min":20,"thermocouple_deadband_c":5,"google_sheets_webhook_url":"","google_sheets_secret":"","idle_pulse_period_ms":8000,"fast_pulse_period_ms":1400,"rate_deadband_c_per_min":3,"color_transition_exponent":3}'
 ```
 
 `POST /api/settings` replaces the whole settings object (no partial/PATCH

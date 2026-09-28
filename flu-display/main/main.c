@@ -24,6 +24,7 @@
 #include "flue_poll.h"
 #include "led_display.h"
 #include "ota_server.h"
+#include "secrets.h"
 #include "status_led.h"
 #include "wifi_setup.h"
 
@@ -75,7 +76,7 @@ void app_main(void) {
     // clean signal that whatever was recorded before no longer applies.
     wifi_clear_attempt_failed();
 
-    ota_server_start();
+    ota_server_start(OTA_SECRET);
     led_display_init();
     flue_poll_init();
 
