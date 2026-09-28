@@ -4,9 +4,10 @@
 // NVS-backed settings, rate/zone regression, and a REST API (GET
 // /api/reading, GET+POST /api/settings). Milestone 4 -- a /ws WebSocket
 // endpoint broadcasting each reading + settings-changed events, for
-// flu-display to subscribe to instead of polling REST. See the repo root
-// CLAUDE.md and the approved project plan for the full context and
-// architecture rationale.
+// flu-display to subscribe to instead of polling REST. Milestone 5 --
+// periodic + event-triggered Google Sheets logging on its own task. See
+// the repo root CLAUDE.md and the approved project plan for the full
+// context and architecture rationale.
 
 #include <stdbool.h>
 #include <stdlib.h>
@@ -26,6 +27,7 @@
 #include "rest_api.h"
 #include "sensors.h"
 #include "settings.h"
+#include "sheets_logger.h"
 #include "wifi_setup.h"
 #include "ws_server.h"
 
@@ -121,6 +123,7 @@ void app_main(void) {
     httpd_handle_t server = rest_api_start();
     ota_server_register(server);
     ws_server_register(server);
+    sheets_logger_init();
 
     while (true) {
       vTaskDelay(pdMS_TO_TICKS(10000));

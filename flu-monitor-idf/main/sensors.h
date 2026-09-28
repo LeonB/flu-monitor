@@ -18,6 +18,12 @@ typedef enum {
 // "cold"/"optimal"/"hot"/"unknown" -- for REST responses and logging.
 const char *thermocouple_zone_name(thermocouple_zone_t zone);
 
+// Whether a raw thermocouple reading is plausible for a stovepipe (same
+// -40..600C clamp sensors.c uses to guard the rate-regression window) --
+// exposed so other consumers of the raw reading (sheets_logger.c's own
+// Sheets-logging gate) apply the identical rule.
+bool thermocouple_reading_plausible(float c);
+
 typedef struct {
   bool bmp581_ok;
   float bmp581_temperature_c;

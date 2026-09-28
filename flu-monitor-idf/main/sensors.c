@@ -37,8 +37,11 @@ const char *thermocouple_zone_name(thermocouple_zone_t zone) {
 // same clamp as the ESPHome sidecar's own (both here and in its separate
 // Sheets-logging gate), guarding against a probe glitch (observed: 709C/891C
 // from a probe at room temperature) poisoning the regression window for its
-// whole ~3-minute span, not just one sample.
-static bool thermocouple_reading_plausible(float c) {
+// whole ~3-minute span, not just one sample. Exposed (not static) so other
+// consumers of the raw reading -- e.g. sheets_logger.c's own Sheets-logging
+// gate -- apply the identical rule, rather than each keeping its own copy
+// of the same two magic numbers the way the ESPHome lambdas had to.
+bool thermocouple_reading_plausible(float c) {
   return c >= -40.0f && c <= 600.0f;
 }
 
