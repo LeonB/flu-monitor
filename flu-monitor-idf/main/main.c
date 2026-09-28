@@ -28,6 +28,7 @@
 #include "sensors.h"
 #include "settings.h"
 #include "sheets_logger.h"
+#include "status_led.h"
 #include "wifi_setup.h"
 #include "ws_server.h"
 
@@ -93,6 +94,8 @@ void app_main(void) {
   }
   xTaskCreate(sensor_log_task, "sensor_log", 4096, NULL, tskIDLE_PRIORITY + 1, NULL);
 
+  status_led_init();
+
   char ssid[WIFI_SSID_MAX_LEN + 1] = {0};
   char pass[WIFI_PASS_MAX_LEN + 1] = {0};
   bool have_creds = wifi_creds_load(ssid, pass);
@@ -100,6 +103,7 @@ void app_main(void) {
   bool connected = false;
   if (have_creds) {
     ESP_LOGI(TAG, "Found stored WiFi credentials for '%s'", ssid);
+    status_led_set(STATUS_LED_CONNECTING);
     connected = wifi_sta_try_connect(ssid, pass, STA_CONNECT_TIMEOUT_MS);
   } else {
     ESP_LOGI(TAG, "No stored WiFi credentials");
@@ -107,6 +111,7 @@ void app_main(void) {
 
   if (connected) {
     ESP_LOGI(TAG, "Connected. Starting mDNS + OTA.");
+    status_led_set(STATUS_LED_CONNECTED);
 
     // Confirms this image works well enough to join WiFi, canceling the
     // bootloader's rollback timer for it -- see sdkconfig.defaults for the
@@ -135,6 +140,7 @@ void app_main(void) {
       wifi_mark_attempt_failed(ssid);
     }
     ESP_LOGW(TAG, "Not connected -- starting setup access point + captive portal");
+    status_led_set(STATUS_LED_AP_MODE);
     captive_portal_start(SETUP_AP_SSID, SETUP_AP_PASSWORD, SETUP_AP_MAX_CONN, STA_CONNECT_TIMEOUT_MS);
   }
 }

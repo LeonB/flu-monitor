@@ -1,4 +1,5 @@
 dependencies:
   espressif/mdns: ">=1.0.0"
+  espressif/led_strip: ">=2.5.0"
   esp-idf-lib/i2cdev: "*"
   esp-idf-lib/mcp960x: "*"

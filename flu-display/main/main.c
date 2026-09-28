@@ -24,6 +24,7 @@
 #include "flue_poll.h"
 #include "led_display.h"
 #include "ota_server.h"
+#include "status_led.h"
 #include "wifi_setup.h"
 
 static const char *TAG = "main";
@@ -42,6 +43,8 @@ void app_main(void) {
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
 
+  status_led_init();
+
   char ssid[WIFI_SSID_MAX_LEN + 1] = {0};
   char pass[WIFI_PASS_MAX_LEN + 1] = {0};
   bool have_creds = wifi_creds_load(ssid, pass);
@@ -49,6 +52,7 @@ void app_main(void) {
   bool connected = false;
   if (have_creds) {
     ESP_LOGI(TAG, "Found stored WiFi credentials for '%s'", ssid);
+    status_led_set(STATUS_LED_CONNECTING);
     connected = wifi_sta_try_connect(ssid, pass, STA_CONNECT_TIMEOUT_MS);
   } else {
     ESP_LOGI(TAG, "No stored WiFi credentials");
@@ -56,6 +60,7 @@ void app_main(void) {
 
   if (connected) {
     ESP_LOGI(TAG, "Connected. Subscribing to flu-monitor-idf and driving the LED ring.");
+    status_led_set(STATUS_LED_CONNECTED);
 
     // Confirms this image works well enough to join WiFi, canceling the
     // bootloader's rollback timer for it. A build broken badly enough to
@@ -81,6 +86,7 @@ void app_main(void) {
     }
   } else {
     ESP_LOGW(TAG, "Not connected -- starting setup access point + captive portal");
+    status_led_set(STATUS_LED_AP_MODE);
     captive_portal_start(SETUP_AP_SSID, SETUP_AP_PASSWORD, SETUP_AP_MAX_CONN);
   }
 }
