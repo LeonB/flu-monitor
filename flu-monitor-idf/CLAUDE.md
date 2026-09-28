@@ -18,7 +18,7 @@ live readings to `flu-display` instead.
 
 ## Status
 
-**Milestones 1-4 done and verified on the real Feather board:**
+**Milestones 1-5 done and verified on the real Feather board:**
 - **Milestone 1**: WiFi (stored creds) + captive portal fallback (scanned
   network list, live test-connect-before-save, a dedicated failure screen) +
   mDNS + OTA.
@@ -32,9 +32,14 @@ live readings to `flu-display` instead.
   `settings_changed` on a successful settings POST), consumed by
   `../flu-display/`'s own Milestone 4 (WS subscription replacing its old 3s
   REST poll) -- verified end to end on both real devices.
+- **Milestone 5**: periodic (deadband/heartbeat-gated) + event-triggered
+  Google Sheets logging (`sheets_logger.c/.h`), ported from the ESPHome
+  sidecar's own logic onto a dedicated FreeRTOS task so a slow Apps Script
+  response never blocks sensor sampling or the REST/WS servers -- verified
+  against the real production webhook (a real row logged, status 200) after
+  fixing a missing TLS cert bundle attachment (see below).
 
-Milestones 4-7 (WebSocket broadcast + `flu-display` update, Google Sheets
-logging, web UI, event buttons) not yet built.
+Milestones 6-7 (web UI, event buttons) not yet built.
 
 ## STEMMA QT power (GPIO2) — the single biggest time sink so far
 
@@ -175,6 +180,20 @@ The actual hook that fires once a connection is open is
 project's `sdkconfig.defaults`). Client tracking lives there now;
 `ws_handler()` itself only ever runs for a real subsequent frame (a client
 CLOSE, or draining an unexpected data frame).
+
+## `esp_http_client` needs its TLS cert bundle attached explicitly
+
+`sheets_logger.c`'s first version against the real Google Sheets webhook
+failed every single attempt with `ESP_ERR_HTTP_CONNECT`, even though
+`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y` (and `..._DEFAULT_FULL=y`) were already
+on in `sdkconfig` -- that config only makes the bundle *available*, esp-tls
+still has no way to verify `script.google.com`'s certificate unless
+`esp_http_client_config_t.crt_bundle_attach` is explicitly set to
+`esp_crt_bundle_attach` (from `esp_crt_bundle.h`, `mbedtls` component).
+ESPHome's own `http_request` component does this wiring automatically, which
+is why the equivalent ESPHome config never needed to think about it. Fixed
+by setting `.crt_bundle_attach = esp_crt_bundle_attach` on the config and
+adding `mbedtls` to `main/CMakeLists.txt`'s `PRIV_REQUIRES`.
 
 ## The regression window assumes a fixed, sensor-matching read cadence
 

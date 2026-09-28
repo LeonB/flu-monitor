@@ -12,10 +12,11 @@ below):
   (below), but still the currently-running, production one, and kept as the
   rollback path throughout that rewrite.
 - **`flu-monitor-idf/`** — the sidecar's **plain ESP-IDF rewrite**, same
-  physical role/hardware as `flu-monitor/`. In progress: Milestones 1-4 done
+  physical role/hardware as `flu-monitor/`. In progress: Milestones 1-5 done
   and verified on real hardware (WiFi/captive portal/mDNS/OTA; BMP581 +
   MCP9601 sensors; NVS-backed settings + REST API + rate/zone regression;
-  WebSocket broadcast, now consumed by `flu-display/` below), Milestones 5-7
+  WebSocket broadcast, now consumed by `flu-display/` below; Google Sheets
+  logging, verified against the real production webhook), Milestones 6-7
   not yet built (see `flu-monitor-idf/README.md`'s Status section for the
   exact cutoff). Not yet adopted as the production sidecar —
   `flu-monitor/` (ESPHome) still is, until this rewrite fully catches up and
@@ -54,8 +55,8 @@ Full intended system:
   itself (see `flu-monitor/CLAUDE.md`'s "Woodstove data-gathering logging"
   and "Rate-of-change and zone classification"); its in-progress ESP-IDF
   rewrite (`flu-monitor-idf/`) already has NVS-backed settings, the same
-  rate/zone regression, and a REST API exposing it (Milestones 1-3), but
-  doesn't do the Sheets logging yet (its own Milestone 5).
+  rate/zone regression, a REST API exposing it, and Google Sheets logging
+  (Milestones 1-5) — no web UI or event buttons yet (its own Milestones 6-7).
 - **Display (`flu-display/`)**, a separate physical device (Lolin D32 Pro +
   24-LED SK6812 RGBW ring): all three build milestones done, see
   `flu-display/README.md`/`flu-display/CLAUDE.md` for status. Screen-less

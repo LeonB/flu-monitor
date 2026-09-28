@@ -8,11 +8,11 @@ exists and its relationship to `../flu-monitor/` (the still-running ESPHome
 original, kept as a rollback path) and `../flu-display/`, and this folder's
 own `CLAUDE.md` for implementation-specific gotchas.
 
-**Status: Milestones 1-4 done and verified on real hardware** (WiFi + captive
+**Status: Milestones 1-5 done and verified on real hardware** (WiFi + captive
 portal + mDNS + OTA; BMP581 + MCP9601 sensors; NVS-backed settings + REST API
 + rate/zone regression; WebSocket broadcast, now consumed by `../flu-display/`
-instead of it polling REST). Milestones 5-7 (Google Sheets logging, web UI,
-event buttons) not yet built.
+instead of it polling REST; Google Sheets logging, verified against the real
+production webhook). Milestones 6-7 (web UI, event buttons) not yet built.
 
 ## Files
 
@@ -27,6 +27,9 @@ event buttons) not yet built.
 - `main/rest_api.c/.h` — `GET /api/reading`, `GET`/`POST /api/settings`
 - `main/ws_server.c/.h` — `/ws` broadcast endpoint (reading + settings-changed
   events), registered onto the same shared HTTP server
+- `main/sheets_logger.c/.h` — periodic (deadband/heartbeat-gated) + event-
+  triggered Google Sheets logging, on its own FreeRTOS task so a slow Apps
+  Script response never blocks sensor sampling or the REST/WS servers
 - `main/ota_server.c/.h` — authenticated `POST /ota` endpoint, registered onto
   `rest_api`'s shared HTTP server (only one server can bind port 80)
 - `components/bmp5/` — Bosch's official `BMP5_SensorAPI` (vendored, BSD-3)
@@ -93,6 +96,25 @@ every ~30s (matching the sensor's own update cadence), and
 `{"type":"settings_changed"}` immediately after a successful
 `POST /api/settings` — `flu-display` uses this instead of polling REST, and
 re-fetches `/api/settings` on the latter event.
+
+## Google Sheets logging
+
+Configure `google_sheets_webhook_url`/`google_sheets_secret` via
+`POST /api/settings` (see above) to enable. Once set, `sheets_logger.c` logs
+a row on its own ~30s-tick task whenever either is true:
+
+- **`temp_change`**: the thermocouple reading has moved by at least
+  `thermocouple_deadband_c` since the last logged row.
+  - **`heartbeat`**: at least `log_heartbeat_min` minutes have passed since
+    the last logged row, regardless of delta.
+
+The dedup baseline (`s_last_logged_thermocouple_c`) is in-RAM only, not
+NVS-persisted, so a reboot always logs one row immediately on the first tick
+— matching the ESPHome sidecar's own `restore_value: false` behavior. A
+future `POST /api/event` (Milestone 7) will call
+`sheets_logger_log_event()` to log an immediate, un-gated row for a
+woodstove annotation (Cold Start, Added Wood, etc.), already wired up on its
+own queue.
 
 ## Hardware notes
 
