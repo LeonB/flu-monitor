@@ -1,6 +1,6 @@
 #pragma once
 
-// Tunable constants for flu-monitor-idf. Plain #defines are the compile-time
+// Tunable constants for flu-monitor. Plain #defines are the compile-time
 // fallback layer -- once `settings.c` lands (Milestone 3), the values that
 // used to be ESPHome's `substitutions:` block become NVS-backed and
 // runtime-editable via the REST API; these #defines then only matter as
@@ -18,11 +18,15 @@
 // before giving up and falling back to the setup AP.
 #define STA_CONNECT_TIMEOUT_MS   15000
 
-// mDNS hostname. Deliberately NOT "flu-monitor" yet -- the existing ESPHome
-// sidecar already advertises that name, and this project runs alongside it
-// during development/testing. Rename to "flu-monitor" only at the final
-// cutover (see the project plan's "Recommended structure" section).
-#define MDNS_HOSTNAME       "flu-monitor-idf"
+// mDNS hostname. Was "flu-monitor-idf" during development, while this
+// project ran alongside the original ESPHome sidecar (which advertised
+// "flu-monitor"). That sidecar has since been retired and this folder
+// renamed from flu-monitor-idf/ to flu-monitor/ -- this is that final
+// cutover (see the project plan's "Recommended structure" section). Not
+// yet flashed to the running device as of this rename -- see flu-display's
+// FLU_MONITOR_MDNS_NAME, which must be updated and reflashed in the same
+// step, or the two devices won't find each other.
+#define MDNS_HOSTNAME       "flu-monitor"
 
 // --- Milestone 2: sensors (MCP9601 over I2C; BMP581 physically removed) ---
 

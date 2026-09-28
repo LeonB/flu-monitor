@@ -2,12 +2,12 @@
 
 Plain ESP-IDF firmware (not ESPHome/Arduino) for a **Lolin D32 Pro** driving a
 24-LED SK6812 RGBW NeoPixel ring, showing the flue temperature reported by the
-`flu-monitor-idf` sidecar as a color/pulse gradient.
+`flu-monitor` sidecar as a color/pulse gradient.
 
 ## Files
 
 - `main/` — `main.c` (WiFi + LED wiring), `config.h` (all tunables),
-  `flue_poll.c/.h` (subscribes to `flu-monitor-idf`'s WebSocket broadcast and
+  `flue_poll.c/.h` (subscribes to `flu-monitor`'s WebSocket broadcast and
   fetches its zone/rate settings over REST), `led_display.c/.h` (renders the
   ring)
 - `components/wifi_setup/`, `components/captive_portal/`, `components/dns_server/`

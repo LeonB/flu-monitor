@@ -1,4 +1,6 @@
-// flu-monitor-idf: Milestone 1 -- WiFi (with stored credentials) + captive
+// flu-monitor (originally flu-monitor-idf/ during development, now the
+// production sidecar -- the ESPHome flu-monitor/ has been retired and
+// removed): Milestone 1 -- WiFi (with stored credentials) + captive
 // portal fallback (with network scan and a "last attempt failed" state) +
 // mDNS + OTA. Milestone 2 -- BMP581 + MCP9601 sensors (BMP581 since
 // physically removed from the board -- see sensors.c). Milestone 3 --

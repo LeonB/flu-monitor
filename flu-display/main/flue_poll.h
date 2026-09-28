@@ -8,7 +8,7 @@ extern "C" {
 
 // Starts mDNS (so this device is itself discoverable, and so
 // FLU_MONITOR_MDNS_NAME can be resolved), then in the background: resolves
-// flu-monitor-idf, fetches its current zone/rate settings (applied via
+// flu-monitor, fetches its current zone/rate settings (applied via
 // led_display_set_thresholds()), and connects a persistent WebSocket to its
 // /ws broadcast endpoint. Call once at boot, after WiFi STA is connected.
 //

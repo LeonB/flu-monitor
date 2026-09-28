@@ -1,39 +1,29 @@
 # flu-monitor (project)
 
 A DIY wood stove flue temperature monitor (inspired by the "Oru" product),
-made of two roles, currently three firmware folders (mid-rewrite — see
-below):
+made of two physical devices/firmware folders:
 
-- **`flu-monitor/`** — the **sidecar**, in ESPHome: reads the stovepipe
-  thermocouple over I2C and logs it. See `flu-monitor/README.md` for
-  day-to-day flash/log commands and `flu-monitor/CLAUDE.md` for its
-  implementation-specific gotchas (I2C errata, Google Sheets logging,
-  woodstove data-gathering logic). **Being replaced by `flu-monitor-idf/`**
-  (below), but still the currently-running, production one, and kept as the
-  rollback path throughout that rewrite.
-- **`flu-monitor-idf/`** — the sidecar's **plain ESP-IDF rewrite**, same
-  physical role/hardware as `flu-monitor/`. In progress: Milestones 1-5 done
-  and verified on real hardware (WiFi/captive portal/mDNS/OTA; MCP9601
-  sensor -- the BMP581 originally alongside it was physically removed, see
-  `flu-monitor-idf/CLAUDE.md`; NVS-backed settings + REST API + rate/zone
-  regression; WebSocket broadcast, now consumed by `flu-display/` below; Google Sheets
-  logging, verified against the real production webhook), Milestones 6-7
-  not yet built (see `flu-monitor-idf/README.md`'s Status section for the
-  exact cutoff). Not yet adopted as the production sidecar —
-  `flu-monitor/` (ESPHome) still is, until this rewrite fully catches up and
-  a deliberate cutover happens. See `flu-monitor-idf/README.md` for
-  day-to-day build/flash/OTA commands and its REST API, and
-  `flu-monitor-idf/CLAUDE.md` for implementation-specific gotchas (STEMMA QT
-  power sequencing, MCP960x errata specifics, the live WiFi
-  test-connect-before-save design).
+- **`flu-monitor/`** — the **sidecar**: reads the stovepipe thermocouple
+  (MCP9601) over I2C, logs it, and serves a REST/WebSocket API + Google
+  Sheets logging. Plain ESP-IDF (not ESPHome/Arduino). See
+  `flu-monitor/README.md` for day-to-day build/flash/OTA commands and its
+  REST API, and `flu-monitor/CLAUDE.md` for implementation-specific gotchas
+  (STEMMA QT power sequencing, MCP960x errata specifics, the live WiFi
+  test-connect-before-save design). This folder was originally
+  `flu-monitor-idf/`, built alongside an earlier ESPHome version of this
+  same sidecar (also then named `flu-monitor/`) during a rewrite -- once the
+  rewrite caught up (Milestones 1-5: WiFi/captive portal/mDNS/OTA, sensors,
+  settings/REST API/rate-zone regression, WebSocket broadcast, Google Sheets
+  logging) and a BMP581 sensor originally alongside the MCP9601 was
+  physically removed (see `flu-monitor/CLAUDE.md`), the ESPHome version was
+  retired and removed entirely, and this folder renamed to take its place.
+  Milestones 6-7 (web UI, event buttons) not yet built.
 - **`flu-display/`** — the plain-ESP-IDF **display**: a screen-less ambient
   light box that subscribes to the sidecar's live broadcast and shows the
   reading as a color/pulse gradient. See `flu-display/README.md` for
   day-to-day build/flash commands and `flu-display/CLAUDE.md` for its
   implementation-specific gotchas (WiFi/captive portal, mDNS resolution, LED
-  color/pulse tuning). Now subscribes to `flu-monitor-idf/`'s WebSocket
-  broadcast (its Milestone 4) rather than polling `flu-monitor/` (ESPHome)
-  over REST — that coordinated cutover is done.
+  color/pulse tuning).
 
 This file covers only what's shared context across all of them.
 
@@ -51,33 +41,31 @@ Full intended system:
   stovepipe surface temperature.
 - **Read**: the MCP9601 in the sidecar's hardware converts that to a clean
   digital reading.
-- **Process**: the ESP32 sidecar reads it over I2C. The production
-  ESPHome sidecar (`flu-monitor/`) logs it and tracks rate-of-change/zone
-  itself (see `flu-monitor/CLAUDE.md`'s "Woodstove data-gathering logging"
-  and "Rate-of-change and zone classification"); its in-progress ESP-IDF
-  rewrite (`flu-monitor-idf/`) already has NVS-backed settings, the same
-  rate/zone regression, a REST API exposing it, and Google Sheets logging
-  (Milestones 1-5) — no web UI or event buttons yet (its own Milestones 6-7).
+- **Process**: the ESP32 sidecar reads it over I2C, tracks rate-of-change/
+  zone itself, and logs it (see `flu-monitor/CLAUDE.md`'s "The regression
+  window..." section) via NVS-backed settings + a REST API + Google Sheets
+  logging (Milestones 1-5) — no web UI or event buttons yet (its own
+  Milestones 6-7).
 - **Display (`flu-display/`)**, a separate physical device (Lolin D32 Pro +
   24-LED SK6812 RGBW ring): all three build milestones done, see
   `flu-display/README.md`/`flu-display/CLAUDE.md` for status. Screen-less
   ambient light box, placed wherever you'd actually glance at it, not
   necessarily next to the stove. Diffuses a color gradient (cool blue ->
-  amber -> red) and pulses faster when temperature is rising quickly. Polls
-  the sidecar's existing `web_server:` JSON API over WiFi (decided against
+  amber -> red) and pulses faster when temperature is rising quickly.
+  Subscribes to the sidecar's `/ws` WebSocket broadcast (decided against
   ESP-NOW/MQTT/a from-scratch native-API client — see `flu-display/CLAUDE.md`
   for why) — not MQTT, not ESP-NOW, that's settled now, not still open.
 - **Alert**: push a phone notification if things cross into dangerous
   territory — not built yet.
-- The sidecar's WiFi/logic layer is **moving off ESPHome to plain ESP-IDF**
-  (`flu-monitor-idf/`, in progress — see above): ESPHome's YAML+lambda model
-  became awkward once the rate-of-change regression needed to be real
-  algorithmic C++, not a string in a config file. `flu-display` was already
-  plain ESP-IDF from the start, for an unrelated reason (no sensors to
-  expose, no Home Assistant integration need, so ESPHome would have been
-  overkill there specifically) — the two projects converging on the same
-  stack is somewhat incidental, not evidence either one influenced the
-  other's choice.
+- The sidecar's WiFi/logic layer **moved off ESPHome to plain ESP-IDF**
+  (`flu-monitor/`, formerly `flu-monitor-idf/` during the rewrite -- see
+  above): ESPHome's YAML+lambda model became awkward once the rate-of-change
+  regression needed to be real algorithmic C++, not a string in a config
+  file. `flu-display` was already plain ESP-IDF from the start, for an
+  unrelated reason (no sensors to expose, no Home Assistant integration
+  need, so ESPHome would have been overkill there specifically) — the two
+  projects converging on the same stack is somewhat incidental, not evidence
+  either one influenced the other's choice.
 
 **Current phase is data-gathering, nothing else.** The event buttons (Cold
 Start, Opened Stove, Added Wood, Damper Up/Down, Burning Optimally, Stove

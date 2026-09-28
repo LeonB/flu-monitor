@@ -29,10 +29,12 @@
 // flue_poll.c resolves this explicitly instead. See CLAUDE.md's
 // "flu-display" section.
 //
-// Points at flu-monitor-idf (the ESP-IDF rewrite), not the original ESPHome
-// flu-monitor -- Milestone 4's coordinated cutover (see the repo root
-// CLAUDE.md). Rename back only if rolling back to the ESPHome sidecar.
-#define FLU_MONITOR_MDNS_NAME   "flu-monitor-idf"
+// Points at the ESP-IDF sidecar (formerly flu-monitor-idf/, now renamed to
+// flu-monitor/ -- the original ESPHome flu-monitor project has been
+// retired and removed entirely). Not yet reflashed as of this rename --
+// must ship together with the sidecar's own MDNS_HOSTNAME change
+// (flu-monitor/main/config.h), or the two devices won't find each other.
+#define FLU_MONITOR_MDNS_NAME   "flu-monitor"
 #define MDNS_QUERY_TIMEOUT_MS   3000
 
 // --- Milestone 4: WebSocket subscription (flue_poll.c) ---

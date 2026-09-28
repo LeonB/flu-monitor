@@ -58,7 +58,7 @@ static rgb_t lerp_rgb(rgb_t a, rgb_t b, float t) {
 }
 
 // Matches the sidecar's own "Thermocouple Zone" classification (see
-// flu-monitor.yaml/flu-monitor-idf) exactly -- same two thresholds, same
+// ../flu-monitor/CLAUDE.md) exactly -- same two thresholds, same
 // <=/> boundaries. Thresholds are passed in (not read from config.h's
 // macros directly) since they're runtime-updatable -- see
 // led_display_set_thresholds().

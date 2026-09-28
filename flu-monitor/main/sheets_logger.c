@@ -32,7 +32,7 @@ static QueueHandle_t s_event_queue;
 
 // Fires the actual GET request. Always runs on this module's own task --
 // Apps Script Web App latency has been observed ranging from ~1.5s to 40+s
-// (see ../flu-monitor/CLAUDE.md), and nothing else on this device (sensor
+// (see ../google-sheets-logger/README.md), and nothing else on this device (sensor
 // sampling, the REST/WS servers) should ever wait on that.
 static void log_to_sheets(const sensor_reading_t *reading, const settings_t *settings, const char *event) {
   if (settings->google_sheets_webhook_url[0] == '\0') {
@@ -56,7 +56,7 @@ static void log_to_sheets(const sensor_reading_t *reading, const settings_t *set
   // (unlike curl/browsers, which downgrade to GET on a redirect) -- a POST
   // here would fail on-device with HTTP 405 even though the same webhook
   // tests fine from a browser. Same reasoning as the ESPHome sidecar's own
-  // http_request_async.get call -- see ../flu-monitor/CLAUDE.md.
+  // http_request_async.get call -- see ../google-sheets-logger/README.md.
   esp_http_client_config_t config = {
       .url = url,
       .method = HTTP_METHOD_GET,
@@ -76,7 +76,7 @@ static void log_to_sheets(const sensor_reading_t *reading, const settings_t *set
   if (err != ESP_OK) {
     // Cosmetic, not necessarily a real failure -- Apps Script writes the
     // row before it responds, so a logged client-side failure often still
-    // means the row landed (see ../flu-monitor/CLAUDE.md).
+    // means the row landed (see ../google-sheets-logger/README.md).
     ESP_LOGW(TAG, "Google Sheets log failed (event=%s): %s -- row usually still lands regardless", event,
              esp_err_to_name(err));
   } else {
@@ -125,9 +125,10 @@ static void sheets_logger_task(void *arg) {
     // sensors.c) -- must run before touching s_last_logged_thermocouple_c,
     // since a garbage value admitted as the new deadband baseline would
     // make every subsequent *real* reading look like a huge jump and
-    // cascade into a burst of bogus logs (this happened once upstream in
-    // the ESPHome build before its own clamp was added -- see
-    // ../flu-monitor/CLAUDE.md).
+    // cascade into a burst of bogus logs. This happened once on the
+    // original ESPHome sidecar before its own equivalent clamp was added
+    // (four temp_change rows logged in under two minutes off of one bad
+    // reading).
     if (!thermocouple_reading_plausible(reading.thermocouple_c)) {
       ESP_LOGW(TAG, "Ignoring implausible thermocouple reading for Sheets logging: %.1f C", reading.thermocouple_c);
       continue;

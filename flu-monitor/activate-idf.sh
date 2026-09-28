@@ -12,7 +12,7 @@
 # from that context this needs to be sourced within the *same* command as
 # whatever idf.py invocation follows it, e.g.:
 #
-#   cd flu-monitor-idf && . ./activate-idf.sh && idf.py build
+#   cd flu-monitor && . ./activate-idf.sh && idf.py build
 
 export IDF_TOOLS_PATH="$HOME/Library/Caches/esphome/idf"
 export IDF_PATH="$IDF_TOOLS_PATH/frameworks/5.5.5"

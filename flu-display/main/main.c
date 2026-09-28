@@ -1,7 +1,7 @@
 // flu-display: Milestone 1 (WiFi with stored credentials + captive portal
 // fallback), Milestone 2 (poll flu-monitor's JSON API), Milestone 3 (drive
 // the LED ring off the polled reading), Milestone 4 (subscribe to
-// flu-monitor-idf's WebSocket broadcast instead of polling REST, and fetch
+// flu-monitor's WebSocket broadcast instead of polling REST, and fetch
 // zone/rate thresholds from its REST API instead of this project's own
 // config.h copies).
 // See CLAUDE.md's "Project goal" section for the full project context, and
@@ -59,7 +59,7 @@ void app_main(void) {
   }
 
   if (connected) {
-    ESP_LOGI(TAG, "Connected. Subscribing to flu-monitor-idf and driving the LED ring.");
+    ESP_LOGI(TAG, "Connected. Subscribing to flu-monitor and driving the LED ring.");
     status_led_set(STATUS_LED_CONNECTED);
 
     // Confirms this image works well enough to join WiFi, canceling the

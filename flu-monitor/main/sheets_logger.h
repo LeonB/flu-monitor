@@ -4,11 +4,12 @@
 extern "C" {
 #endif
 
-// Starts the Google Sheets logging task: a periodic 30s check (matching the
-// ESPHome sidecar's own `interval: 30s` tick) that only actually logs when
-// the thermocouple has moved past `thermocouple_deadband_c` since the last
-// point logged, or `log_heartbeat_min` has elapsed, whichever comes first --
-// see ../flu-monitor/CLAUDE.md's "Woodstove data-gathering logging" for why
+// Starts the Google Sheets logging task: a periodic 30s check, ported from
+// the original ESPHome sidecar's own `interval: 30s` tick, that only
+// actually logs when the thermocouple has moved past
+// `thermocouple_deadband_c` since the last point logged, or
+// `log_heartbeat_min` has elapsed, whichever comes first -- see the repo
+// root CLAUDE.md's "Current phase is data-gathering" section for why
 // (a couple of weeks' worth of burns need enough resolution to correlate
 // against events, without flooding the sheet every 30s regardless of
 // whether anything changed). Reads via sensors_get_last_reading()/

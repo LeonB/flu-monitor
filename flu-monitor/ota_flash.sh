@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pushes build/flu-monitor-idf.bin to a running device over WiFi via its OTA
+# Pushes build/flu-monitor.bin to a running device over WiFi via its OTA
 # endpoint. Requires main/secrets.h (copy main/secrets.h.example and fill in
 # a real OTA_SECRET first -- see README.md). Only works once the device is
 # already running an OTA-capable build; the very first flash onto a device
@@ -23,7 +23,7 @@ if [ -z "$SECRET" ]; then
   exit 1
 fi
 
-BIN="$(dirname "$0")/build/flu-monitor-idf.bin"
+BIN="$(dirname "$0")/build/flu-monitor.bin"
 if [ ! -f "$BIN" ]; then
   echo "Error: $BIN not found -- run 'idf.py build' first." >&2
   exit 1

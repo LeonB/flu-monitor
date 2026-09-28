@@ -1,258 +1,285 @@
-# flu-monitor (ESPHome sidecar)
+# flu-monitor (plain ESP-IDF, not ESPHome/Arduino)
 
-ESPHome firmware for an Adafruit ESP32 Feather V2 with a BMP581 (pressure/temperature)
-and an MCP9601 (K-type thermocouple amp) over STEMMA QT/I2C. See `README.md` for
-day-to-day flash/log commands and the hardware pinout table. For the bigger-picture
-project this is one half of, see the repo root `CLAUDE.md`.
+See the repo root `CLAUDE.md` for the bigger-picture project this is one half
+of, and `README.md` (this folder) for day-to-day build/flash/OTA commands and
+the REST API. This file covers implementation-specific gotchas, most of them
+hard-won on real hardware.
 
-## Local ESPHome environment
+## Why this rewrite exists
 
-ESPHome is installed via **pipx with Homebrew's Python 3.13**, not the system/pyenv
-Python (3.14 at time of writing — ESPHome's dependencies aren't compatible with it yet):
+This folder was originally `flu-monitor-idf/`, a ground-up rewrite of an
+earlier ESPHome version of this same sidecar (then itself named
+`flu-monitor/`) that ran alongside it as the rollback path throughout the
+rewrite. The rewrite happened because the rate-of-change regression and zone
+classification became real algorithmic C++ living inside a YAML multiline
+lambda string — no separate compile step, awkward to iterate. Plain ESP-IDF,
+matching `../flu-display/`'s own architecture, fixes that. API-first, OTA,
+captive portal, mDNS were all part of the same ask; no MQTT broker exists on
+this network, so WebSocket is the mechanism for pushing live readings to
+`flu-display` instead. Once the rewrite caught up (see Status below) and a
+BMP581 sensor originally alongside the MCP9601 was physically removed (see
+"BMP581 removed" below), the ESPHome version was retired and removed
+entirely, and this folder renamed from `flu-monitor-idf/` to take its place.
 
-```sh
-pipx install --python /opt/homebrew/opt/python@3.13/bin/python3.13 esphome
-```
+## Status
 
-The machine's global `pip.conf` points at a work CodeArtifact index
-(`omniboost-pypi-...`) whose auth token can expire, which breaks ESPHome's own
-first-run ESP-IDF toolchain install (it shells out to pip). If a build fails with
-`401 Error, Credentials not correct` while "Installing ESP-IDF ... Python
-dependencies", rerun with the public index forced for that one command:
+**Adopted as the production sidecar** (this folder's rename from
+`flu-monitor-idf/` to `flu-monitor/`, and the ESPHome version's removal, was
+that cutover). **Milestones 1-5 done and verified on the real Feather
+board:**
+- **Milestone 1**: WiFi (stored creds) + captive portal fallback (scanned
+  network list, live test-connect-before-save, a dedicated failure screen) +
+  mDNS + OTA.
+- **Milestone 2**: BMP581 + MCP9601 both reading correctly, verified
+  side-by-side against the ESPHome sidecar's own values on the same physical
+  sensors. (The BMP581 was later physically removed from the board -- its
+  ambient temperature reading was almost a duplicate of the MCP9601's own
+  cold-junction reading -- and all BMP581 code has since been removed; see
+  "BMP581 removed" below.)
+- **Milestone 3**: NVS-backed settings (replacing ESPHome's YAML
+  `substitutions:`), the rate/zone regression ported from the ESPHome
+  lambda, and a REST API (`GET /api/reading`, `GET`/`POST /api/settings`).
+- **Milestone 4**: a `/ws` broadcast endpoint (reading every ~30s,
+  `settings_changed` on a successful settings POST), consumed by
+  `../flu-display/`'s own Milestone 4 (WS subscription replacing its old 3s
+  REST poll) -- verified end to end on both real devices.
+- **Milestone 5**: periodic (deadband/heartbeat-gated) + event-triggered
+  Google Sheets logging (`sheets_logger.c/.h`), ported from the ESPHome
+  sidecar's own logic onto a dedicated FreeRTOS task so a slow Apps Script
+  response never blocks sensor sampling or the REST/WS servers -- verified
+  against the real production webhook (a real row logged, status 200) after
+  fixing a missing TLS cert bundle attachment (see below).
 
-```sh
-PIP_INDEX_URL=https://pypi.org/simple esphome run flu-monitor.yaml ...
-```
+Milestones 6-7 (web UI, event buttons) not yet built.
 
-## Hard-won I2C gotchas (do not "fix" these back)
+## STEMMA QT power (GPIO2) — the single biggest time sink so far
 
-- **`i2c: scan: true` must stay off.** The MCP9601/MCP960x series locks up and stops
-  responding to *all* further I2C traffic after receiving a full bus scan — this is
-  confirmed by Adafruit's own firmware engineers, not a guess:
-  https://github.com/adafruit/Adafruit_Wippersnapper_Arduino/issues/299. With
-  `scan: true`, the sensor looked intermittently broken (worked right after flashing,
-  then died) in a way that looked like a hardware/cable/power problem but wasn't.
-  Diagnosing this burned a lot of time on the wrong track (cables, connectors,
-  clock-stretch timeouts, a whole patched local copy of the `mcp9600` component to
-  bypass a "device ID never responds" check) before the real cause turned up. The
-  stock `mcp9600` component works fine and correctly identifies the chip
-  (`Device ID: 0x41`) once `scan: false` is set — no local/patched component needed.
+**GPIO2 gates power to the entire STEMMA QT connector (both sensors) and
+must be driven HIGH before touching the I2C bus at all.** Without it, the
+bus reads stuck low on every single line/every bias condition (floating,
+internal pull-down, *and* internal pull-up all read 0) — indistinguishable
+from a genuinely wedged/shorted bus by any software-level test. `sensors.c`'s
+`sensors_init()` does this first, before anything else. The original
+ESPHome sidecar did the same thing via a `switch: platform: gpio` with
+`restore_mode: ALWAYS_ON` and `setup_priority: 1200` (higher than i2c's own
+1000) -- without that ordering, the sensors were unpowered when the i2c bus
+initialized, showing up as `SCL is held LOW on the bus` bus-recovery
+failures at boot, the same failure mode this port's own explicit
+before-anything-else ordering avoids.
 
-- **Bus frequency must stay ≤85kHz** while the MCP9601 is attached. This chip family
-  has a real, documented Microchip silicon errata ("Intermittent I2C Read Command
-  Clock Stretching Failure") that above ~85kHz can make a read silently return stale
-  duplicate register data — it looks like a valid reading, not a bus error, so it's
-  easy to mistake for a real (but wrong) temperature. Background/write-up:
-  https://www.rikeshkkpatel.co.uk/diy-reflow-oven/problems-with-the-mcp9600-thermocouple-amplifier/
-  85kHz was fine for the BMP581 too in testing, so this is a fleet-wide setting, not
-  a per-device one.
+## I2C bus recovery is needed on every boot, not just after a crash
 
-- **A bare-wire thermocouple can produce wildly implausible readings if the
-  leads get bridged by a conductive liquid** — observed 709.3°C and 891.2°C
-  logged to the woodstove data-gathering sheet; confirmed cause was the probe
-  briefly dunked in beer. That's an *analog* front-end disturbance (the tiny
-  thermocouple EMF itself gets corrupted before the MCP9600 ever digitizes it),
-  not digital I2C corruption — the two mechanisms produce the same symptom
-  (implausible reading) for different reasons, and both are possible with this
-  hardware, so don't assume one explains every future occurrence just because it
-  explained this one. This specific failure mode should go away once the final
-  insulated/sealed washer-style probe replaces the bare-wire stand-in on the real
-  stovepipe. `flu-monitor.yaml`'s logging interval has a sanity clamp (reject
-  readings outside roughly -40°C..600°C, a stovepipe has no business reading
-  outside that) that filters this at the logging layer regardless of root cause.
-  That clamp only catches *wildly* wrong values, though — a corrupted reading
-  that happens to land inside the plausible range would sail through. Any future
-  safety-critical alert logic (the actual overfire detection) should not trust a
-  single sample; require at least two consecutive consistent readings before
-  treating a spike as real.
+`sensors.c`'s `i2c_bus_recover()` is a faithful port of ESPHome's own
+`i2c_bus_esp_idf.cpp`'s `recover_()` (same NXP/Analog Devices bus-recovery
+procedure: bit-bang 9 clock pulses, each waiting out clock-stretching, then a
+START immediately followed by a STOP) — ESPHome's own boot log shows
+"Performing bus recovery" on every single boot of this same hardware too,
+not just after a bad state. An earlier, simpler version of this function
+that didn't wait for clock-stretch release on each pulse (just toggled SCL
+on a fixed delay) failed to unstick a genuinely stuck bus; matching the
+proven ESPHome implementation exactly, rather than reinventing it, is what
+actually worked.
 
-- **`GPIO2` (STEMMA QT power) needs `setup_priority: 1200`** on its switch, higher
-  than the i2c bus's own priority (`BUS = 1000`). Without this, the sensors are
-  unpowered when the i2c bus initializes and you'll see `SCL is held LOW on the bus`
-  bus-recovery failures at boot.
+## MCP960x errata: 85kHz nominal wasn't safe in practice
 
-- When chasing a fresh I2C issue, don't trust an isolated one-off reading (spike or
-  drop) as proof of a real physical event or of corruption — check several
-  consecutive poll cycles. A real physical event (e.g. touching the thermocouple tip)
-  shows as a smooth multi-sample ramp and decay; corrupted/stale data shows as a
-  single isolated outlier surrounded by otherwise-stable values.
+The MCP960x family has a real, documented Microchip silicon errata
+("Intermittent I2C Read Command Clock Stretching Failure") that above
+~85kHz can make a read silently return stale duplicate register data --
+it manifests as **stale/frozen register reads**, not a bus error, so a read
+looks completely valid, just wrong (or just never updating). Background:
+rikeshkkpatel.co.uk/diy-reflow-oven/problems-with-the-mcp9600-thermocouple-amplifier.
+Two more things learned the hard way, on top of that:
 
-## Flashing/logging while iterating
+- **Requesting exactly 85000 Hz still hit the errata.** The ESP32's clock
+  divider rounds the *requested* rate to the nearest achievable one, which
+  can land slightly above it. `config.h`'s `I2C_FREQ_HZ` is `50000`, leaving
+  real margin instead of sitting right on the threshold.
+- **ESPHome's own `i2c:` component defaults `sda_pullup_enabled`/
+  `scl_pullup_enabled` to `true` on ESP32** (`cv.SplitDefault(...,
+  esp32=True)` in its own schema), and the sidecar's config never overrides
+  that — so its bus has the ESP32's internal weak pull-up engaged *in
+  parallel with* the breakout boards' own pull-ups. This rewrite wasn't
+  doing that at first. The extra pull-up speeds up the bus's rise time,
+  which matters here: slower edges distort SCL's effective duty cycle
+  enough to trip the errata even at a "safe" nominal frequency.
+  `init_mcp9601()` explicitly sets `sda_pullup_en`/`scl_pullup_en = true` on
+  its `i2c_dev_t` before the first real transaction, matching ESPHome's
+  default rather than relying on the driver's own default of `false` (the
+  now-removed BMP581 init did the same, for the same reason, while it was
+  still on the board).
+- **The MCP9601's device-config register (mode/ADC-resolution/burst count)
+  is never touched by esp-idf-lib's `mcp960x` driver** — it's left at
+  whatever the power-on-reset default is. ESPHome's own `mcp9600.cpp`
+  explicitly writes this register to `0x00` (Normal mode, 18-bit ADC, 1
+  burst sample) rather than trusting the default; `sensors.c` now does the
+  same via `mcp960x_set_device_config()`, since earlier debugging on this
+  exact chip (while the bus was still stuck low, before the GPIO2 fix)
+  involved I2C writes that could have left this register in an unknown
+  state.
+- **The 18-bit ADC's first conversion takes ~320ms.** Without an explicit
+  wait, the very first `sensors_read()` call (which can happen only tens of
+  ms after `sensors_init()` returns) reads back the register's
+  pre-conversion `0x0000` default — which passes the plausibility clamp
+  fine (`0.00°C` is well inside `-40..600`) and was getting admitted into
+  the rate-regression window as a real sample, producing a wildly wrong
+  initial rate once a genuine second sample arrived 30s later.
+  `init_mcp9601()` now waits 400ms after writing the device-config register,
+  before returning, specifically to avoid this.
 
-- First flash (or whenever USB is plugged in) must go over serial:
-  `esphome run flu-monitor.yaml --device /dev/cu.usbserial-XXXX` — find the exact
-  port with `ls /dev/cu.usbserial*`.
-- Once on Wi-Fi, OTA works from anywhere on the LAN:
-  `esphome run flu-monitor.yaml --device flu-monitor.local`.
-- To capture a fresh **boot-time** log (setup/dump_config only fires once per boot,
-  right at the start), you have to reset *right before* attaching the log stream —
-  reconnecting to an already-running device misses it entirely. Over USB:
-  ```sh
-  python3 -m esptool --port /dev/cu.usbserial-XXXX --after hard_reset chip_id
-  esphome logs flu-monitor.yaml --device /dev/cu.usbserial-XXXX
-  ```
-  Over Wi-Fi only (no USB), use the native API to press the `Restart` button and
-  reconnect in a retry loop instead (see chat history for the aioesphomeapi script
-  used to do this — it's the same idea as `esphome logs`, just needs to survive the
-  reboot's connection drop).
-- `logger: level: INFO` is the production setting. Bumping to `DEBUG` shows
-  register-level writes/warnings; `CONFIG`-and-above lines (like `Found device at
-  address` from a scan, or a component's `dump_config()` output) need at least
-  `DEBUG` — they don't show at `INFO` even though `INFO` is a "lower" verbosity
-  in casual terms. This tripped up early debugging more than once.
+## The "GPIO is not usable, maybe conflict with others" warning is benign
 
-## Google Sheets logging gotchas
+Every boot logs `W (xxx) i2c.common: GPIO 22/20 is not usable, maybe
+conflict with others` right after the I2C bus/device come up. Traced this
+down to `esp_gpio_reserve()`'s bookkeeping: `esp-idf-lib/i2cdev`'s new
+i2c_master-driver backend re-asserts its own bus's SDA/SCL pin reservation
+every time a *new device* is added to an already-installed bus (not just
+once at bus creation) — so the second sensor's device-add trips the "already
+reserved" warning against the *bus's own* prior reservation of the same
+pins, not a real external conflict. Confirmed empirically: dumping the
+reservation mask (`esp_gpio_reserve(0)`) immediately before bus setup showed
+bits 20/22 genuinely unset. Don't chase this warning as a real bug.
 
-See `google-sheets-logger/README.md` for the actual setup steps. Two things that
-cost real debugging time and are easy to accidentally reintroduce:
+## Live WiFi test-connect-before-save (captive portal)
 
-- **Use `http_request.get`, never `.post`, against a Google Apps Script Web App.**
-  These always respond with a redirect to a `script.googleusercontent.com` URL
-  that only accepts GET. Browsers and curl's default behavior downgrade the
-  method to GET when following that redirect, so a POST can look like it works
-  fine when hand-tested — but the ESP32's HTTP client (ESP-IDF's
-  `esp_http_client`) preserves the original method across the redirect instead,
-  so a POST fails on-device with HTTP 405 even though the exact same webhook
-  tests fine from a browser or `curl -L`. Sending a GET with the data as query
-  parameters (which is what's in `flu-monitor.yaml` now) sidesteps this
-  entirely, since GET always redirects to GET regardless of the client's
-  redirect-method policy.
-- **`!secret` can't be used inside a lambda's raw C++ text** — it only resolves
-  when it's the *entire* value of a YAML node, not textually inside a bigger
-  string. To get a secret into a lambda (e.g. to build a URL with dynamic
-  sensor data appended), pull it in via `substitutions:` instead —
-  substitutions do raw `${...}` text replacement across the whole parsed
-  config, lambda bodies included, and a substitution's value can itself come
-  from `!secret`.
-- `http_request:`'s default 512B `buffer_size_tx` isn't enough for a long
-  Apps Script URL (deployment ID + query string); undersized shows up as an
-  intermittent `HTTP_CLIENT: Out of buffer` / `esp_http_client_open ESP_FAIL`,
-  not a clean error pointing at the buffer. Bumped to 1024B here.
-- When an Apps Script Web App looks broken after editing the code, check
-  whether the deployment was actually redeployed as a **New version** — the
-  "Deploy" button in the edit-deployment dialog silently no-ops if the Version
-  dropdown is still left on the old version. "Deployment successfully updated"
-  does not mean your new code is live.
-- A redirect loop between the `/exec` URL and its `script.googleusercontent.com`
-  echo URL happened once and resolved itself on retry a few seconds later —
-  treat it as transient Google-side flakiness, not a config problem, unless it
-  repeats.
-- **Apps Script Web App latency is genuinely bad and not fixable from our
-  side.** Direct `curl` timing against the deployed webhook (not the ESP32,
-  a fast machine on a fast connection) showed round trips from 1.5s to 40+
-  seconds across 8 back-to-back calls, 2 of those 8 essentially timed out.
-  This is a documented characteristic of "Anyone"-access Web Apps, not
-  something our config controls, and "Anyone" access is required here since
-  the ESP32 has no way to do a Google login. Because Apps Script executes
-  the handler and writes to the sheet *before* sending the client a
-  response, a logged client-side failure usually still means the row landed
-  — confirmed twice by checking the sheet directly after a logged failure.
-- **We use a third-party `http_request_async` fork instead of ESPHome's
-  stock `http_request`**, specifically so one of these slow/failed Google
-  calls doesn't block the whole device's main loop (sensors, dashboard,
-  everything) for the duration. It's pinned to a tag
-  (`ref: esphome-2026.8`), not `main`. It's low-adoption and AI-written —
-  see google-sheets-logger/README.md for the trust trade-off and how to
-  revert to the stock component if that ever matters more than the
-  blocking behavior it fixes.
-- **Numeric cells show 26 instead of 26.0 by default.** `Number(p.temperature)`
-  turns the string `"26.0"` the ESP32 sends into the plain JS number `26` --
-  there's no such thing as a trailing zero on a number type -- and Sheets'
-  default "Automatic" cell format then drops it on display. The stored value
-  is correct either way; it's purely cosmetic. `Code.gs` now sets an explicit
-  number format (`0.0` for the three temperature columns, `0` for pressure) the
-  first time it touches a sheet that doesn't have it yet, self-healing an
-  existing sheet on its very next write after redeploy -- but it won't
-  retroactively reformat rows already written before that fix landed.
-- **Sheet row timestamps come from Apps Script's own `new Date()` at
-  write/processing time, not anything the ESP32 sends.** Combined with the
-  latency variability above, this means row order/spacing in the sheet
-  reflects when Google got around to processing each request, not necessarily
-  the order the device actually triggered them in. Observed once: a
-  `heartbeat` row landing only 21s after the previous one, which looked like a
-  scheduling bug -- but the row *after* that was exactly 15:00 after the one
-  *before* the odd one, confirming the device's internal schedule was never
-  wrong, just delayed/out-of-order arrival at Google's end. Don't chase this
-  as a device-side bug without checking whether the surrounding rows still
-  add up to the expected interval once the odd one is skipped.
+`wifi_setup.c`'s `wifi_sta_test_connect()` attempts the real STA connection
+*while the setup AP stays up* (both possible simultaneously in
+`WIFI_MODE_APSTA`, already needed for the network-scan feature), and
+`captive_portal.c`'s `/save` handler only persists credentials + reboots on
+a *successful* test. A wrong password now shows an inline error on the same
+screen instead of triggering a blind reboot that may or may not come back —
+this was a deliberate design change mid-project (the original Milestone 1
+design saved-then-rebooted-then-recorded-failure-for-next-boot, working but
+worse UX for the common case of a typo).
 
-## Woodstove data-gathering logging
+## (Historical) Reflashing the old ESPHome sidecar changed the NVS layout
 
-The periodic (non-button) log to Sheets is gated, not unconditional every tick:
+No longer a live concern -- the ESPHome sidecar has been retired and its
+firmware/project files removed entirely, so there's nothing left to
+reflash back and forth against. Kept for the underlying NVS-namespace fact,
+in case it's ever relevant again: ESPHome's own partition table placed
+`nvs` differently than this project's `partitions_ota.csv`, and even where
+they'd coincidentally overlap, ESPHome's own WiFi-credential storage
+format/keys differed from this project's own `wifi_cfg` namespace --
+flashing ESPHome and then flashing back meant this project's stored WiFi
+credentials were gone, requiring the captive portal setup flow to be redone.
 
-- `thermocouple_deadband_c` and `log_heartbeat_min` (both `substitutions:`) control
-  it -- only actually posts when the thermocouple has moved past the deadband since
-  the last point logged, or the heartbeat interval has elapsed, whichever first.
-  Currently 5°C / 15min; deliberately conservative during data-gathering so real
-  transitions aren't blurred out. Tune up once the real noise floor and what counts
-  as signal is clearer.
-- Every periodic log's Event column gets tagged `temp_change` or `heartbeat` (via
-  the `log_reason` global, set as a side effect of the interval's condition lambda)
-  so you can tell a real-temperature-driven row from a routine keep-alive one at a
-  glance. Button-press events aren't gated by any of this -- they always log
-  immediately with their own label, since those are deliberate annotations. This
-  also means **button presses don't reset the heartbeat clock** -- they call
-  `log_to_sheets` directly and never touch `last_log_millis`, so pressing a
-  button doesn't delay or restart the next scheduled heartbeat/deadband check.
-- The deadband compares against `last_logged_thermocouple_c` (last value actually
-  *sent*, not last raw reading), which is exactly why the corrupted-reading sanity
-  clamp above has to run first and skip the tick entirely on failure -- if a garbage
-  value ever got logged, it would become the new baseline and make every subsequent
-  *real* reading look like a huge jump, cascading into a burst of bogus logs. This
-  happened once before the clamp was added (four `temp_change` rows in under two
-  minutes off of one bad reading) -- if that pattern reappears, suspect the clamp's
-  range needs adjusting, not the deadband logic itself.
+## Only one HTTP server can bind port 80
 
-## Rate-of-change and zone classification
+`rest_api.c`'s `rest_api_start()` owns the single shared `httpd_handle_t` for
+normal running state (once connected to WiFi); `ota_server_register()` and
+`ws_server_register()` just add their own URI handlers onto that same server
+instead of each starting their own. The captive portal's own server
+(setup-time only, never running at the same time as the connected-state
+server) is separate and unaffected.
 
-Computed here on the sidecar, not on `flu-display` -- deliberately. Two reasons:
-`flu-display` polls every 3s, far more often than the mcp9600's own 30s
-`update_interval`, so a rate computed there from raw two-point poll deltas was
-vulnerable to a real bug: a value that only actually changes once per 30s, but
-gets timestamped as if every poll were a fresh sample, makes any real delta
-look ~10x faster than it is (see `flu-display/CLAUDE.md`). Computing it here
-instead, off the sensor's own real update cadence, sidesteps that entirely.
-Second: doing it here means the algorithm's own live output can sit right next
-to the raw readings in the same Sheet, tagged by whatever burn was happening at
-the time -- directly useful for retroactively evaluating and retuning it
-against real data, which is the whole point of the current data-gathering
-phase.
+## A WebSocket URI handler is never called for its own handshake
 
-- **`zone_cold_max_c`/`zone_optimal_max_c`/`fast_rise_c_per_min` substitutions**
-  are the canonical copy of these placeholder thresholds -- `flu-display`
-  keeps its own copies too (`flu-display/main/config.h`), since its smooth
-  in-zone color gradient needs the actual numeric thresholds, not just a
-  discrete zone label. Keep both in sync by hand until real values replace
-  the placeholders.
-- **The rolling window and regression live in the `hot_junction`'s own
-  `on_value` trigger**, not a separate `interval:` tick -- `on_value` fires
-  exactly once per real sensor update, which is what makes the window's
-  timestamps trustworthy. Pushing to the window (and the sanity clamp
-  guarding it) happens *before* the Sheets-logging `interval:` tick even
-  runs; the two are independent consumers of the same underlying reading.
-- **The regression window's own sanity clamp is essential, not just
-  belt-and-suspenders**: a glitched reading admitted into a 6-sample window
-  corrupts the rate for the window's whole ~3-minute span, not just one
-  sample the way it would for a raw two-point delta -- so the same
-  `-40..600°C` clamp used for the Sheets-logging gate runs first here too,
-  skipping the whole update (window, rate, zone) on failure rather than
-  admitting a bad value.
-- **`Thermocouple Rate` and `Thermocouple Zone` are template sensors with
-  `update_interval: never`**, manually `publish_state()`'d from inside the
-  `on_value` lambda right after computing them -- not sensors with their own
-  periodic `update_interval`, which would just re-read stale globals on an
-  unrelated schedule instead of publishing exactly when a real computation
-  happened.
-- **`Code.gs`'s header-backfill logic was generalized** from "backfill just
-  the last column" (written for the one-off Event column addition) to a loop
-  backfilling any number of missing trailing columns, to handle the Rate and
-  Zone columns landing together. Existing sheets predating this get both new
-  header cells added automatically on the next write, same pattern as the
-  original Event-column backfill.
+`ws_server.c`'s first version tracked new clients with `if (req->method ==
+HTTP_GET) { ...; return ESP_OK; }` inside the registered handler, reasoning
+(wrongly) that the handshake request itself would arrive as a `GET` and could
+be detected that way. It compiled fine and looked reasonable, but silently
+never worked: a client could connect and the server would broadcast forever
+without ever reaching it. Confirmed straight from `esp_http_server`'s own
+source (`httpd_uri.c`): once `is_websocket` is set, the framework completes
+the entire WS handshake internally and explicitly does **not** call the
+registered handler for it (its own comment: *"If the request is websocket
+handshake, then do not call the uri->handler"*) — the handler is only ever
+invoked later, for an actual client→server data frame. `req->method` on such
+a later invocation is just the URI's own statically-registered method
+(`HTTP_GET`), not a live signal distinguishing "this is the handshake" —
+there's no invocation where that branch's premise is even true. Since a
+broadcast-only client like `flu-display` never sends anything, the handler
+was never entered at all, and the client list stayed empty forever.
 
-## Other notes
+The actual hook that fires once a connection is open is
+`ws_post_handshake_cb` (a separate callback field on `httpd_uri_t`, gated by
+`CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT` — off by default, on in this
+project's `sdkconfig.defaults`). Client tracking lives there now;
+`ws_handler()` itself only ever runs for a real subsequent frame (a client
+CLOSE, or draining an unexpected data frame).
 
-- `secrets.yaml` and `.esphome/` are git-ignored.
-- `web_server`'s own OTA endpoint is explicitly disabled (`ota: false` under
-  `web_server:`) since the encrypted `ota:` platform already covers updates, and
-  the web one would otherwise accept plaintext firmware uploads.
+## The onboard NeoPixel's power line is shared with STEMMA QT
+
+`status_led.c` drives the onboard NeoPixel (GPIO0) as a solid WiFi-status
+color, but doesn't do any power-enable sequencing of its own -- Adafruit's
+own pinout docs confirm the NeoPixel and STEMMA QT connector share the same
+power-enable pin (`STEMMA_QT_POWER_GPIO`/GPIO2), and `sensors_init()`
+already drives it high, unconditionally, before `status_led_init()` is ever
+called in `main.c`. If `status_led_init()` is ever reordered to run before
+`sensors_init()`, the NeoPixel would stay dark regardless of what color it's
+told to show.
+
+## `esp_http_client` needs its TLS cert bundle attached explicitly
+
+`sheets_logger.c`'s first version against the real Google Sheets webhook
+failed every single attempt with `ESP_ERR_HTTP_CONNECT`, even though
+`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y` (and `..._DEFAULT_FULL=y`) were already
+on in `sdkconfig` -- that config only makes the bundle *available*, esp-tls
+still has no way to verify `script.google.com`'s certificate unless
+`esp_http_client_config_t.crt_bundle_attach` is explicitly set to
+`esp_crt_bundle_attach` (from `esp_crt_bundle.h`, `mbedtls` component).
+ESPHome's own `http_request` component does this wiring automatically, which
+is why the equivalent ESPHome config never needed to think about it. Fixed
+by setting `.crt_bundle_attach = esp_crt_bundle_attach` on the config and
+adding `mbedtls` to `main/CMakeLists.txt`'s `PRIV_REQUIRES`.
+
+## The regression window assumes a fixed, sensor-matching read cadence
+
+`sensors_read()` admits the thermocouple reading into the rate-regression
+window on *every call* — it must only be called on the sensor's own true
+update cadence (currently every 30s, from `main.c`'s `sensor_log_task`), not
+from an arbitrary poller. This is exactly the rate-inflation bug
+`flu-display/CLAUDE.md` documents for its own polling-based rate calc:
+timestamping a value that only actually changes once per 30s as if every
+poll were a fresh sample makes any real delta look many times faster than
+it is. `GET /api/reading` (and any future WebSocket broadcast) must call
+`sensors_get_last_reading()` instead — a thread-safe copy of whatever the
+periodic task last computed, no I2C traffic, no window mutation.
+
+An implausible reading (outside `-40..600°C`) leaves the rate/zone at their
+last-known-good values rather than resetting them, exactly matching the
+ESPHome lambda's own `return;`-on-glitch behavior — the raw
+`thermocouple_c`/`cold_junction_c` fields are still reported as read either
+way; only the *derived* rate/zone are protected from a single glitch
+poisoning the ~3-minute window.
+
+## Sensor drivers: vendored official/registry drivers, not copied ESPHome components
+
+MCP9601 uses `esp-idf-lib/mcp960x` via the component registry. Deliberately
+*not* copying ESPHome's own `mcp9600.cpp` directly, even though its source
+was extremely useful for finding the gotchas above: ESPHome is GPL-3.0 (a
+real copyleft concern for otherwise permissively-licensed vendored code),
+and that file is written against ESPHome's own `Component`/`i2c::I2CDevice`
+base classes and HAL — not standalone, and pulling it in would drag along a
+meaningful slice of ESPHome's own core, working against the entire reason
+this rewrite exists. Reading ESPHome's source for the *procedural knowledge*
+(which register, which pin, which order) while keeping the actual driver
+code as the manufacturer's/registry's own reference implementation got the
+same debugging value without either problem. (The BMP581 previously used the
+same approach -- Bosch's own official `BMP5_SensorAPI`, vendored verbatim --
+before the sensor and all its code were removed; see "BMP581 removed"
+below.)
+
+## BMP581 removed
+
+The BMP581 (pressure/ambient-temperature sensor) was physically removed from
+the board -- its ambient temperature reading was almost a duplicate of the
+MCP9601's own cold-junction reading, so it wasn't earning its board space.
+All BMP581 code was removed to match: `sensors.c/.h`'s `bmp581_*` fields and
+`init_bmp581()`/`read_bmp581()`, `rest_api.c`'s `bmp581_*` JSON fields, the
+vendored `components/bmp5/` directory, and its `bmp5`/`BMP581_I2C_ADDR`
+references in `CMakeLists.txt`/`config.h`. `sheets_logger.c`'s webhook URL
+also dropped its `temperature`/`pressure` query params, which were sourced
+from the BMP581 -- **the Google Apps Script webhook itself (external to this
+repo) may still expect those params**; not updated here since its source
+isn't tracked in this repo.
+
+## Misc
+
+- **`idf.py monitor` exits with Ctrl+], not Ctrl+C.** Ctrl+C is intercepted
+  by the monitor for other purposes. Ctrl+T then Ctrl+H shows its full
+  shortcut menu.
+- **A background `idf.py monitor`/`esphome logs` session holds the serial
+  port open exclusively** — a concurrent `idf.py flash`/`ota_flash.sh` from
+  another shell will fail with "Resource temporarily unavailable" until it's
+  stopped.

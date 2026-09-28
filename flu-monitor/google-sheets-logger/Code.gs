@@ -1,9 +1,11 @@
-// Google Apps Script webhook that appends flu-monitor sensor readings to a
-// Google Sheet. Bind this to a Sheet via Extensions -> Apps Script, paste it
-// in place of the placeholder code, replace SHARED_SECRET below with your
+// Google Apps Script webhook that appends flu-monitor sensor readings to
+// a Google Sheet. Bind this to a Sheet via Extensions -> Apps Script, paste
+// it in place of the placeholder code, replace SHARED_SECRET below with your
 // own random string, then Deploy -> New deployment -> Web app
 // (Execute as: Me, Who has access: Anyone). Put the resulting /exec URL and
-// the secret you chose into ESPHome's secrets.yaml (see README.md).
+// the secret you chose into the sidecar's settings via
+// POST /api/settings (see README.md) -- not a secrets file, since this
+// project's settings are runtime/NVS-backed rather than compiled in.
 //
 // The placeholder secret below is intentionally not a real one -- this file
 // is a template checked into git, not the live deployed script. Set the
@@ -12,16 +14,23 @@
 //
 // This uses GET (query parameters), not POST with a JSON body. Apps Script
 // Web Apps always respond with a redirect to a script.googleusercontent.com
-// URL that only accepts GET; ESP-IDF's HTTP client (used by ESPHome's
-// http_request component) preserves the original method across that
-// redirect instead of downgrading to GET the way browsers and curl's
-// default behavior do, so a POST here fails with HTTP 405 on the ESP32
-// even though it can look fine when tested with a browser or a naive curl
-// call. Using GET end-to-end sidesteps the whole issue since GET always
-// redirects to GET regardless of the client's redirect-method policy.
+// URL that only accepts GET; ESP-IDF's own HTTP client (esp_http_client, see
+// sheets_logger.c) preserves the original method across that redirect
+// instead of downgrading to GET the way browsers and curl's default
+// behavior do, so a POST here fails with HTTP 405 on the ESP32 even though
+// it can look fine when tested with a browser or a naive curl call. Using
+// GET end-to-end sidesteps the whole issue since GET always redirects to
+// GET regardless of the client's redirect-method policy.
 const SHARED_SECRET = "REPLACE_ME_WITH_A_RANDOM_STRING";
-const SHEET_NAME = "Sensor Log";
-const HEADER_ROW = ["Timestamp", "Temperature (C)", "Pressure (Pa)", "Thermocouple (C)", "Cold Junction (C)", "Event", "Rate (C/min)", "Zone"];
+// A distinct tab from the old ESPHome sidecar's "Sensor Log" (which has
+// Temperature/Pressure columns from the now-removed BMP581) -- this schema
+// drops two *leading* columns rather than adding trailing ones, so the
+// existing backfill-missing-trailing-columns logic below can't safely
+// reconcile it against old rows without corrupting their meaning. Point at
+// a fresh tab instead of silently shifting what every column means partway
+// through the sheet's history.
+const SHEET_NAME = "Sensor Log (no BMP581)";
+const HEADER_ROW = ["Timestamp", "Thermocouple (C)", "Cold Junction (C)", "Event", "Rate (C/min)", "Zone"];
 
 function doGet(e) {
   const p = e.parameter;
@@ -36,10 +45,11 @@ function doGet(e) {
   if (sheet.getLastRow() === 0) {
     sheet.appendRow(HEADER_ROW);
   } else {
-    // Sheet predates one or more trailing columns added later (Event, then
-    // Rate/Zone) -- backfill whichever header cells are still missing,
-    // generalized to any number of newly-added trailing columns rather than
-    // just the one most recently added.
+    // Sheet predates one or more trailing columns added later (Rate/Zone
+    // were the last such addition, on the old 8-column schema) -- backfill
+    // whichever header cells are still missing, generalized to any number
+    // of newly-added trailing columns rather than just the one most
+    // recently added.
     for (let col = sheet.getLastColumn() + 1; col <= HEADER_ROW.length; col++) {
       sheet.getRange(1, col).setValue(HEADER_ROW[col - 1]);
     }
@@ -50,17 +60,13 @@ function doGet(e) {
   // stored value is unchanged -- fix the display once per sheet rather than
   // relying on whoever's reading it to notice and reformat manually.
   if (sheet.getRange("B2").getNumberFormat() !== "0.0") {
-    sheet.getRange("B2:B").setNumberFormat("0.0"); // Temperature (C)
-    sheet.getRange("C2:C").setNumberFormat("0");   // Pressure (Pa)
-    sheet.getRange("D2:D").setNumberFormat("0.0"); // Thermocouple (C)
-    sheet.getRange("E2:E").setNumberFormat("0.0"); // Cold Junction (C)
-    sheet.getRange("G2:G").setNumberFormat("0.00"); // Rate (C/min)
+    sheet.getRange("B2:B").setNumberFormat("0.0"); // Thermocouple (C)
+    sheet.getRange("C2:C").setNumberFormat("0.0"); // Cold Junction (C)
+    sheet.getRange("E2:E").setNumberFormat("0.00"); // Rate (C/min)
   }
 
   sheet.appendRow([
     new Date(),
-    Number(p.temperature),
-    Number(p.pressure),
     Number(p.thermocouple),
     Number(p.cold_junction),
     p.event || "",

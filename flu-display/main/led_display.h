@@ -18,7 +18,7 @@ void led_display_init(void);
 void led_display_set_reading(bool valid, float temperature_c, float rate_c_per_min);
 
 // Updates the zone/rate thresholds used for color classification and pulse
-// speed -- called by flue_poll.c once it fetches flu-monitor-idf's current
+// speed -- called by flue_poll.c once it fetches flu-monitor's current
 // settings (at boot, and again on its "settings changed" WS event), so a
 // threshold changed via the sidecar's own REST API actually updates the
 // ring's gradient, not just its own classification. Defaults to config.h's

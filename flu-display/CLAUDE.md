@@ -22,15 +22,15 @@ testing (a skillet on induction, then an oven) also surfaced and fixed a
 single-sample-trust bug in `flue_poll.c` (see below). Milestone 4: push-based
 OTA updates (originally deferred). **Milestone 5** (new): switched from
 polling `flu-monitor` (ESPHome) over REST every 3s to subscribing to
-`flu-monitor-idf`'s (the ESP-IDF rewrite's) WebSocket broadcast, and fetching
+`flu-monitor`'s (the ESP-IDF rewrite's) WebSocket broadcast, and fetching
 zone/rate thresholds from its REST API instead of this project's own
-hardcoded `config.h` copies -- see "Switching to flu-monitor-idf's WebSocket
+hardcoded `config.h` copies -- see "Switching to flu-monitor's WebSocket
 broadcast" below.
 
-## Switching to flu-monitor-idf's WebSocket broadcast (Milestone 5)
+## Switching to flu-monitor's WebSocket broadcast (Milestone 5)
 
 - **This device is now event-driven, not a poller.** `flue_poll.c` owns a
-  persistent `esp_websocket_client` connection to `flu-monitor-idf`'s `/ws`
+  persistent `esp_websocket_client` connection to `flu-monitor`'s `/ws`
   endpoint instead of an `esp_http_client` GET every `POLL_INTERVAL_MS`.
   `main.c`'s own loop shrank to a lightweight staleness check (a timestamp
   comparison against `STALE_READING_MS`, no network I/O) -- every actual
@@ -46,7 +46,7 @@ broadcast" below.
   unchanged**, just re-triggered by WS message arrival instead of a poll
   tick. Still needed: the sidecar's own raw `thermocouple_c` is reported
   as-read regardless of plausibility (only its *derived* rate/zone are
-  protected by its own clamp -- see `../flu-monitor-idf/CLAUDE.md`), so a
+  protected by its own clamp -- see `../flu-monitor/CLAUDE.md`), so a
   glitched raw reading can still arrive over WS exactly as it could over
   REST.
 - **Zone/rate thresholds (`ZONE_COLD_MAX_C`/`ZONE_OPTIMAL_MAX_C`/
@@ -78,10 +78,15 @@ broadcast" below.
   stays connected to the same AP isn't specially handled -- rare enough on
   a home network that it wasn't worth the complexity of tearing down and
   recreating the WS client with a freshly-resolved URI, at least for now.
-- **`FLU_MONITOR_MDNS_NAME` now points at `flu-monitor-idf`, not the
-  original ESPHome `flu-monitor`** -- the coordinated cutover the root
-  `CLAUDE.md` had flagged as pending. Point it back only to roll back to
-  the ESPHome sidecar.
+- **`FLU_MONITOR_MDNS_NAME` was repointed from the original ESPHome
+  sidecar's `"flu-monitor"` to the ESP-IDF rewrite's `"flu-monitor-idf"`**
+  for this Milestone -- the coordinated cutover the root `CLAUDE.md` had
+  flagged as pending. That ESPHome sidecar has since been retired and
+  removed entirely (no rollback path remains), and the ESP-IDF rewrite's own
+  folder/mDNS hostname were later renamed from `flu-monitor-idf` back to
+  the now-vacant `flu-monitor` -- `FLU_MONITOR_MDNS_NAME` was updated to
+  `"flu-monitor"` again to match (see `config.h`), a source-only change not
+  yet reflashed as of that rename.
 
 ## OTA updates (`ota_server.c`, `ota_flash.sh`, `partitions_ota.csv`)
 
@@ -278,11 +283,11 @@ broadcast" below.
   `GET http://flu-monitor.local/sensor/Thermocouple%20Temperature` ->
   `{"id":"sensor/Thermocouple Temperature","value":25,"state":"25.0 °C"}`.
   `flue_poll.c` no longer calls this endpoint at all -- see "Switching to
-  flu-monitor-idf's WebSocket broadcast" above.
+  flu-monitor's WebSocket broadcast" above.
 - **`flue_poll.c` reuses the sidecar's own defensive pattern**: a
   -40..600°C sanity clamp (same range and rationale as `flu-monitor.yaml`'s
   own clamp, see `../flu-monitor/CLAUDE.md`) before a reading is accepted --
-  see "Switching to flu-monitor-idf's WebSocket broadcast" above for how
+  see "Switching to flu-monitor's WebSocket broadcast" above for how
   rate-of-change and this clamp both carried over into the WS-based
   version unchanged. A poll/parse failure (or, now, an implausible/held
   broadcast) just leaves the display state as-is rather than showing a
@@ -290,7 +295,7 @@ broadcast" below.
 - **The onboard status LED (GPIO5) is wired active-low.** `status_led.c`
   drives it to reflect WiFi connection state (see `README.md`). The first
   version drove GPIO5 HIGH for "on," matching every other LED in both
-  projects (the NeoPixel ring, `flu-monitor-idf`'s onboard NeoPixel) --
+  projects (the NeoPixel ring, `flu-monitor`'s onboard NeoPixel) --
   confirmed dark on real hardware instead of lit. No pinout reference found
   for this board documents the LED's polarity either way; the fix was
   simply inverting the output (`STATUS_LED_ACTIVE_LOW` in `status_led.c`)

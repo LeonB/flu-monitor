@@ -6,7 +6,7 @@
 
 typedef enum {
   STATUS_LED_CONNECTING,  // slow blink -- attempting to join stored WiFi creds
-  STATUS_LED_CONNECTED,   // solid on -- joined WiFi, subscribed to flu-monitor-idf
+  STATUS_LED_CONNECTED,   // solid on -- joined WiFi, subscribed to flu-monitor
   STATUS_LED_AP_MODE,     // fast blink -- setup access point / captive portal active
 } status_led_state_t;
 

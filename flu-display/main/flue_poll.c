@@ -19,13 +19,15 @@
 
 static const char *TAG = "flue_poll";
 
-// Same reasoning as flu-monitor.yaml's/flu-monitor-idf's own sanity clamp
-// (see CLAUDE.md): a stovepipe has no business reading outside this range,
-// so anything outside it is a corrupted/failed reading, not real data --
-// and must not become the new rate-of-change baseline. The sidecar's own
-// raw thermocouple_c is reported as-read regardless of plausibility (only
-// its *derived* rate/zone are protected -- see flu-monitor-idf/CLAUDE.md),
-// so this check is still this device's own responsibility.
+// Same reasoning as the sidecar's own sanity clamp (see CLAUDE.md; the
+// original ESPHome flu-monitor.yaml had the identical clamp before this
+// project's ESP-IDF rewrite retired it): a stovepipe has no business
+// reading outside this range, so anything outside it is a corrupted/failed
+// reading, not real data -- and must not become the new rate-of-change
+// baseline. The sidecar's own raw thermocouple_c is reported as-read
+// regardless of plausibility (only its *derived* rate/zone are protected --
+// see ../flu-monitor/CLAUDE.md), so this check is still this device's own
+// responsibility.
 #define SANITY_MIN_C  -40.0f
 #define SANITY_MAX_C  600.0f
 
@@ -106,7 +108,7 @@ static bool resolve_sidecar(esp_ip4_addr_t *out_addr) {
   return true;
 }
 
-// GETs flu-monitor-idf's GET /api/settings and applies the zone/rate
+// GETs flu-monitor's GET /api/settings and applies the zone/rate
 // thresholds it returns -- see led_display_set_thresholds()'s own doc
 // comment for why this matters (a threshold changed via the sidecar's REST
 // API should actually move the ring's gradient, not just its own
