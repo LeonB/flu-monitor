@@ -314,8 +314,16 @@ function app() {
       const optimalMax = this.settings.zone_optimal_max_c || 280;
       const dataMin = Math.min(...temps, coldMax);
       const dataMax = Math.max(...temps, optimalMax);
-      const pad = Math.max(10, (dataMax - dataMin) * 0.1);
-      const yMin = dataMin - pad, yMax = dataMax + pad;
+      const padBottom = Math.max(10, (dataMax - dataMin) * 0.1);
+      // The "hot" band's top edge is just whatever headroom the plotted
+      // data happens to leave above optimalMax -- a symmetric 10% pad made
+      // it a barely-visible sliver whenever the burn stayed under the hot
+      // threshold (the common case, since there's no real overfire data --
+      // see the repo root CLAUDE.md's "Current phase is data-gathering"
+      // section). A larger, fixed-minimum top pad keeps the red band
+      // visually present instead of flattening away.
+      const padTop = Math.max(30, (dataMax - dataMin) * 0.15);
+      const yMin = dataMin - padBottom, yMax = dataMax + padTop;
       const yOf = (t) => H - ((t - yMin) / (yMax - yMin)) * H;
       const xOf = (ageS) => W - (clamp(ageS, 0, maxAgeS) / maxAgeS) * W;
 
