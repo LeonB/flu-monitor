@@ -40,7 +40,28 @@ static char s_webhook_response_buf[WEBHOOK_RESPONSE_BUF_SIZE];
 static int s_webhook_response_len;
 
 static esp_err_t webhook_http_event_handler(esp_http_client_event_t *evt) {
-  if (evt->event_id == HTTP_EVENT_ON_DATA && !esp_http_client_is_chunked_response(evt->client)) {
+  if (evt->event_id == HTTP_EVENT_ON_CONNECTED) {
+    // A fresh transport connection means a fresh response is starting --
+    // reset here, per hop, rather than once before the whole (possibly
+    // multi-hop) esp_http_client_perform() call. Apps Script Web Apps
+    // always redirect to a different host (script.googleusercontent.com),
+    // which esp_http_client cannot serve over a reused connection, so this
+    // fires again for that hop too -- without this, an earlier hop's own
+    // response body (if the redirect response happens to carry one) could
+    // get prepended to the final "ok"/"forbidden" body, failing the exact
+    // match below even on a genuine success.
+    s_webhook_response_len = 0;
+    return ESP_OK;
+  }
+  if (evt->event_id == HTTP_EVENT_ON_DATA) {
+    // Body data reaches this callback already de-chunked by the underlying
+    // http_parser regardless of Transfer-Encoding -- esp_http_client.c's
+    // http_on_body() unconditionally dispatches this event with clean,
+    // already-decoded bytes. An earlier version of this handler excluded
+    // chunked responses (copying an existing pattern elsewhere in this
+    // codebase), which just silently discarded a real "ok" acknowledgement
+    // whenever Google happened to serve it chunked -- a false failure, not
+    // a safety measure; there was never anything to decode here.
     int copy_len = evt->data_len;
     if (s_webhook_response_len + copy_len >= WEBHOOK_RESPONSE_BUF_SIZE) {
       copy_len = WEBHOOK_RESPONSE_BUF_SIZE - 1 - s_webhook_response_len;
@@ -105,7 +126,9 @@ static bool log_to_sheets(const sensor_reading_t *reading, const settings_t *set
     return false;
   }
 
-  s_webhook_response_len = 0;
+  // webhook_http_event_handler() resets s_webhook_response_len itself, on
+  // HTTP_EVENT_ON_CONNECTED -- per hop, not just once here -- so no manual
+  // reset is needed before starting the request.
 
   // GET, not POST: Apps Script Web Apps always redirect to a
   // script.googleusercontent.com URL that only accepts GET, and

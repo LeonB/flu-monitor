@@ -75,7 +75,16 @@ static int s_ws_msg_len = 0;
 static SemaphoreHandle_t s_refetch_settings_sem;
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
-  if (evt->event_id == HTTP_EVENT_ON_DATA && !esp_http_client_is_chunked_response(evt->client)) {
+  // Body data reaches this callback already de-chunked by the underlying
+  // http_parser regardless of Transfer-Encoding -- esp_http_client.c's
+  // http_on_body() unconditionally dispatches HTTP_EVENT_ON_DATA with
+  // clean, already-decoded bytes. Excluding chunked responses here (as this
+  // function previously did) would silently discard a real settings
+  // response whenever flu-monitor's REST server happened to serve it
+  // chunked -- a false failure, not a safety measure; there was never
+  // anything to decode. Found while fixing the identical mistake in
+  // sheets_logger.c's own copy of this pattern (see REVIEW.md finding D2).
+  if (evt->event_id == HTTP_EVENT_ON_DATA) {
     int copy_len = evt->data_len;
     if (s_response_len + copy_len >= HTTP_RESPONSE_BUF_SIZE) {
       copy_len = HTTP_RESPONSE_BUF_SIZE - 1 - s_response_len;
