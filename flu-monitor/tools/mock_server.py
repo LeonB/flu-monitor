@@ -25,6 +25,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 WEB_UI_DIR = Path(__file__).resolve().parent.parent / "main" / "web_ui"
+# alpine.min.js is no longer duplicated into main/web_ui/ -- the real firmware
+# now reuses captive_portal's own embedded copy instead of embedding a second
+# one (see flu-monitor's own CLAUDE.md), so this mock server serves it from
+# the same shared source instead of keeping its own stale copy on disk.
+CAPTIVE_PORTAL_DIR = Path(__file__).resolve().parent.parent.parent / "components" / "captive_portal"
 
 # Mirrors rest_api.c's EVENTS[] exactly -- keep in sync by hand if that list changes.
 EVENTS = [
@@ -140,10 +145,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _file(self, rel_path, content_type):
-        f = WEB_UI_DIR / rel_path
+    def _file(self, base_dir, rel_path, content_type):
+        f = base_dir / rel_path
         if not f.is_file():
-            self.send_error(404, f"{rel_path} not found in {WEB_UI_DIR}")
+            self.send_error(404, f"{rel_path} not found in {base_dir}")
             return
         body = f.read_bytes()
         self.send_response(200)
@@ -156,14 +161,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = urlparse(self.path).path
 
         static = {
-            "/": ("dashboard.html", "text/html"),
-            "/dashboard.js": ("dashboard.js", "application/javascript"),
-            "/dashboard.css": ("dashboard.css", "text/css"),
-            "/alpinejs.min.js": ("alpinejs.min.js", "application/javascript"),
-            "/fonts/caprasimo-400.woff2": ("fonts/caprasimo-400.woff2", "font/woff2"),
-            "/fonts/figtree-400.woff2": ("fonts/figtree-400.woff2", "font/woff2"),
-            "/fonts/figtree-600.woff2": ("fonts/figtree-600.woff2", "font/woff2"),
-            "/fonts/figtree-700.woff2": ("fonts/figtree-700.woff2", "font/woff2"),
+            "/": (WEB_UI_DIR, "dashboard.html", "text/html"),
+            "/dashboard.js": (WEB_UI_DIR, "dashboard.js", "application/javascript"),
+            "/dashboard.css": (WEB_UI_DIR, "dashboard.css", "text/css"),
+            "/alpinejs.min.js": (CAPTIVE_PORTAL_DIR, "alpine.min.js", "application/javascript"),
+            "/fonts/caprasimo-400.woff2": (WEB_UI_DIR, "fonts/caprasimo-400.woff2", "font/woff2"),
+            "/fonts/figtree-400.woff2": (WEB_UI_DIR, "fonts/figtree-400.woff2", "font/woff2"),
+            "/fonts/figtree-600.woff2": (WEB_UI_DIR, "fonts/figtree-600.woff2", "font/woff2"),
+            "/fonts/figtree-700.woff2": (WEB_UI_DIR, "fonts/figtree-700.woff2", "font/woff2"),
         }
         if path in static:
             self._file(*static[path])
