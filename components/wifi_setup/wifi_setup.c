@@ -87,9 +87,22 @@ static void reconnect_task(void *arg) {
       ESP_LOGI(TAG, "Reconnect attempt (backoff was %" PRIu32 "ms)", backoff_ms);
       esp_wifi_connect();
 
-      EventBits_t bits = xEventGroupWaitBits(s_reconnect_event_group, STA_CONNECTED_BIT | STA_FAILED_BIT, pdTRUE,
-                                             pdFALSE, pdMS_TO_TICKS(RECONNECT_ATTEMPT_TIMEOUT_MS));
-      if (bits & STA_CONNECTED_BIT) {
+      // Wait for some signal, but then check the driver's own current
+      // association state directly rather than trusting which bits the wait
+      // captured. An event group only tracks currently-set bits, not the
+      // order events happened in -- a connect that succeeds and then drops
+      // again before this (low-priority, tskIDLE_PRIORITY+1) task gets
+      // scheduled can leave both STA_CONNECTED_BIT and STA_FAILED_BIT set
+      // simultaneously, which the earlier version misread as "connected"
+      // (it only checked for STA_CONNECTED_BIT) even though the link was
+      // already down again by the time it checked. esp_wifi_sta_get_ap_info()
+      // reports the actual state at the moment it's called, regardless of
+      // which bits fired or in what order.
+      xEventGroupWaitBits(s_reconnect_event_group, STA_CONNECTED_BIT | STA_FAILED_BIT, pdTRUE, pdFALSE,
+                          pdMS_TO_TICKS(RECONNECT_ATTEMPT_TIMEOUT_MS));
+
+      wifi_ap_record_t ap_info;
+      if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
         ESP_LOGI(TAG, "WiFi reconnected");
         if (s_reconnect_status_cb != NULL) {
           s_reconnect_status_cb(true);
@@ -98,10 +111,10 @@ static void reconnect_task(void *arg) {
         break;  // back to the outer wait for the next disconnect
       }
 
-      // Either an explicit STA_FAILED_BIT (esp_wifi_connect() itself
-      // reports a failed join via another WIFI_EVENT_STA_DISCONNECTED) or a
-      // plain timeout with no event at all -- both mean "still not
-      // connected," so back off further and try again.
+      // Genuinely not connected (attempt failed, timed out, or connected
+      // and already dropped again before the check above) -- back off
+      // further and retry. Any disconnect that happens after this point is
+      // a fresh event the outer wait will still correctly catch.
       backoff_ms *= 2;
       if (backoff_ms > RECONNECT_BACKOFF_MAX_MS) {
         backoff_ms = RECONNECT_BACKOFF_MAX_MS;
