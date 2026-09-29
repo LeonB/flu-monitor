@@ -58,9 +58,15 @@ static esp_err_t webhook_http_event_handler(esp_http_client_event_t *evt) {
 // worker task re-reading sensors_get_last_reading() whenever it happens to
 // dequeue this -- a backlog behind a slow webhook call previously meant the
 // temperature/rate attached to an event could be from well after the tap.
+// enqueued_us lets log_to_sheets() tell Code.gs how old this event already
+// was by the time the request went out, so it can backdate the row's
+// timestamp instead of using its own processing time (see REVIEW.md
+// finding #3's follow-up: capturing the reading fixed which temperature
+// gets attached, but not when Sheets records it as having happened).
 typedef struct {
   char label[EVENT_LABEL_MAX_LEN];
   sensor_reading_t reading;
+  int64_t enqueued_us;
 } queued_event_t;
 
 static QueueHandle_t s_event_queue;
@@ -68,23 +74,32 @@ static QueueHandle_t s_event_queue;
 // Fires the actual GET request. Always runs on this module's own task --
 // Apps Script Web App latency has been observed ranging from ~1.5s to 40+s
 // (see ../google-sheets-logger/README.md), and nothing else on this device (sensor
-// sampling, the REST/WS servers) should ever wait on that. Returns whether the
-// row was actually written -- the periodic caller uses this to decide
-// whether to advance its deadband/heartbeat baseline (see REVIEW.md finding
-// #4: it previously advanced unconditionally, so a failed upload silently
-// suppressed every subsequent attempt until the next real change cleared an
-// ever-growing threshold).
-static bool log_to_sheets(const sensor_reading_t *reading, const settings_t *settings, const char *event) {
+// sampling, the REST/WS servers) should ever wait on that. age_ms is how long
+// ago (relative to right now) the reading/event actually happened -- 0 for
+// the periodic path, which logs essentially immediately, but potentially
+// tens of seconds for a queued event that sat behind a slow prior webhook
+// call (see sheets_logger_log_event()) -- sent to Code.gs so it can record
+// the actual moment of the tap instead of whenever this request happens to
+// be processed (see REVIEW.md finding #3: capturing the reading at tap time
+// fixed *which* temperature gets attached, but not *when* Sheets says it
+// happened). Returns whether the row was actually written -- the periodic
+// caller uses this to decide whether to advance its deadband/heartbeat
+// baseline (see REVIEW.md finding #4: it previously advanced unconditionally,
+// so a failed upload silently suppressed every subsequent attempt until the
+// next real change cleared an ever-growing threshold).
+static bool log_to_sheets(const sensor_reading_t *reading, const settings_t *settings, const char *event,
+                          int64_t age_ms) {
   if (settings->google_sheets_webhook_url[0] == '\0') {
     ESP_LOGD(TAG, "No Google Sheets webhook configured yet -- skipping log");
     return false;
   }
 
   char url[URL_BUF_SIZE];
-  int len = snprintf(url, sizeof(url), "%s?secret=%s&thermocouple=%.1f&cold_junction=%.1f&rate=%.2f&zone=%s&event=%s",
+  int len = snprintf(url, sizeof(url),
+                     "%s?secret=%s&thermocouple=%.1f&cold_junction=%.1f&rate=%.2f&zone=%s&event=%s&age_ms=%lld",
                      settings->google_sheets_webhook_url, settings->google_sheets_secret, reading->thermocouple_c,
                      reading->cold_junction_c, reading->thermocouple_rate_c_per_min,
-                     thermocouple_zone_name(reading->thermocouple_zone), event);
+                     thermocouple_zone_name(reading->thermocouple_zone), event, (long long) age_ms);
   if (len < 0 || (size_t) len >= sizeof(url)) {
     ESP_LOGW(TAG, "Webhook URL too long for the buffer -- skipping log (check google_sheets_webhook_url)");
     return false;
@@ -150,6 +165,7 @@ bool sheets_logger_log_event(const char *event) {
   // whenever sheets_logger_task gets around to dequeuing this (see this
   // function's own doc comment in sheets_logger.h).
   sensors_get_last_reading(&item.reading);
+  item.enqueued_us = esp_timer_get_time();
   if (xQueueSend(s_event_queue, &item, 0) != pdTRUE) {
     ESP_LOGW(TAG, "Event queue full, dropping event log: %s", event);
     return false;
@@ -172,7 +188,8 @@ static void sheets_logger_task(void *arg) {
       // check either.
       settings_t settings;
       settings_get(&settings);
-      log_to_sheets(&item.reading, &settings, item.label);
+      int64_t age_ms = (esp_timer_get_time() - item.enqueued_us) / 1000;
+      log_to_sheets(&item.reading, &settings, item.label, age_ms);
       continue;
     }
 
@@ -207,7 +224,7 @@ static void sheets_logger_task(void *arg) {
       continue;
     }
 
-    if (log_to_sheets(&reading, &settings, delta_due ? "temp_change" : "heartbeat")) {
+    if (log_to_sheets(&reading, &settings, delta_due ? "temp_change" : "heartbeat", 0)) {
       s_last_logged_thermocouple_c = reading.thermocouple_c;
       s_last_log_us = now_us;
     }

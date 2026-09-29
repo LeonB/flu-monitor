@@ -65,8 +65,20 @@ function doGet(e) {
     sheet.getRange("E2:E").setNumberFormat("0.00"); // Rate (C/min)
   }
 
+  // age_ms is how long ago (in ms, relative to right now) the device says
+  // this reading/event actually happened -- 0 for the periodic path, which
+  // logs essentially immediately, but potentially tens of seconds for an
+  // event that sat behind a slow prior webhook call (see sheets_logger.c's
+  // own doc comment on log_to_sheets()). Backdating by it means the sheet
+  // records when the tap/reading actually happened, not whenever Apps
+  // Script got around to processing this request -- REVIEW.md finding #3
+  // originally flagged exactly this drift. Missing/non-numeric age_ms (an
+  // older device build) falls back to 0, i.e. the previous behavior.
+  const ageMs = Number(p.age_ms) || 0;
+  const timestamp = new Date(Date.now() - ageMs);
+
   sheet.appendRow([
-    new Date(),
+    timestamp,
     Number(p.thermocouple),
     Number(p.cold_junction),
     p.event || "",
