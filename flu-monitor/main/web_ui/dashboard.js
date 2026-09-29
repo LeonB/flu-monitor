@@ -177,7 +177,15 @@ function app() {
           body: JSON.stringify({ event: ev.slug }),
         });
         if (!res.ok) throw new Error('failed');
-        this.showToast('Logged: ' + ev.label);
+        // POST /api/event always records the tap locally and returns 200 --
+        // sheets_queued:false means only the permanent Sheets delivery is
+        // backlogged (the 4-deep queue was full behind a slow webhook call),
+        // which clears on its own as the queue drains. Deliberately not
+        // phrased as a failure/retry prompt: retrying would just log a
+        // second, duplicate local annotation for the same tap, since the tap
+        // itself already succeeded (see REVIEW.md finding #5/C5).
+        const data = await res.json().catch(() => ({}));
+        this.showToast(data.sheets_queued === false ? 'Logged: ' + ev.label + ' (Sheets catching up)' : 'Logged: ' + ev.label);
       } catch (e) {
         this.showToast("Couldn't log " + ev.label + ' -- check the connection');
       }

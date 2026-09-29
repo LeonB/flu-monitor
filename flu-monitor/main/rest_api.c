@@ -439,23 +439,26 @@ static esp_err_t event_post_handler(httpd_req_t *req) {
 
   // Recorded locally either way -- event_log_push() feeds GET /api/events
   // and the dashboard's own event sheet/graph markers, independent of
-  // whether the Sheets-delivery queue (below) had room.
+  // whether the Sheets-delivery queue (below) had room. Deliberately NOT
+  // gated on sheets_logger_log_event()'s result: an earlier version of this
+  // handler responded with an HTTP error (implying "try again") whenever the
+  // Sheets queue was full, but the local record above had *already*
+  // succeeded by then -- a user retrying in response to that error message
+  // would call event_log_push() a second time for the same tap, duplicating
+  // the local annotation even though only the Sheets delivery, not the tap
+  // itself, needed retrying. Reporting a normal 200 with a `sheets_queued`
+  // flag instead (see below) means there's nothing to retry -- the queue
+  // draining on its own is what actually resolves this, not another tap.
   event_log_push(canonical);
-
-  if (!sheets_logger_log_event(canonical)) {
-    // The 4-deep Sheets queue was full (an unusual burst of taps behind a
-    // slow webhook call) -- previously this still reported success, so a
-    // dropped event silently never reached the permanent Sheets record with
-    // no way to tell. Report it as a real failure instead; the dashboard's
-    // existing "Couldn't log ... -- check the connection" toast already
-    // handles any non-2xx response here, no UI change needed.
-    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                        "Recorded locally, but the Sheets log queue is full -- try again shortly");
-    return ESP_FAIL;
+  bool sheets_queued = sheets_logger_log_event(canonical);
+  if (!sheets_queued) {
+    ESP_LOGW(TAG, "Sheets log queue full -- '%s' recorded locally but not queued for Sheets", canonical);
   }
 
+  char resp_body[64];
+  snprintf(resp_body, sizeof(resp_body), "{\"success\":true,\"sheets_queued\":%s}", sheets_queued ? "true" : "false");
   httpd_resp_set_type(req, "application/json");
-  httpd_resp_sendstr(req, "{\"success\":true}");
+  httpd_resp_sendstr(req, resp_body);
   return ESP_OK;
 }
 
