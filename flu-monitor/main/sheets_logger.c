@@ -28,6 +28,16 @@ static const char *TAG = "sheets_logger";
 static float s_last_logged_thermocouple_c = NO_PRIOR_LOG_C;
 static int64_t s_last_log_us = 0;
 
+// Carries the sensor reading captured at the moment of the actual event tap
+// (see sheets_logger_log_event() below) through the queue, rather than the
+// worker task re-reading sensors_get_last_reading() whenever it happens to
+// dequeue this -- a backlog behind a slow webhook call previously meant the
+// temperature/rate attached to an event could be from well after the tap.
+typedef struct {
+  char label[EVENT_LABEL_MAX_LEN];
+  sensor_reading_t reading;
+} queued_event_t;
+
 static QueueHandle_t s_event_queue;
 
 // Fires the actual GET request. Always runs on this module's own task --
@@ -85,20 +95,26 @@ static void log_to_sheets(const sensor_reading_t *reading, const settings_t *set
   esp_http_client_cleanup(client);
 }
 
-void sheets_logger_log_event(const char *event) {
-  char label[EVENT_LABEL_MAX_LEN] = {0};
-  strlcpy(label, event, sizeof(label));
-  if (xQueueSend(s_event_queue, label, 0) != pdTRUE) {
+bool sheets_logger_log_event(const char *event) {
+  queued_event_t item = {0};
+  strlcpy(item.label, event, sizeof(item.label));
+  // Captured now, synchronously, at the moment of the actual tap -- not
+  // whenever sheets_logger_task gets around to dequeuing this (see this
+  // function's own doc comment in sheets_logger.h).
+  sensors_get_last_reading(&item.reading);
+  if (xQueueSend(s_event_queue, &item, 0) != pdTRUE) {
     ESP_LOGW(TAG, "Event queue full, dropping event log: %s", event);
+    return false;
   }
+  return true;
 }
 
 static void sheets_logger_task(void *arg) {
   (void) arg;
 
   while (true) {
-    char event_label[EVENT_LABEL_MAX_LEN];
-    if (xQueueReceive(s_event_queue, event_label, pdMS_TO_TICKS(30000)) == pdTRUE) {
+    queued_event_t item;
+    if (xQueueReceive(s_event_queue, &item, pdMS_TO_TICKS(30000)) == pdTRUE) {
       // An event-triggered log (Milestone 7's future POST /api/event) --
       // immediate, bypasses the deadband/heartbeat check entirely below,
       // and deliberately does not touch s_last_logged_thermocouple_c /
@@ -106,11 +122,9 @@ static void sheets_logger_task(void *arg) {
       // behavior: a deliberate annotation, not a routine sample, so it
       // doesn't delay or restart the next scheduled heartbeat/deadband
       // check either.
-      sensor_reading_t reading;
-      sensors_get_last_reading(&reading);
       settings_t settings;
       settings_get(&settings);
-      log_to_sheets(&reading, &settings, event_label);
+      log_to_sheets(&item.reading, &settings, item.label);
       continue;
     }
 
@@ -152,6 +166,6 @@ static void sheets_logger_task(void *arg) {
 }
 
 void sheets_logger_init(void) {
-  s_event_queue = xQueueCreate(4, EVENT_LABEL_MAX_LEN);
+  s_event_queue = xQueueCreate(4, sizeof(queued_event_t));
   xTaskCreate(sheets_logger_task, "sheets_logger", 4096, NULL, tskIDLE_PRIORITY + 1, NULL);
 }

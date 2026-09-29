@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -27,8 +29,15 @@ void sheets_logger_init(void);
 // routine samples, so they shouldn't delay or restart the next scheduled
 // heartbeat/deadband check. Safe to call from any task (rest_api.c's own
 // POST /api/event handler calls this directly) -- the actual HTTP request
-// always runs on this module's own task, never the caller's.
-void sheets_logger_log_event(const char *event);
+// always runs on this module's own task, never the caller's. Captures the
+// current sensor reading synchronously, right now, rather than whenever the
+// worker task gets around to dequeuing this -- so the temperature/rate
+// attached to the log reflects the moment of this call, not some later,
+// possibly-delayed dequeue time (see REVIEW.md finding #3). Returns false
+// if the (4-deep) queue is full -- an unusual burst of taps behind a slow
+// webhook call -- in which case nothing was queued for Sheets at all; the
+// caller should surface this rather than reporting success.
+bool sheets_logger_log_event(const char *event);
 
 #ifdef __cplusplus
 }

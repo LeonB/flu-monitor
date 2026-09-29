@@ -437,8 +437,22 @@ static esp_err_t event_post_handler(httpd_req_t *req) {
     return ESP_FAIL;
   }
 
-  sheets_logger_log_event(canonical);
+  // Recorded locally either way -- event_log_push() feeds GET /api/events
+  // and the dashboard's own event sheet/graph markers, independent of
+  // whether the Sheets-delivery queue (below) had room.
   event_log_push(canonical);
+
+  if (!sheets_logger_log_event(canonical)) {
+    // The 4-deep Sheets queue was full (an unusual burst of taps behind a
+    // slow webhook call) -- previously this still reported success, so a
+    // dropped event silently never reached the permanent Sheets record with
+    // no way to tell. Report it as a real failure instead; the dashboard's
+    // existing "Couldn't log ... -- check the connection" toast already
+    // handles any non-2xx response here, no UI change needed.
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Recorded locally, but the Sheets log queue is full -- try again shortly");
+    return ESP_FAIL;
+  }
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_sendstr(req, "{\"success\":true}");
