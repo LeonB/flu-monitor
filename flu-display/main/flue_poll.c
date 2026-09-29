@@ -38,12 +38,18 @@ static const char *TAG = "flue_poll";
 // a misleading color (observed: an oven at ~150C spiking to a bogus 250C+
 // reading, self-correcting on the very next poll a few seconds later).
 // A jump bigger than this in a single broadcast isn't trusted immediately
-// -- it's held pending, and only accepted once the *next* broadcast agrees
-// with it too (within CONFIRM_TOLERANCE_C), so a one-off glitch (which
-// typically self-corrects by the next broadcast) never reaches the
-// display, while a real fast change still shows up within one extra cycle.
+// -- it's held pending, and only accepted once the *next* broadcast also
+// jumps beyond SUSPICIOUS_JUMP_C (from the last confirmed value) in the
+// *same direction*. A one-off glitch typically self-corrects back toward
+// the prior value on the next broadcast -- the opposite direction -- so it
+// gets discarded rather than confirmed; a real sustained rise or fall keeps
+// going the same way and confirms within one extra cycle. (An earlier
+// version compared the new reading's *magnitude* against the held pending
+// value instead of checking direction -- that broke down for any steady,
+// roughly-linear trend, since each newly-held reading differs from the
+// previous one by close to the same per-tick delta every time, which never
+// closes to within tolerance -- see REVIEW.md finding #2.)
 #define SUSPICIOUS_JUMP_C     15.0f
-#define CONFIRM_TOLERANCE_C   10.0f
 
 #define HTTP_TIMEOUT_MS         5000
 #define URL_BUF_SIZE            64
@@ -58,7 +64,7 @@ static bool s_have_prev = false;
 static float s_prev_temperature_c;
 
 static bool s_have_pending = false;
-static float s_pending_temperature_c;
+static bool s_pending_rising;  // direction of the first held-pending jump, to confirm a continued trend
 
 static bool s_have_ever_valid = false;
 static int64_t s_last_valid_us = 0;
@@ -196,14 +202,18 @@ static void handle_reading(cJSON *reading) {
   if (s_have_prev) {
     float jump = fabsf(temperature_c - s_prev_temperature_c);
     if (jump > SUSPICIOUS_JUMP_C) {
-      bool confirmed = s_have_pending && fabsf(temperature_c - s_pending_temperature_c) <= CONFIRM_TOLERANCE_C;
+      bool rising = temperature_c > s_prev_temperature_c;
+      bool confirmed = s_have_pending && rising == s_pending_rising;
       if (!confirmed) {
         ESP_LOGW(TAG, "Holding suspicious jump for confirmation: %.1f C (last confirmed %.1f C)", temperature_c,
                   s_prev_temperature_c);
-        s_pending_temperature_c = temperature_c;
+        s_pending_rising = rising;
         s_have_pending = true;
         return;
       }
+      // A second consecutive jump beyond SUSPICIOUS_JUMP_C, continuing the
+      // same direction as the first -- a real sustained trend, confirmed
+      // and accepted immediately (not the held reading, this newer one).
     }
     s_have_pending = false;
   }
