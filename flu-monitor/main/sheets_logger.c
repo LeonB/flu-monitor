@@ -43,11 +43,16 @@ static QueueHandle_t s_event_queue;
 // Fires the actual GET request. Always runs on this module's own task --
 // Apps Script Web App latency has been observed ranging from ~1.5s to 40+s
 // (see ../google-sheets-logger/README.md), and nothing else on this device (sensor
-// sampling, the REST/WS servers) should ever wait on that.
-static void log_to_sheets(const sensor_reading_t *reading, const settings_t *settings, const char *event) {
+// sampling, the REST/WS servers) should ever wait on that. Returns whether the
+// request actually went out and completed -- the periodic caller uses this to
+// decide whether to advance its deadband/heartbeat baseline (see REVIEW.md
+// finding #4: it previously advanced unconditionally, so a failed upload
+// silently suppressed every subsequent attempt until the next real change
+// cleared an ever-growing threshold).
+static bool log_to_sheets(const sensor_reading_t *reading, const settings_t *settings, const char *event) {
   if (settings->google_sheets_webhook_url[0] == '\0') {
     ESP_LOGD(TAG, "No Google Sheets webhook configured yet -- skipping log");
-    return;
+    return false;
   }
 
   char url[URL_BUF_SIZE];
@@ -57,7 +62,7 @@ static void log_to_sheets(const sensor_reading_t *reading, const settings_t *set
                      thermocouple_zone_name(reading->thermocouple_zone), event);
   if (len < 0 || (size_t) len >= sizeof(url)) {
     ESP_LOGW(TAG, "Webhook URL too long for the buffer -- skipping log (check google_sheets_webhook_url)");
-    return;
+    return false;
   }
 
   // GET, not POST: Apps Script Web Apps always redirect to a
@@ -83,16 +88,24 @@ static void log_to_sheets(const sensor_reading_t *reading, const settings_t *set
   };
   esp_http_client_handle_t client = esp_http_client_init(&config);
   esp_err_t err = esp_http_client_perform(client);
-  if (err != ESP_OK) {
-    // Cosmetic, not necessarily a real failure -- Apps Script writes the
-    // row before it responds, so a logged client-side failure often still
-    // means the row landed (see ../google-sheets-logger/README.md).
-    ESP_LOGW(TAG, "Google Sheets log failed (event=%s): %s -- row usually still lands regardless", event,
+  bool ok = err == ESP_OK;
+  if (!ok) {
+    // Treated as a real failure for baseline-advancement purposes (see this
+    // function's own doc comment), even though it's genuinely ambiguous --
+    // Apps Script writes the row before it responds, so a client-side
+    // failure often still means the row landed (see
+    // ../google-sheets-logger/README.md). Between the two possible wrong
+    // outcomes -- an occasional duplicate row if it actually landed, or a
+    // permanently silent gap if it didn't and this weren't retried -- a
+    // duplicate is far easier to spot and discard in analysis later than a
+    // gap that looks identical to "nothing happened."
+    ESP_LOGW(TAG, "Google Sheets log failed (event=%s): %s -- row may still have landed regardless", event,
              esp_err_to_name(err));
   } else {
     ESP_LOGI(TAG, "Logged to Google Sheets (event=%s, status=%d)", event, esp_http_client_get_status_code(client));
   }
   esp_http_client_cleanup(client);
+  return ok;
 }
 
 bool sheets_logger_log_event(const char *event) {
@@ -159,9 +172,14 @@ static void sheets_logger_task(void *arg) {
       continue;
     }
 
-    log_to_sheets(&reading, &settings, delta_due ? "temp_change" : "heartbeat");
-    s_last_logged_thermocouple_c = reading.thermocouple_c;
-    s_last_log_us = now_us;
+    if (log_to_sheets(&reading, &settings, delta_due ? "temp_change" : "heartbeat")) {
+      s_last_logged_thermocouple_c = reading.thermocouple_c;
+      s_last_log_us = now_us;
+    }
+    // On failure, deliberately leave both untouched -- delta_due/heartbeat_due
+    // will keep re-triggering on the very next tick until a log actually
+    // succeeds, rather than silently absorbing the miss (see REVIEW.md
+    // finding #4).
   }
 }
 
