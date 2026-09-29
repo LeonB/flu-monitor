@@ -67,19 +67,51 @@ struct dns_server_handle {
 /*
     Parse the name from the packet from the DNS name format to a regular .-seperated name
     returns the pointer to the next part of the packet
-*/
-static char *parse_dns_name(char *raw_name, char *parsed_name, size_t parsed_name_max_len)
-{
 
+    Hardened against a malformed/malicious packet (see REVIEW.md finding #5
+    -- this file is vendored Espressif example code, not originally written
+    for this project, and the original version had neither of the two
+    issues fixed here):
+    - `packet_end` bounds every read against the actual received length, not
+      just the output buffer's length -- the original version only checked
+      `parsed_name`'s bound and walked `label` forward with no check against
+      the source packet at all, reading past the end of the 128-byte stack
+      receive buffer on a name with no proper zero-length root label within
+      the received bytes.
+    - The length byte is read as `uint8_t`, and a DNS compression pointer
+      (top two bits set, 0xC0+) is explicitly rejected rather than
+      interpreted as a length. The original read `*label` through a `char *`
+      -- on a platform where `char` is signed, a pointer byte becomes a
+      *negative* `int`, which then gets passed as the `size_t` third
+      argument to `memcpy()` below, implicitly converting it to a huge
+      unsigned value: a massive out-of-bounds copy, not just an invalid
+      read. Compression isn't needed here anyway -- a captive portal only
+      ever receives simple single-question queries with no repeated names to
+      compress, so outright rejecting a compressed name (by returning NULL,
+      same as any other malformed name) costs nothing real.
+*/
+static char *parse_dns_name(char *raw_name, const char *packet_end, char *parsed_name, size_t parsed_name_max_len)
+{
     char *label = raw_name;
     char *name_itr = parsed_name;
-    int name_len = 0;
+    size_t name_len = 0;
 
-    do {
-        int sub_name_len = *label;
-        // (len + 1) since we are adding  a '.'
-        name_len += (sub_name_len + 1);
-        if (name_len > parsed_name_max_len) {
+    while (true) {
+        if (label >= packet_end) {
+            return NULL;  // ran off the end of the actually-received packet
+        }
+        uint8_t sub_name_len = (uint8_t) *label;
+        if (sub_name_len == 0) {
+            break;  // zero-length root label -- end of name
+        }
+        if ((sub_name_len & 0xC0) != 0) {
+            return NULL;  // compression pointer -- not supported, see above
+        }
+        if (label + 1 + sub_name_len >= packet_end) {
+            return NULL;  // label claims to extend past the received packet
+        }
+        // (+1 for the '.' this appends)
+        if (name_len + sub_name_len + 1 > parsed_name_max_len) {
             return NULL;
         }
 
@@ -87,9 +119,13 @@ static char *parse_dns_name(char *raw_name, char *parsed_name, size_t parsed_nam
         memcpy(name_itr, label + 1, sub_name_len);
         name_itr[sub_name_len] = '.';
         name_itr += (sub_name_len + 1);
+        name_len += (sub_name_len + 1);
         label += sub_name_len + 1;
-    } while (*label != 0);
+    }
 
+    if (name_len == 0) {
+        return NULL;  // empty (root) name -- nothing to match against
+    }
     // Terminate the final string, replacing the last '.'
     parsed_name[name_len - 1] = '\0';
     // Return pointer to first char after the name
@@ -131,13 +167,18 @@ static int parse_dns_request(char *req, size_t req_len, char *dns_reply, size_t 
     // Pointer to current answer and question
     char *cur_ans_ptr = dns_reply + req_len;
     char *cur_qd_ptr = dns_reply + sizeof(dns_header_t);
+    const char *packet_end = dns_reply + req_len;  // bound every read to what was actually received
     char name[128];
 
     // Respond to all questions based on configured rules
     for (int qd_i = 0; qd_i < qd_count; qd_i++) {
-        char *name_end_ptr = parse_dns_name(cur_qd_ptr, name, sizeof(name));
+        char *name_end_ptr = parse_dns_name(cur_qd_ptr, packet_end, name, sizeof(name));
         if (name_end_ptr == NULL) {
-            ESP_LOGE(TAG, "Failed to parse DNS question: %s", cur_qd_ptr);
+            ESP_LOGE(TAG, "Failed to parse DNS question (malformed, truncated, or compressed)");
+            return -1;
+        }
+        if (name_end_ptr + sizeof(dns_question_t) > packet_end) {
+            ESP_LOGE(TAG, "DNS question type/class fields truncated");
             return -1;
         }
 
