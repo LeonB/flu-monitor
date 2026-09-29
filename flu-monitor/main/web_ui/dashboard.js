@@ -54,6 +54,14 @@ function peakZoneColor(zoneName, rate) {
   if (rate < 0) return zoneColor(ZONE_ORDER[Math.max(0, i - 1)]);
   return zoneColor(zoneName);
 }
+// History graph range picker (see the graph screen's .range-picker) -- all
+// four just slice the same 24h/4min-cadence ring buffer GET /api/history
+// already returns in full (SENSORS_HISTORY_CAPACITY in sensors.h), so this
+// is a pure client-side view filter, no separate backend request per range.
+const HISTORY_RANGE_KEYS = ['1h', '3h', '6h', '24h'];
+const HISTORY_RANGES_S = { '1h': 3600, '3h': 3 * 3600, '6h': 6 * 3600, '24h': 24 * 3600 };
+const HISTORY_RANGE_LABELS = { '1h': 'hour', '3h': '3 hours', '6h': '6 hours', '24h': '24 hours' };
+
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function lerp(a, b, t) { return a + (b - a) * t; }
 function lerpRgb(a, b, t) { return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]; }
@@ -87,6 +95,8 @@ function app() {
     events: [],
     history: { now_s: 0, samples: [], events: [] },
     historyLoaded: false,
+    historyRange: '24h',
+    HISTORY_RANGE_KEYS,
     saving: false,
 
     // Glow animation state, updated ~30fps by a requestAnimationFrame loop
@@ -179,8 +189,13 @@ function app() {
       this.toastTimer = setTimeout(() => { this.toast = ''; }, 4000);
     },
 
+    get historyRangeLabel() {
+      return HISTORY_RANGE_LABELS[this.historyRange] || HISTORY_RANGE_LABELS['24h'];
+    },
+
     openGraph() {
       this.view = 'graph';
+      this.historyRange = '24h';
       this.fetchHistory();
     },
 
@@ -267,12 +282,19 @@ function app() {
       requestAnimationFrame((t) => this.runGlowFrame(t));
     },
 
-    // --- 24h graph SVG ---
+    // --- History graph SVG (range-filtered, see HISTORY_RANGES_S above) ---
     get graphHeight() { return 230; },
 
     get graphSvg() {
       const samples = this.history.samples || [];
       if (samples.length === 0) return '';
+
+      // Samples are ordered oldest-first (largest age_s first), so this
+      // keeps the most-recent contiguous slice matching the picked range --
+      // a pure view filter over the same full 24h buffer GET /api/history
+      // already returned (see HISTORY_RANGES_S's own comment above).
+      const maxAgeS = HISTORY_RANGES_S[this.historyRange] || HISTORY_RANGES_S['24h'];
+      const rangedSamples = samples.filter((s) => s[0] <= maxAgeS);
 
       // Historical samples land every ~4min (see sensors.c's
       // HISTORY_PUSH_EVERY_N), so the last one can be several minutes
@@ -283,7 +305,8 @@ function app() {
       // the coarse samples) could end up plotted to the right of the
       // curve's last point -- visually reading as "in the future" even
       // though its own age is never actually negative.
-      const plotSamples = this.reading.thermocouple_ok ? [...samples, [0, this.reading.thermocouple_c]] : samples;
+      const plotSamples = this.reading.thermocouple_ok ? [...rangedSamples, [0, this.reading.thermocouple_c]] : rangedSamples;
+      if (plotSamples.length === 0) return '';
 
       const W = 342, H = this.graphHeight;
       const temps = plotSamples.map((s) => s[1]);
@@ -294,7 +317,6 @@ function app() {
       const pad = Math.max(10, (dataMax - dataMin) * 0.1);
       const yMin = dataMin - pad, yMax = dataMax + pad;
       const yOf = (t) => H - ((t - yMin) / (yMax - yMin)) * H;
-      const maxAgeS = Math.max(1, samples[0][0]);
       const xOf = (ageS) => W - (clamp(ageS, 0, maxAgeS) / maxAgeS) * W;
 
       const ZONE_NAME = { 1: 'cold', 2: 'optimal', 3: 'hot' };
