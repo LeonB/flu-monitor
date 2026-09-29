@@ -214,18 +214,23 @@ static void handle_reading(cJSON *reading) {
   if (s_have_prev) {
     float jump = fabsf(temperature_c - s_prev_temperature_c);
     if (jump > SUSPICIOUS_JUMP_C) {
-      // Confirmed only if this reading continues *further* in the same
-      // direction the pending reading already moved, relative to the
+      // Confirmed if this reading continues at or further past the pending
+      // reading in the same direction it already moved, relative to the
       // pending reading itself -- not just "still displaced from the last
-      // confirmed value in the same broad direction." Comparing against
-      // the confirmed baseline instead of the pending value would wrongly
+      // confirmed value in the same broad direction." Comparing against the
+      // confirmed baseline instead of the pending value would wrongly
       // confirm a reversal: e.g. confirmed=150, a glitch spikes to 250
       // (held pending), then the real value drops back to 170 -- 170 is
       // still above the confirmed 150 (looks like "still rising" against
       // that baseline) but is actually a sharp *fall* from the pending 250.
+      // Using >=/<= rather than strict >/< matters too: a genuine settle at
+      // a new plateau (e.g. 150 -> 170 -> 170 -> 170, a real, stable jump
+      // rather than a continuing climb) would otherwise never confirm --
+      // each repeated 170 never strictly exceeds the pending 170 -- freezing
+      // the display on the old value 150 indefinitely.
       bool pending_was_rising = s_have_pending && s_pending_temperature_c > s_prev_temperature_c;
-      bool confirmed = s_have_pending && (pending_was_rising ? (temperature_c > s_pending_temperature_c)
-                                                              : (temperature_c < s_pending_temperature_c));
+      bool confirmed = s_have_pending && (pending_was_rising ? (temperature_c >= s_pending_temperature_c)
+                                                              : (temperature_c <= s_pending_temperature_c));
       if (!confirmed) {
         ESP_LOGW(TAG, "Holding suspicious jump for confirmation: %.1f C (last confirmed %.1f C)", temperature_c,
                   s_prev_temperature_c);
