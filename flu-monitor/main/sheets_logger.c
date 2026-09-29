@@ -28,6 +28,31 @@ static const char *TAG = "sheets_logger";
 static float s_last_logged_thermocouple_c = NO_PRIOR_LOG_C;
 static int64_t s_last_log_us = 0;
 
+// Captures the webhook's response body (Code.gs always replies with the
+// bare text "ok" or "forbidden", never JSON) -- esp_http_client_perform()
+// returning ESP_OK only means the HTTP exchange itself completed; Code.gs
+// responds with a plain HTTP 200 even on a rejected secret (see its own
+// doGet(), `return ContentService.createTextOutput("forbidden")...` sets no
+// error status), so neither perform()'s result nor the status code alone
+// can tell a genuinely-written row apart from a silently-rejected request.
+#define WEBHOOK_RESPONSE_BUF_SIZE 16
+static char s_webhook_response_buf[WEBHOOK_RESPONSE_BUF_SIZE];
+static int s_webhook_response_len;
+
+static esp_err_t webhook_http_event_handler(esp_http_client_event_t *evt) {
+  if (evt->event_id == HTTP_EVENT_ON_DATA && !esp_http_client_is_chunked_response(evt->client)) {
+    int copy_len = evt->data_len;
+    if (s_webhook_response_len + copy_len >= WEBHOOK_RESPONSE_BUF_SIZE) {
+      copy_len = WEBHOOK_RESPONSE_BUF_SIZE - 1 - s_webhook_response_len;
+    }
+    if (copy_len > 0) {
+      memcpy(s_webhook_response_buf + s_webhook_response_len, evt->data, copy_len);
+      s_webhook_response_len += copy_len;
+    }
+  }
+  return ESP_OK;
+}
+
 // Carries the sensor reading captured at the moment of the actual event tap
 // (see sheets_logger_log_event() below) through the queue, rather than the
 // worker task re-reading sensors_get_last_reading() whenever it happens to
@@ -44,11 +69,11 @@ static QueueHandle_t s_event_queue;
 // Apps Script Web App latency has been observed ranging from ~1.5s to 40+s
 // (see ../google-sheets-logger/README.md), and nothing else on this device (sensor
 // sampling, the REST/WS servers) should ever wait on that. Returns whether the
-// request actually went out and completed -- the periodic caller uses this to
-// decide whether to advance its deadband/heartbeat baseline (see REVIEW.md
-// finding #4: it previously advanced unconditionally, so a failed upload
-// silently suppressed every subsequent attempt until the next real change
-// cleared an ever-growing threshold).
+// row was actually written -- the periodic caller uses this to decide
+// whether to advance its deadband/heartbeat baseline (see REVIEW.md finding
+// #4: it previously advanced unconditionally, so a failed upload silently
+// suppressed every subsequent attempt until the next real change cleared an
+// ever-growing threshold).
 static bool log_to_sheets(const sensor_reading_t *reading, const settings_t *settings, const char *event) {
   if (settings->google_sheets_webhook_url[0] == '\0') {
     ESP_LOGD(TAG, "No Google Sheets webhook configured yet -- skipping log");
@@ -65,6 +90,8 @@ static bool log_to_sheets(const sensor_reading_t *reading, const settings_t *set
     return false;
   }
 
+  s_webhook_response_len = 0;
+
   // GET, not POST: Apps Script Web Apps always redirect to a
   // script.googleusercontent.com URL that only accepts GET, and
   // esp_http_client preserves the original method across that redirect
@@ -78,6 +105,7 @@ static bool log_to_sheets(const sensor_reading_t *reading, const settings_t *set
       .timeout_ms = 45000,  // Apps Script's own redirect chain has been observed taking 40+s
       .buffer_size_tx = 1024,  // the default 512B isn't enough for a long deployment-ID URL + query string
       .max_redirection_count = 6,
+      .event_handler = webhook_http_event_handler,
       // Without this, esp-tls has no way to verify script.google.com's
       // certificate and the connection fails outright (ESP_ERR_HTTP_CONNECT)
       // -- ESPHome's own http_request component attaches its bundled CA
@@ -88,7 +116,14 @@ static bool log_to_sheets(const sensor_reading_t *reading, const settings_t *set
   };
   esp_http_client_handle_t client = esp_http_client_init(&config);
   esp_err_t err = esp_http_client_perform(client);
-  bool ok = err == ESP_OK;
+  // ESP_OK only means the HTTP exchange completed -- Code.gs answers with a
+  // plain HTTP 200 even when it rejects the request (a wrong secret returns
+  // 200 "forbidden", not an error status; see its own doGet()), so the
+  // status code alone can't distinguish a written row from a rejected one
+  // either. Checking the actual response body against Code.gs's own "ok"
+  // contract is the only way to know the row was really written.
+  bool ok = err == ESP_OK && esp_http_client_get_status_code(client) == 200 && s_webhook_response_len == 2 &&
+            strncmp(s_webhook_response_buf, "ok", 2) == 0;
   if (!ok) {
     // Treated as a real failure for baseline-advancement purposes (see this
     // function's own doc comment), even though it's genuinely ambiguous --
