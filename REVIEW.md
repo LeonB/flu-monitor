@@ -418,3 +418,155 @@ Phone notifications are explicitly planned but absent. Calibrated
 classification is intentionally deferred. Fix recovery and logging integrity
 first, because those directly affect the quality of the data used for that
 later work.
+
+## Review of the fix commits (Codex, 2026-09-29)
+
+Reviewed the six commits `d99d9d4` through `bed0d93`, covering the five
+highest-priority fixes and the review document. Both firmwares build
+successfully with ESP-IDF 5.5.5, and `git diff --check 4748ca3..HEAD` passed.
+The DNS bounds-check changes look reasonable. These commits were not tested
+on hardware. No source files were changed during this review.
+
+The following issues remain in the fixes; the earlier “Fixed” notes should
+be read alongside these findings.
+
+### C1. [P1] Reconnect can stop while still disconnected
+
+Commit: `d99d9d4`.
+
+If a delayed connection succeeds and then drops during backoff, both
+`STA_CONNECTED_BIT` and `STA_FAILED_BIT` remain set. The task treats that
+combination as success because it checks only the connected bit, clears
+both bits, and returns to waiting indefinitely for another disconnect.
+The link is already down, and its disconnect notification has been consumed.
+
+Reproduced using the actual `reconnect_task()` body in a host-side harness
+with simulated event-group and WiFi operations: the status callback reported
+connected while the simulated link was disconnected, then the task returned
+to its indefinite outer wait.
+
+Track current connection state rather than treating accumulated event bits
+as authoritative, and ensure that a subsequent disconnect cannot be erased
+by handling an earlier successful connection.
+
+Source: [wifi_setup.c](components/wifi_setup/wifi_setup.c), line 90.
+
+**Fixed (2026-09-29):** replaced the bit-based check with a direct query of
+`esp_wifi_sta_get_ap_info()` after the wait, which reports the driver's
+actual current association state regardless of which bits fired or in what
+order -- the coalescing this finding describes can no longer produce a
+false "connected" report, since the fix no longer looks at the bits at all
+for that decision. Builds clean.
+
+### C2. [P1] HTTP failures still advance the logging baseline
+
+Commit: `bd57cd0`.
+
+`err == ESP_OK` means the HTTP exchange completed; responses such as 404 or
+500 still count as success in `log_to_sheets()`. A wrong secret also returns
+HTTP 200 with `"forbidden"` from the current Apps Script. The periodic caller
+therefore still advances its baseline for requests that did not write a row.
+
+Verified by source inspection of the success condition, the baseline update,
+and the Apps Script authentication response. Check both the HTTP status and
+the webhook acknowledgement before advancing the baseline.
+
+Sources: [sheets_logger.c](flu-monitor/main/sheets_logger.c), line 91, and
+[Code.gs](flu-monitor/google-sheets-logger/Code.gs), `doGet()`.
+
+**Fixed (2026-09-29):** confirmed by reading `Code.gs` directly -- a bad
+secret does return plain HTTP 200 with body `"forbidden"`. Added an
+`HTTP_EVENT_ON_DATA` handler to capture the response body and now require
+status 200 AND body exactly `"ok"` (Code.gs's own success contract) before
+treating an upload as successful. Builds clean.
+
+### C3. [P2] Event timestamps still drift
+
+Commit: `6d94b1`.
+
+The queue now captures temperature at enqueue time, but carries no event
+timestamp. Apps Script still uses `new Date()` when processing the request,
+so delayed annotations associate the captured temperature with the wrong
+time. Original finding #3 is only partially fixed.
+
+Verified by source inspection of `queued_event_t`, the request query fields,
+and the Apps Script row timestamp. Capture the event time, send it with the
+snapshot, and preserve it in Sheets independently of delivery time.
+
+Sources: [sheets_logger.c](flu-monitor/main/sheets_logger.c), line 36, and
+[Code.gs](flu-monitor/google-sheets-logger/Code.gs), line 69.
+
+**Fixed (2026-09-29):** confirmed by reading `Code.gs` directly -- `new
+Date()` with no timestamp param sent at all. `sheets_logger_log_event()`
+now records when it was called; `log_to_sheets()` computes how old the
+event was by the time its request actually fires and sends it as `age_ms`;
+`Code.gs` backdates the row's timestamp by that amount instead of using
+its own processing time. The periodic path sends `age_ms=0` (no meaningful
+delay there). Note: `Code.gs` needs a manual redeploy against the live
+webhook to take effect -- it's a template pasted into the Apps Script
+editor, not part of the firmware build.
+
+### C4. [P2] “Same direction” compares against the wrong reference
+
+Commit: `3c50aac`.
+
+For `150 → 250 → 170°C`, the new filter accepts 170 as confirmation of a
+rising trend because both pending and current readings are above the last
+confirmed 150. The temperature actually reversed sharply from the pending
+250. This was reproduced using the actual filter block in a compiled
+host-side harness.
+
+The filter also accepts every other sample during a sustained rise with
+per-tick jumps above 15°C. At the 30-second sensor cadence, accepted readings
+are approximately 60 seconds apart, exceeding `STALE_READING_MS=30000`.
+The display consequently switches to its neutral pulse between accepted
+readings. This timing interaction was verified by source inspection.
+
+Retain enough information about the pending reading to distinguish a
+continued trend from a reversal, and coordinate confirmation delay with the
+staleness policy so a healthy stream does not repeatedly appear unavailable.
+
+Sources: [flue_poll.c](flu-display/main/flue_poll.c), line 205,
+[config.h](flu-display/main/config.h), `STALE_READING_MS`, and
+[main.c](flu-display/main/main.c), the staleness-check loop.
+
+**Fixed (2026-09-29):** confirmed both parts by tracing the actual code.
+The reversal false-positive: now stores the pending reading's actual value
+(not just its direction) and confirms only when the new reading continues
+*further* past the pending value in the same direction, relative to the
+pending value itself -- not just "still displaced from the confirmed
+baseline the same broad way." Verified with a standalone host-side
+harness: the exact 150/250/170 counter-example now correctly holds
+instead of confirming, a genuine continued rise after that same false
+pending value still confirms correctly, and finding #2's original two
+cases (sustained rise, one-off glitch) are unaffected.
+
+The staleness interaction: `s_last_valid_us` now updates on any plausible
+broadcast, including one held pending, not just on the accept path --
+staleness reflects "is the sidecar still sending data," not "have we
+accepted a new displayed value recently," decoupling it from the
+confirmation filter's own admit rate. Both fixes build clean.
+
+### C5. [P2] Retrying a queue-full event duplicates local annotations
+
+Commit: `6d94b1`.
+
+The API records the event locally before checking queue capacity, then
+returns an error telling the user to retry. Each retry adds another local
+marker, even when the Sheets queue remains full. The dashboard's generic
+failure toast does not explain that the local annotation already succeeded.
+
+Verified by source inspection of `event_post_handler()` and the dashboard's
+error handling. Queue before recording locally, or return a partial-success
+state that the UI handles explicitly without duplicating the local event.
+
+Sources: [rest_api.c](flu-monitor/main/rest_api.c), line 443, and
+[dashboard.js](flu-monitor/main/web_ui/dashboard.js), `logEvent()`.
+
+**Fixed (2026-09-29):** always responds 200 now (the tap did succeed) with
+a `sheets_queued` flag distinguishing whether the Sheets-delivery queue
+had room, instead of an HTTP error implying a retry that would duplicate
+the already-successful local record. `dashboard.js` shows a distinct,
+non-alarming toast ("Sheets catching up") when the flag is false. Verified
+live against the mock server (which sends no such field at all): falls
+back to the normal "Logged: X" toast correctly. Builds clean.
