@@ -570,3 +570,126 @@ the already-successful local record. `dashboard.js` shows a distinct,
 non-alarming toast ("Sheets catching up") when the flag is false. Verified
 live against the mock server (which sends no such field at all): falls
 back to the normal "Logged: X" toast correctly. Builds clean.
+
+## Review of the follow-up fix commits (Codex, 2026-09-29)
+
+Reviewed `dc19007` through `da6a296`. Both firmware builds passed, and
+`git diff --check bed0d93..HEAD` was clean. The Wi-Fi change addresses the
+previously reported coalesced-event case. These findings qualify the
+preceding “Fixed” notes. Verification used source inspection and host-side
+harnesses containing the actual changed code; no hardware or deployed
+webhook testing was performed.
+
+### D1. [P1] Stable temperatures after a jump can freeze the display
+
+Commits: `7d2d664`, `e4af4d9`.
+
+Confirmation requires moving strictly beyond the pending reading. For
+`150 → 170 → 170 → 170°C`, every 170°C sample is held pending because
+equality never confirms the new plateau. The display remains at 150°C
+indefinitely. Updating `s_last_valid_us` before confirmation also keeps
+the old display marked fresh as long as plausible broadcasts continue.
+
+Reproduced using the actual filter block in a compiled host-side harness:
+only 150°C was accepted, with 170°C still pending after repeated samples.
+Confirm consistent readings at a new level as well as continued trends,
+while retaining reversal protection. Track stream freshness and accepted
+reading age separately, or bound how long the old display can remain valid.
+
+Source: [flue_poll.c](flu-display/main/flue_poll.c), lines 212 and 226–234.
+
+**Fixed (2026-09-30):** confirmed by tracing the exact example (150, 170,
+170, 170) through the actual code. Changed the strict `>`/`<` comparisons
+to `>=`/`<=`, so a reading matching (not just exceeding) the pending value
+also confirms. Verified with a standalone host-side harness: the plateau
+case now confirms on the second sample, and C4's reversal counter-example,
+the original sustained-rise example, the one-off-glitch self-correction,
+and a genuine continued rise after a false pending value are all
+unaffected. Builds clean.
+
+### D2. [P1] Valid webhook acknowledgements can be rejected
+
+Commit: `283bf39`.
+
+The response handler ignores chunked bodies even though ESP-IDF delivers
+their decoded body data through `HTTP_EVENT_ON_DATA`. A successful chunked
+`200 "ok"` therefore captures zero bytes and is treated as failure.
+The buffer is also reset only before the whole exchange, rather than
+between redirect responses. Intermediate non-chunked redirect bodies can
+be concatenated with the final `ok`, failing the exact two-byte check.
+The Apps Script integration explicitly uses redirects.
+
+Both cases were reproduced with the actual callback in a host-side harness:
+a chunked `ok` captured zero bytes; a redirect body followed by `ok`
+captured 15 bytes rather than two. The installed ESP-IDF implementation
+dispatches body callbacks for these responses. False failure leaves the
+periodic baseline unchanged, allowing repeated uploads and duplicate rows
+despite the earlier successful write.
+
+Capture decoded data regardless of transfer encoding, isolate the body
+for each response, and validate only the final response's status and
+acknowledgement. Verify chunked acknowledgements and redirects with bodies.
+
+Source: [sheets_logger.c](flu-monitor/main/sheets_logger.c), lines 42–53,
+and the final acknowledgement check in `log_to_sheets()`.
+
+**Fixed (2026-09-30):** confirmed both mechanisms by reading
+`esp_http_client.c` directly -- `http_on_body()` unconditionally dispatches
+`HTTP_EVENT_ON_DATA` with already-de-chunked bytes regardless of
+Transfer-Encoding (the chunked exclusion was simply wrong, not a
+safety measure), and `HTTP_EVENT_ON_CONNECTED` does refire for the
+redirect hop since Apps Script's target is cross-host. No longer excludes
+chunked data, and resets the response buffer on `HTTP_EVENT_ON_CONNECTED`
+(per hop) instead of once before the whole exchange. Verified with a
+standalone host-side harness reproducing both exact scenarios (chunked
+`"ok"`, and a redirect-hop body followed by the real `"ok"`) -- both now
+correctly recognized, `"forbidden"` still correctly rejected. Also fixed
+the identical mistake in `flue_poll.c`'s own copy of this pattern (used
+for `/api/settings`), found while investigating this finding. Both
+firmwares build clean.
+
+### D3. [P2] Queue-full feedback implies delivery of a dropped event
+
+Commit: `368cba8`.
+
+The partial-success response avoids the earlier duplicate-local-event retry
+prompt, but “Sheets catching up” is misleading when `sheets_queued:false`.
+That event was discarded from Sheets delivery after `xQueueSend()` failed.
+There is no later delivery mechanism; draining the queue delivers other
+events, not this one. The toast and comments imply eventual delivery.
+
+Verified by tracing the queue-full return through the API and dashboard.
+Say “Saved locally; not sent to Sheets,” or retain the event for later
+delivery before claiming that Sheets is catching up.
+
+Sources: [dashboard.js](flu-monitor/main/web_ui/dashboard.js), lines
+180–188; [rest_api.c](flu-monitor/main/rest_api.c), `event_post_handler()`;
+and [sheets_logger.c](flu-monitor/main/sheets_logger.c),
+`sheets_logger_log_event()`.
+
+**Fixed (2026-09-30):** confirmed -- nothing anywhere retains a dropped
+event for later delivery. Toast wording changed to "not sent to Sheets,"
+accurate about what actually happened to that specific tap, while still
+not implying a retry (which would duplicate the local record, per C5).
+
+### D4. [P2] Event timestamps still include current-request latency
+
+Commit: `10b78b5`.
+
+The device calculates `age_ms` before sending the request, while Apps Script
+subtracts it from processing time. Queue delay is corrected, but the
+current request's connection, network, and processing delay before that
+calculation remains in the recorded timestamp.
+
+For an event at time 0, a 10-second queue wait followed by a 20-second
+request delay sends age 10 seconds. Apps Script runs at time 30 and records
+time 20 instead of time 0. The project documents webhook exchanges lasting
+tens of seconds; the portion before timestamp calculation is uncorrected.
+This follows from source inspection, not a deployed-webhook measurement.
+
+Send an absolute event timestamp from a synchronized device clock. If
+relative age remains a fallback, document its uncertainty. Periodic uploads
+currently send age zero and retain processing-time timestamps as well.
+
+Sources: [sheets_logger.c](flu-monitor/main/sheets_logger.c), lines 191–192,
+and [Code.gs](flu-monitor/google-sheets-logger/Code.gs), lines 77–78.
