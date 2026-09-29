@@ -180,8 +180,8 @@
              `viewBox=` is on the browser's camelCase-SVG-attribute
              allowlist), so a dynamic binding silently produces a
              `viewbox` attribute SVG doesn't recognize. graphHeight is
-             always 230 anyway, so there's nothing to bind here. -->
-        <svg x-show="historyLoaded && history.samples.length > 0" width="100%" viewBox="0 0 342 230" style="display:block;overflow:visible" x-html="graphSvg"></svg>
+             always 320 anyway, so there's nothing to bind here. -->
+        <svg x-show="historyLoaded && history.samples.length > 0" width="100%" viewBox="0 0 342 320" style="display:block;overflow:visible" x-html="graphSvg"></svg>
       </div>
       <div class="range-picker">
         <template x-for="r in HISTORY_RANGE_KEYS" :key="r">

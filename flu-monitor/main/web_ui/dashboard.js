@@ -283,7 +283,7 @@ function app() {
     },
 
     // --- History graph SVG (range-filtered, see HISTORY_RANGES_S above) ---
-    get graphHeight() { return 230; },
+    get graphHeight() { return 320; },
 
     get graphSvg() {
       const samples = this.history.samples || [];
