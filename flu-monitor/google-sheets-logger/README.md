@@ -7,7 +7,7 @@ Google account, not from this repo.
 This is a fork of the original ESPHome sidecar's own version of this same
 script (that sidecar has since been retired and removed), adjusted for the
 BMP581 sensor's physical removal -- no more `Temperature (C)`/`Pressure (Pa)`
-columns, and pointed at a distinct sheet tab (`Sensor Log (no BMP581)`)
+columns, and pointed at a distinct sheet tab (`Sensor Log`)
 rather than reusing the old 8-column tab, since dropping two *leading*
 columns isn't something the header-backfill logic (designed for
 trailing-column *additions*) can reconcile safely against old rows.
@@ -15,7 +15,7 @@ trailing-column *additions*) can reconcile safely against old rows.
 ## Deploy it
 
 1. Create a Google Sheet (any name), or reuse the existing one from the old
-   ESPHome sidecar's deployment -- a tab named `Sensor Log (no BMP581)` is
+   ESPHome sidecar's deployment -- a tab named `Sensor Log` is
    created automatically on first write if it doesn't already exist.
 2. In the Sheet, go to **Extensions -> Apps Script**, delete the placeholder
    code, and paste in `Code.gs`.

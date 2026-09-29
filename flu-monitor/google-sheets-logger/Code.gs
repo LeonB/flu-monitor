@@ -29,7 +29,7 @@ const SHARED_SECRET = "REPLACE_ME_WITH_A_RANDOM_STRING";
 // reconcile it against old rows without corrupting their meaning. Point at
 // a fresh tab instead of silently shifting what every column means partway
 // through the sheet's history.
-const SHEET_NAME = "Sensor Log (no BMP581)";
+const SHEET_NAME = "Sensor Log";
 const HEADER_ROW = ["Timestamp", "Thermocouple (C)", "Cold Junction (C)", "Event", "Rate (C/min)", "Zone"];
 
 function doGet(e) {
