@@ -26,8 +26,13 @@ extern const char web_ui_js_start[] asm("_binary_dashboard_js_start");
 extern const char web_ui_js_end[] asm("_binary_dashboard_js_end");
 extern const char web_ui_css_start[] asm("_binary_dashboard_css_start");
 extern const char web_ui_css_end[] asm("_binary_dashboard_css_end");
-extern const char web_ui_alpine_js_start[] asm("_binary_alpinejs_min_js_start");
-extern const char web_ui_alpine_js_end[] asm("_binary_alpinejs_min_js_end");
+// alpine.min.js is NOT embedded here a second time -- it's byte-identical to
+// captive_portal's own copy, so this just reuses captive_portal's already-
+// embedded symbol (captive_portal is a PRIV_REQUIRES dependency, so its
+// object is always linked in) instead of doubling the binary's size with a
+// second copy under a different EMBED_FILES basename.
+extern const char web_ui_alpine_js_start[] asm("_binary_alpine_min_js_start");
+extern const char web_ui_alpine_js_end[] asm("_binary_alpine_min_js_end");
 extern const char web_ui_font_caprasimo_400_start[] asm("_binary_caprasimo_400_woff2_start");
 extern const char web_ui_font_caprasimo_400_end[] asm("_binary_caprasimo_400_woff2_end");
 extern const char web_ui_font_figtree_400_start[] asm("_binary_figtree_400_woff2_start");
