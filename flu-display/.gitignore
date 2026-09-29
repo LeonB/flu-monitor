@@ -2,3 +2,4 @@ build/
 sdkconfig
 managed_components/
 main/secrets.h
+.cache/
