@@ -74,6 +74,18 @@ typedef struct {
 // at `max_results`), or -1 on failure.
 int wifi_scan(wifi_scan_result_t *out_results, size_t max_results);
 
+// Starts a background task that keeps retrying the STA connection with
+// exponential backoff for as long as the device runs, whenever the link
+// drops after an initial successful connect. Call this once, right after
+// wifi_sta_try_connect() returns true -- it is NOT involved in the initial
+// connect attempt or in wifi_sta_test_connect()'s captive-portal test flow,
+// only in keeping an already-established connection alive afterward.
+// on_status_change (may be NULL) is invoked with false the moment a
+// disconnect is detected and true once reconnected, so the caller can
+// reflect it (e.g. in a status LED) without this component needing to know
+// about any particular indicator.
+void wifi_sta_enable_auto_reconnect(void (*on_status_change)(bool connected));
+
 #ifdef __cplusplus
 }
 #endif

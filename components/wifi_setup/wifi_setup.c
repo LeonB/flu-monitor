@@ -28,6 +28,15 @@ static EventGroupHandle_t s_sta_event_group;
 // Set by wifi_sta_try_connect(), read/cleared by wifi_sta_teardown().
 static esp_netif_t *s_sta_netif = NULL;
 
+// Auto-reconnect (see wifi_sta_enable_auto_reconnect() below) -- a second,
+// independent event group so the ongoing-reconnect task and any in-progress
+// wifi_sta_try_connect()/wifi_sta_test_connect() call never interfere with
+// each other's bits, even though both are driven by this same handler
+// (which stays registered for the device's whole lifetime -- see
+// wifi_sta_try_connect()'s own doc comment on that).
+static EventGroupHandle_t s_reconnect_event_group = NULL;
+static void (*s_reconnect_status_cb)(bool connected) = NULL;
+
 static void sta_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
     esp_wifi_connect();
@@ -36,13 +45,75 @@ static void sta_event_handler(void *arg, esp_event_base_t event_base, int32_t ev
     if (s_sta_event_group != NULL) {
       xEventGroupSetBits(s_sta_event_group, STA_FAILED_BIT);
     }
+    if (s_reconnect_event_group != NULL) {
+      xEventGroupSetBits(s_reconnect_event_group, STA_FAILED_BIT);
+    }
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *) event_data;
     ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
     if (s_sta_event_group != NULL) {
       xEventGroupSetBits(s_sta_event_group, STA_CONNECTED_BIT);
     }
+    if (s_reconnect_event_group != NULL) {
+      xEventGroupSetBits(s_reconnect_event_group, STA_CONNECTED_BIT);
+    }
   }
+}
+
+#define RECONNECT_BACKOFF_INITIAL_MS 2000
+#define RECONNECT_BACKOFF_MAX_MS     60000
+#define RECONNECT_ATTEMPT_TIMEOUT_MS 15000  // room for a real WPA handshake + DHCP lease, not just a quick fail
+
+// Runs for the device's entire lifetime once started. Blocks on the outer
+// wait until a disconnect actually happens, then keeps retrying
+// esp_wifi_connect() with exponential backoff until IP_EVENT_STA_GOT_IP
+// fires again -- a real disconnect (router reboot, temporary signal loss)
+// is otherwise permanent until a manual reboot, since ESP-IDF does not
+// auto-reconnect on its own and nothing previously called esp_wifi_connect()
+// again after the initial join.
+static void reconnect_task(void *arg) {
+  (void) arg;
+  uint32_t backoff_ms = RECONNECT_BACKOFF_INITIAL_MS;
+
+  while (true) {
+    xEventGroupWaitBits(s_reconnect_event_group, STA_FAILED_BIT, pdTRUE, pdFALSE, portMAX_DELAY);
+    ESP_LOGW(TAG, "WiFi link dropped -- starting reconnect attempts");
+    if (s_reconnect_status_cb != NULL) {
+      s_reconnect_status_cb(false);
+    }
+
+    while (true) {
+      vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+      ESP_LOGI(TAG, "Reconnect attempt (backoff was %" PRIu32 "ms)", backoff_ms);
+      esp_wifi_connect();
+
+      EventBits_t bits = xEventGroupWaitBits(s_reconnect_event_group, STA_CONNECTED_BIT | STA_FAILED_BIT, pdTRUE,
+                                             pdFALSE, pdMS_TO_TICKS(RECONNECT_ATTEMPT_TIMEOUT_MS));
+      if (bits & STA_CONNECTED_BIT) {
+        ESP_LOGI(TAG, "WiFi reconnected");
+        if (s_reconnect_status_cb != NULL) {
+          s_reconnect_status_cb(true);
+        }
+        backoff_ms = RECONNECT_BACKOFF_INITIAL_MS;
+        break;  // back to the outer wait for the next disconnect
+      }
+
+      // Either an explicit STA_FAILED_BIT (esp_wifi_connect() itself
+      // reports a failed join via another WIFI_EVENT_STA_DISCONNECTED) or a
+      // plain timeout with no event at all -- both mean "still not
+      // connected," so back off further and try again.
+      backoff_ms *= 2;
+      if (backoff_ms > RECONNECT_BACKOFF_MAX_MS) {
+        backoff_ms = RECONNECT_BACKOFF_MAX_MS;
+      }
+    }
+  }
+}
+
+void wifi_sta_enable_auto_reconnect(void (*on_status_change)(bool connected)) {
+  s_reconnect_status_cb = on_status_change;
+  s_reconnect_event_group = xEventGroupCreate();
+  xTaskCreate(reconnect_task, "wifi_reconnect", 3072, NULL, tskIDLE_PRIORITY + 1, NULL);
 }
 
 bool wifi_creds_load(char *ssid_out, char *pass_out) {

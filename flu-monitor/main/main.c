@@ -38,6 +38,13 @@
 
 static const char *TAG = "main";
 
+// Reflects wifi_sta_enable_auto_reconnect()'s own connect/disconnect
+// notifications onto the status LED -- see main() below. STATUS_LED_CONNECTING
+// doubles as "reconnecting," same color/meaning as the initial join attempt.
+static void wifi_status_changed(bool connected) {
+  status_led_set(connected ? STATUS_LED_CONNECTED : STATUS_LED_CONNECTING);
+}
+
 // Runs independent of WiFi state (both the connected idle loop and the
 // captive-portal branch below keep this alive) -- verified by eyeballing
 // this log against the existing ESPHome sidecar's readings, not by anything
@@ -115,6 +122,7 @@ void app_main(void) {
   if (connected) {
     ESP_LOGI(TAG, "Connected. Starting mDNS + OTA.");
     status_led_set(STATUS_LED_CONNECTED);
+    wifi_sta_enable_auto_reconnect(wifi_status_changed);
 
     // Confirms this image works well enough to join WiFi, canceling the
     // bootloader's rollback timer for it -- see sdkconfig.defaults for the

@@ -30,6 +30,13 @@
 
 static const char *TAG = "main";
 
+// Reflects wifi_sta_enable_auto_reconnect()'s own connect/disconnect
+// notifications onto the status LED -- see main() below. STATUS_LED_CONNECTING
+// doubles as "reconnecting," same meaning as the initial join attempt.
+static void wifi_status_changed(bool connected) {
+  status_led_set(connected ? STATUS_LED_CONNECTED : STATUS_LED_CONNECTING);
+}
+
 static void init_nvs(void) {
   esp_err_t err = nvs_flash_init();
   if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -62,6 +69,7 @@ void app_main(void) {
   if (connected) {
     ESP_LOGI(TAG, "Connected. Subscribing to flu-monitor and driving the LED ring.");
     status_led_set(STATUS_LED_CONNECTED);
+    wifi_sta_enable_auto_reconnect(wifi_status_changed);
 
     // Confirms this image works well enough to join WiFi, canceling the
     // bootloader's rollback timer for it. A build broken badly enough to
