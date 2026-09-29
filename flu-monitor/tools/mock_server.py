@@ -19,6 +19,7 @@ built to let us reproduce and verify without real hardware.
 """
 import http.server
 import json
+import math
 import random
 import time
 from pathlib import Path
@@ -122,11 +123,25 @@ logged_events = [
 ]
 
 
+# The live reading sweeps a sine wave across ~0-320C on a 3min period,
+# rather than just riding out the tail of the 24h burn curve (which only
+# ever sat in the cold zone below zone_cold_max_c) -- this is the only way
+# to actually see the dashboard glow's optimal/hot colors, and the neighbor-
+# zone color shift on a real rise/fall, without a live device. A sine's
+# derivative is smallest at its own peaks/troughs, so it also naturally
+# lingers (slows down, shows "Holding steady") right at the cold/hot
+# extremes instead of just flying through them.
+LIVE_CYCLE_PERIOD_S = 180
+LIVE_CYCLE_MID_C = 160
+LIVE_CYCLE_AMPLITUDE_C = 160
+
+
 def current_reading():
     age_s = time.monotonic() - server_start
-    temp = synth_temp_at_age_s(max(0, 600 - age_s))  # keep drifting for ~10min then hold near the end of the curve
-    prev_temp = synth_temp_at_age_s(max(0, 600 - age_s) + 30)
-    rate = round((temp - prev_temp) / 0.5, 2)
+    phase = 2 * math.pi * age_s / LIVE_CYCLE_PERIOD_S
+    temp = round(LIVE_CYCLE_MID_C + LIVE_CYCLE_AMPLITUDE_C * math.sin(phase), 1)
+    # Analytic derivative of the sine sweep above (degrees C per minute).
+    rate = round(LIVE_CYCLE_AMPLITUDE_C * (2 * math.pi / LIVE_CYCLE_PERIOD_S) * math.cos(phase) * 60, 2)
     return {
         "thermocouple_ok": True,
         "thermocouple_c": temp,
