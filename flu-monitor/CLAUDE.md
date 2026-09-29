@@ -613,6 +613,63 @@ rx mblock:10`, no assertion) followed by `captive_portal: SoftAP started`
 recovered the same clean way, entering its own setup AP instead of
 crashing -- a second, independent, non-artificial confirmation.
 
+## The 24h graph had three real gaps vs. the original design, only one of them a genuine logic bug
+
+Caught by comparing a live screenshot against the original design mockup
+(`design-import/Flue Monitor.dc.html`) side by side:
+
+- **Missing status pill.** The graph screen's topbar only ever had a
+  settings-gear button on the right; the design shows a colored-dot +
+  temp + rate pill there too (same info as the dashboard's own glow
+  circle, just compact). Added `.status-pill` next to the gear, reusing
+  `zoneColor()`/`rateLabel` that already existed for the dashboard.
+- **Missing in-band zone labels.** The bottom-of-screen Cold/Optimal/Hot
+  dot legend (`.graph-legend`) was the wrong shape of information -- the
+  design puts the actual threshold numbers (e.g. "Hot above 280°C")
+  directly on each colored band. Replaced the external legend with
+  in-band `<text>` labels drawn inside `graphSvg`'s own band-rendering
+  loop (skipped when a band's too thin to hold text legibly).
+- **A logged event could visually appear to be "in the future."** This
+  one **is not a timestamp bug** -- an event's `age_s` is never negative,
+  confirmed by fetching `/api/history` immediately after `POST
+  /api/event` on the real device (`events: [[0, "stove_off"]]`, never
+  negative). The real cause: temperature *samples* only land every ~4min
+  (`HISTORY_PUSH_EVERY_N`), but *events* are logged with second-level
+  precision -- so a just-logged event (age 0) legitimately has a smaller
+  age than the most recent temperature sample (age up to ~4min), landing
+  its marker to the *right* of the curve's last plotted point on the
+  x-axis. Visually indistinguishable from "in the future" even though the
+  underlying number is correct. Fixed by extending the plotted curve
+  itself with a synthetic age-0 point sourced from the already-live
+  `GET /api/reading` value (`dashboard.js`'s `graphSvg` getter builds
+  `plotSamples = [...samples, [0, reading.thermocouple_c]]` when the
+  reading is valid) -- the curve now visibly reaches "now" instead of
+  stopping ~4min short of it, and any recent event naturally lands on or
+  right at that endpoint instead of past it. Also clamped `xOf()`'s input
+  to `[0, maxAgeS]` as a defensive belt-and-suspenders measure. The
+  current-reading dot at the curve's end is now colored by the live zone
+  too (previously a fixed accent color), matching the design.
+
+## Local mock server for iterating on the web UI without real hardware
+
+`tools/mock_server.py` (stdlib-only Python) serves the real, unmodified
+`main/web_ui/` files with synthetic REST responses standing in for the
+device -- no ESP32, no flashing, no reboot needed for a CSS/layout/JS-only
+change. This exists because the three graph-screen bugs above were hard to
+iterate on against the real device: each fix attempt meant a full
+build/flash/reboot/reconnect cycle just to see a CSS tweak, and the
+"event in the future" bug specifically needed a *freshly logged* event
+(age near 0) to reproduce, which the real device's RAM-only event log
+loses on every reflash. The mock server's `POST /api/event` handler
+reproduces that exact edge case on demand (log an event through the real
+UI, it lands at true age 0 immediately) without touching hardware at all.
+Verified working end-to-end via a headless Playwright run (`npx playwright
+install chromium` -- no project dependency added, this is a one-off dev
+tool, not shipped code) that loaded the mock server, clicked into the
+graph view, logged a fresh event through the real "Log what you did" flow,
+and screenshotted before/after to confirm the marker landed on the curve's
+endpoint rather than past it.
+
 ## Misc
 
 - **`idf.py monitor` exits with Ctrl+], not Ctrl+C.** Ctrl+C is intercepted

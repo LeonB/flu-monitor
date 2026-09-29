@@ -110,6 +110,10 @@ function app() {
       return (r > 0 ? '+' : '') + r.toFixed(1) + ' °C/min';
     },
 
+    get currentZoneCss() {
+      return rgbCss(zoneColor(this.reading.thermocouple_zone).bg);
+    },
+
     async init() {
       await Promise.all([this.fetchReading(), this.fetchSettings(), this.fetchEvents()]);
       setInterval(() => this.fetchReading(), 5000);
@@ -270,8 +274,19 @@ function app() {
       const samples = this.history.samples || [];
       if (samples.length === 0) return '';
 
+      // Historical samples land every ~4min (see sensors.c's
+      // HISTORY_PUSH_EVERY_N), so the last one can be several minutes
+      // stale by the time this renders -- appending the live /api/reading
+      // value as an age-0 point extends the curve all the way to "now"
+      // instead of stopping short of it. Without this, a very recently
+      // logged event (also timestamped with second-level precision, unlike
+      // the coarse samples) could end up plotted to the right of the
+      // curve's last point -- visually reading as "in the future" even
+      // though its own age is never actually negative.
+      const plotSamples = this.reading.thermocouple_ok ? [...samples, [0, this.reading.thermocouple_c]] : samples;
+
       const W = 342, H = this.graphHeight;
-      const temps = samples.map((s) => s[1]);
+      const temps = plotSamples.map((s) => s[1]);
       const coldMax = this.settings.zone_cold_max_c || 150;
       const optimalMax = this.settings.zone_optimal_max_c || 280;
       const dataMin = Math.min(...temps, coldMax);
@@ -280,33 +295,45 @@ function app() {
       const yMin = dataMin - pad, yMax = dataMax + pad;
       const yOf = (t) => H - ((t - yMin) / (yMax - yMin)) * H;
       const maxAgeS = Math.max(1, samples[0][0]);
-      const xOf = (ageS) => W - (ageS / maxAgeS) * W;
+      const xOf = (ageS) => W - (clamp(ageS, 0, maxAgeS) / maxAgeS) * W;
 
+      const ZONE_NAME = { 1: 'cold', 2: 'optimal', 3: 'hot' };
       const ZONE_FILL = { 1: 'var(--color-neutral-200)', 2: 'var(--color-accent-2-200)', 3: 'var(--color-accent-200)' };
       let svg = '';
       // Zone bands, cold at the bottom
       const bandTop = [yOf(yMax), yOf(optimalMax), yOf(coldMax)];
       const bandBottom = [yOf(optimalMax), yOf(coldMax), yOf(yMin)];
       const bandZone = [3, 2, 1];
+      const bandLabel = {
+        3: `Hot above ${Math.round(optimalMax)}°C`,
+        2: `Optimal ${Math.round(coldMax)}–${Math.round(optimalMax)}°C`,
+        1: `Cold below ${Math.round(coldMax)}°C`,
+      };
       for (let i = 0; i < 3; i++) {
         const top = Math.min(bandTop[i], bandBottom[i]);
         const h = Math.abs(bandBottom[i] - bandTop[i]);
         if (h <= 0) continue;
         svg += `<rect x="0" y="${top.toFixed(1)}" width="${W}" height="${h.toFixed(1)}" fill="${ZONE_FILL[bandZone[i]]}"></rect>`;
+        // Skip the label if the band's too thin to hold it legibly.
+        if (h >= 16) {
+          svg += `<text x="8" y="${(top + 13).toFixed(1)}" font-size="10" font-weight="600" fill="var(--color-neutral-700)" font-family="Figtree">${escapeXml(bandLabel[bandZone[i]])}</text>`;
+        }
       }
 
-      const points = samples.map((s) => `${xOf(s[0]).toFixed(1)},${yOf(s[1]).toFixed(1)}`).join(' ');
+      const points = plotSamples.map((s) => `${xOf(s[0]).toFixed(1)},${yOf(s[1]).toFixed(1)}`).join(' ');
       svg += `<polyline points="${points}" fill="none" stroke="var(--color-text)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>`;
 
-      const last = samples[samples.length - 1];
-      svg += `<circle cx="${xOf(last[0]).toFixed(1)}" cy="${yOf(last[1]).toFixed(1)}" r="6" fill="var(--color-accent)" stroke="var(--color-bg)" stroke-width="2.5"></circle>`;
+      const last = plotSamples[plotSamples.length - 1];
+      const lastZoneName = this.reading.thermocouple_ok ? this.reading.thermocouple_zone : ZONE_NAME[last[3]];
+      const lastColor = rgbCss(zoneColor(lastZoneName).bg);
+      svg += `<circle cx="${xOf(last[0]).toFixed(1)}" cy="${yOf(last[1]).toFixed(1)}" r="6" fill="${lastColor}" stroke="var(--color-bg)" stroke-width="2.5"></circle>`;
 
       for (const ev of (this.history.events || [])) {
         if (ev[0] > maxAgeS) continue;
         const x = xOf(ev[0]);
         // Nearest sample's temperature, so the marker sits on the curve.
-        let nearest = samples[0];
-        for (const s of samples) { if (Math.abs(s[0] - ev[0]) < Math.abs(nearest[0] - ev[0])) nearest = s; }
+        let nearest = plotSamples[0];
+        for (const s of plotSamples) { if (Math.abs(s[0] - ev[0]) < Math.abs(nearest[0] - ev[0])) nearest = s; }
         const y = yOf(nearest[1]);
         svg += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="6" fill="var(--color-bg)" stroke="var(--color-text)" stroke-width="2.5"></circle>`;
         svg += `<text x="${x.toFixed(1)}" y="${(y - 12).toFixed(1)}" font-size="10" font-weight="600" fill="var(--color-text)" font-family="Figtree" text-anchor="middle">${escapeXml(ev[1])}</text>`;

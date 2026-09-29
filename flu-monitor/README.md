@@ -152,6 +152,22 @@ has no use for the sensor's raw ~30s cadence, and `zone_code` is a raw
 numeric 0-3, unlike `GET /api/reading`'s string `thermocouple_zone` — see
 `rest_api.c`'s own comment on why these two endpoints differ).
 
+### Iterating on the web UI without a real device
+
+```sh
+python3 tools/mock_server.py        # then open http://localhost:8000/
+```
+
+Serves the real `main/web_ui/` files as-is (no copies, no build step) with
+a synthetic ~24h burn curve and a couple of seeded events standing in for
+the REST API — `GET`s return fake-but-plausible data, `POST /api/event`/
+`POST /api/settings` are accepted and reflected back by later `GET`s, so
+the full dashboard/graph/settings flow works end to end, including
+tapping a real event button and immediately seeing it land on the graph.
+No flashing, no reboot, no real device needed for CSS/layout/JS changes —
+only reach for a real flash-and-check once a change also touches the
+firmware side (a new REST field, a new settings key, etc.).
+
 ## Google Sheets logging
 
 Configure `google_sheets_webhook_url`/`google_sheets_secret` via
