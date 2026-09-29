@@ -199,6 +199,18 @@ static void handle_reading(cJSON *reading) {
     return;
   }
 
+  // Staleness means "the sidecar has stopped sending us data," not "we
+  // haven't accepted a new displayed value in a while" -- so this counts
+  // any plausible broadcast as evidence the link is alive, even one that
+  // goes on to be held pending below. Previously only set on the accept
+  // path further down: during a sustained rise where confirmation admits
+  // roughly every other reading (see the jump-confirmation block below),
+  // consecutive accepted readings can be ~60s apart at this sensor's 30s
+  // cadence -- comfortably past STALE_READING_MS (30s) -- which made
+  // flue_poll_is_stale() report true and flash the neutral pulse between
+  // perfectly healthy, still-arriving readings.
+  s_last_valid_us = esp_timer_get_time();
+
   if (s_have_prev) {
     float jump = fabsf(temperature_c - s_prev_temperature_c);
     if (jump > SUSPICIOUS_JUMP_C) {
@@ -234,7 +246,6 @@ static void handle_reading(cJSON *reading) {
   s_have_prev = true;
   s_prev_temperature_c = temperature_c;
   s_have_ever_valid = true;
-  s_last_valid_us = esp_timer_get_time();
 
   led_display_set_reading(true, temperature_c, rate_c_per_min);
 }
