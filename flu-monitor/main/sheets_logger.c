@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
@@ -24,6 +25,19 @@ static const char *TAG = "sheets_logger";
 
 #define EVENT_LABEL_MAX_LEN  32
 #define URL_BUF_SIZE         512
+
+// A wall clock that hasn't synced via SNTP yet (main.c's start_sntp()) reads
+// an epoch near 0, since this chip has no battery-backed RTC to carry real
+// time across a reboot -- anything before this cutoff (2024-01-01, comfortably
+// before this project existed) means "not synced yet," not "it's actually
+// 1970." See REVIEW.md finding D4: age_ms alone only corrects for queue
+// backlog, not the webhook request's own latency (documented up to 40+s);
+// an absolute timestamp sidesteps that entirely once the clock is synced.
+#define MIN_VALID_EPOCH_S  1704067200
+
+static bool wall_clock_synced(void) {
+  return time(NULL) >= MIN_VALID_EPOCH_S;
+}
 
 static float s_last_logged_thermocouple_c = NO_PRIOR_LOG_C;
 static int64_t s_last_log_us = 0;
@@ -79,15 +93,19 @@ static esp_err_t webhook_http_event_handler(esp_http_client_event_t *evt) {
 // worker task re-reading sensors_get_last_reading() whenever it happens to
 // dequeue this -- a backlog behind a slow webhook call previously meant the
 // temperature/rate attached to an event could be from well after the tap.
-// enqueued_us lets log_to_sheets() tell Code.gs how old this event already
-// was by the time the request went out, so it can backdate the row's
-// timestamp instead of using its own processing time (see REVIEW.md
-// finding #3's follow-up: capturing the reading fixed which temperature
-// gets attached, but not when Sheets records it as having happened).
+// enqueued_us (monotonic) lets log_to_sheets() fall back to telling Code.gs
+// how old this event already was by the time the request went out, for
+// backdating the row's timestamp when the wall clock isn't synced yet.
+// enqueued_epoch_s (wall clock, 0 if not synced at enqueue time) is the
+// preferred, more accurate mechanism when available -- see REVIEW.md
+// finding D4: the enqueued_us/age_ms scheme only corrects for queue
+// backlog, not the webhook request's own latency (documented up to 40+s),
+// since age_ms is necessarily computed before that request goes out.
 typedef struct {
   char label[EVENT_LABEL_MAX_LEN];
   sensor_reading_t reading;
   int64_t enqueued_us;
+  time_t enqueued_epoch_s;
 } queued_event_t;
 
 static QueueHandle_t s_event_queue;
@@ -95,21 +113,29 @@ static QueueHandle_t s_event_queue;
 // Fires the actual GET request. Always runs on this module's own task --
 // Apps Script Web App latency has been observed ranging from ~1.5s to 40+s
 // (see ../google-sheets-logger/README.md), and nothing else on this device (sensor
-// sampling, the REST/WS servers) should ever wait on that. age_ms is how long
-// ago (relative to right now) the reading/event actually happened -- 0 for
-// the periodic path, which logs essentially immediately, but potentially
-// tens of seconds for a queued event that sat behind a slow prior webhook
-// call (see sheets_logger_log_event()) -- sent to Code.gs so it can record
-// the actual moment of the tap instead of whenever this request happens to
-// be processed (see REVIEW.md finding #3: capturing the reading at tap time
-// fixed *which* temperature gets attached, but not *when* Sheets says it
-// happened). Returns whether the row was actually written -- the periodic
-// caller uses this to decide whether to advance its deadband/heartbeat
-// baseline (see REVIEW.md finding #4: it previously advanced unconditionally,
-// so a failed upload silently suppressed every subsequent attempt until the
-// next real change cleared an ever-growing threshold).
+// sampling, the REST/WS servers) should ever wait on that.
+//
+// Two, independent ways to tell Code.gs when this actually happened, sent
+// together so it can prefer the more accurate one (see REVIEW.md finding D4):
+//   - event_epoch_s: an absolute Unix timestamp from this device's own
+//     SNTP-synced wall clock (main.c's start_sntp()), captured once at the
+//     moment of the tap/reading -- immune to any later delay, queue backlog
+//     or webhook latency alike, however long this specific request takes.
+//     0 if the clock hadn't synced yet when this was captured.
+//   - age_ms: how long ago (relative to right now, monotonic) the
+//     reading/event actually happened -- 0 for the periodic path, which logs
+//     essentially immediately, but potentially tens of seconds for a queued
+//     event that sat behind a slow prior webhook call. Only corrects for
+//     queue backlog, not this request's own latency, since it's necessarily
+//     computed before the request goes out -- the fallback for when the
+//     clock isn't synced, not a full fix on its own.
+// Returns whether the row was actually written -- the periodic caller uses
+// this to decide whether to advance its deadband/heartbeat baseline (see
+// REVIEW.md finding #4: it previously advanced unconditionally, so a failed
+// upload silently suppressed every subsequent attempt until the next real
+// change cleared an ever-growing threshold).
 static bool log_to_sheets(const sensor_reading_t *reading, const settings_t *settings, const char *event,
-                          int64_t age_ms) {
+                          int64_t age_ms, time_t event_epoch_s) {
   if (settings->google_sheets_webhook_url[0] == '\0') {
     ESP_LOGD(TAG, "No Google Sheets webhook configured yet -- skipping log");
     return false;
@@ -117,10 +143,11 @@ static bool log_to_sheets(const sensor_reading_t *reading, const settings_t *set
 
   char url[URL_BUF_SIZE];
   int len = snprintf(url, sizeof(url),
-                     "%s?secret=%s&thermocouple=%.1f&cold_junction=%.1f&rate=%.2f&zone=%s&event=%s&age_ms=%lld",
+                     "%s?secret=%s&thermocouple=%.1f&cold_junction=%.1f&rate=%.2f&zone=%s&event=%s&age_ms=%lld&event_ts=%lld",
                      settings->google_sheets_webhook_url, settings->google_sheets_secret, reading->thermocouple_c,
                      reading->cold_junction_c, reading->thermocouple_rate_c_per_min,
-                     thermocouple_zone_name(reading->thermocouple_zone), event, (long long) age_ms);
+                     thermocouple_zone_name(reading->thermocouple_zone), event, (long long) age_ms,
+                     (long long) event_epoch_s);
   if (len < 0 || (size_t) len >= sizeof(url)) {
     ESP_LOGW(TAG, "Webhook URL too long for the buffer -- skipping log (check google_sheets_webhook_url)");
     return false;
@@ -189,6 +216,7 @@ bool sheets_logger_log_event(const char *event) {
   // function's own doc comment in sheets_logger.h).
   sensors_get_last_reading(&item.reading);
   item.enqueued_us = esp_timer_get_time();
+  item.enqueued_epoch_s = wall_clock_synced() ? time(NULL) : 0;
   if (xQueueSend(s_event_queue, &item, 0) != pdTRUE) {
     ESP_LOGW(TAG, "Event queue full, dropping event log: %s", event);
     return false;
@@ -212,7 +240,7 @@ static void sheets_logger_task(void *arg) {
       settings_t settings;
       settings_get(&settings);
       int64_t age_ms = (esp_timer_get_time() - item.enqueued_us) / 1000;
-      log_to_sheets(&item.reading, &settings, item.label, age_ms);
+      log_to_sheets(&item.reading, &settings, item.label, age_ms, item.enqueued_epoch_s);
       continue;
     }
 
@@ -247,7 +275,8 @@ static void sheets_logger_task(void *arg) {
       continue;
     }
 
-    if (log_to_sheets(&reading, &settings, delta_due ? "temp_change" : "heartbeat", 0)) {
+    time_t event_epoch_s = wall_clock_synced() ? time(NULL) : 0;
+    if (log_to_sheets(&reading, &settings, delta_due ? "temp_change" : "heartbeat", 0, event_epoch_s)) {
       s_last_logged_thermocouple_c = reading.thermocouple_c;
       s_last_log_us = now_us;
     }

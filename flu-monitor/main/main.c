@@ -18,6 +18,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
 #include "esp_ota_ops.h"
 #include "mdns.h"
 #include "nvs_flash.h"
@@ -93,6 +94,22 @@ static void start_mdns(void) {
   ESP_ERROR_CHECK(mdns_instance_name_set(MDNS_HOSTNAME));
 }
 
+// Fire-and-forget: gives sheets_logger.c a real wall clock to timestamp
+// events with (see REVIEW.md finding D4 -- the age_ms-relative correction
+// only accounts for queue backlog, not the webhook request's own latency,
+// which this project's own docs note can run into the tens of seconds).
+// Deliberately not blocking boot on this -- sheets_logger.c checks whether
+// the clock has actually synced yet (time(NULL) past a sanity cutoff)
+// before trusting it, and falls back to the existing relative-age scheme
+// otherwise, so there's nothing to wait for here. The SNTP client resyncs
+// itself periodically in the background for the rest of the device's
+// uptime once started, including through later WiFi reconnects.
+static void start_sntp(void) {
+  esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+  config.wait_for_sync = false;
+  ESP_ERROR_CHECK(esp_netif_sntp_init(&config));
+}
+
 void app_main(void) {
   init_nvs();
   settings_init();
@@ -136,6 +153,7 @@ void app_main(void) {
     wifi_clear_attempt_failed();
 
     start_mdns();
+    start_sntp();
     httpd_handle_t server = rest_api_start();
     ota_server_register(server, OTA_SECRET);
     ws_server_register(server);
