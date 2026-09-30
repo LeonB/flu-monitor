@@ -693,3 +693,16 @@ currently send age zero and retain processing-time timestamps as well.
 
 Sources: [sheets_logger.c](flu-monitor/main/sheets_logger.c), lines 191–192,
 and [Code.gs](flu-monitor/google-sheets-logger/Code.gs), lines 77–78.
+
+**Fixed (2026-09-30), per explicit user decision to take the full fix over
+the documented-limitation option:** `main.c` now starts SNTP (fire-and-
+forget, nothing blocks on it) once WiFi connects. `sheets_logger.c` checks
+whether the clock has actually synced (`time(NULL)` past a sanity cutoff,
+since this chip has no battery-backed RTC) before trusting it, and when
+synced, captures an absolute Unix timestamp at the moment of the tap/
+reading and sends it as `event_ts` -- immune to the request's own latency,
+however long it takes. Falls back to the existing `age_ms`-relative scheme
+when the clock hasn't synced yet; `Code.gs` prefers `event_ts`, then
+`age_ms`, then `new Date()` (three-tier fallback, verified with a
+standalone test). Needs a manual `Code.gs` redeploy to take effect on the
+live webhook, same as finding #3/C3. Both firmwares build clean.
