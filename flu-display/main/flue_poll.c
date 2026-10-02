@@ -68,6 +68,10 @@ static float s_pending_temperature_c;  // the held-pending reading itself, to de
 
 static bool s_have_ever_valid = false;
 static int64_t s_last_valid_us = 0;
+// The WebSocket event callback updates freshness while main.c's task reads
+// it from flue_poll_is_stale(). Protect the flag and 64-bit timestamp as a
+// pair; 64-bit reads/writes are not atomic on this 32-bit ESP32 target.
+static portMUX_TYPE s_freshness_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static char s_ws_msg_buf[WS_MSG_BUF_SIZE];
 static int s_ws_msg_len = 0;
@@ -215,10 +219,14 @@ static void handle_reading(cJSON *reading) {
   // path further down: during a sustained rise where confirmation admits
   // roughly every other reading (see the jump-confirmation block below),
   // consecutive accepted readings can be ~60s apart at this sensor's 30s
-  // cadence -- comfortably past STALE_READING_MS (30s) -- which made
-  // flue_poll_is_stale() report true and flash the neutral pulse between
-  // perfectly healthy, still-arriving readings.
+  // cadence. Freshness is recorded for every plausible broadcast (including
+  // a held-pending sample) below, so normal confirmation delays don't make
+  // a healthy stream appear unavailable; the 60s stale timeout also allows
+  // two full monitor broadcast intervals for scheduling and WiFi jitter.
+  portENTER_CRITICAL(&s_freshness_lock);
   s_last_valid_us = esp_timer_get_time();
+  s_have_ever_valid = true;
+  portEXIT_CRITICAL(&s_freshness_lock);
 
   if (s_have_prev) {
     float jump = fabsf(temperature_c - s_prev_temperature_c);
@@ -259,8 +267,6 @@ static void handle_reading(cJSON *reading) {
 
   s_have_prev = true;
   s_prev_temperature_c = temperature_c;
-  s_have_ever_valid = true;
-
   led_display_set_reading(true, temperature_c, rate_c_per_min);
 }
 
@@ -370,8 +376,15 @@ void flue_poll_init(void) {
 }
 
 bool flue_poll_is_stale(void) {
-  if (!s_have_ever_valid) {
+  int64_t last_valid_us;
+  bool have_ever_valid;
+  portENTER_CRITICAL(&s_freshness_lock);
+  last_valid_us = s_last_valid_us;
+  have_ever_valid = s_have_ever_valid;
+  portEXIT_CRITICAL(&s_freshness_lock);
+
+  if (!have_ever_valid) {
     return true;
   }
-  return (esp_timer_get_time() - s_last_valid_us) > (int64_t) STALE_READING_MS * 1000;
+  return (esp_timer_get_time() - last_valid_us) > (int64_t) STALE_READING_MS * 1000;
 }

@@ -113,6 +113,9 @@
 // smooth, far below what would meaningfully load the RMT peripheral.
 #define LED_RENDER_TICK_MS      30
 
-// How long without a *valid* poll before the ring falls back to the
-// neutral "no data yet" pulse instead of holding the last known color.
-#define STALE_READING_MS        30000
+// How long without a *valid* reading before the ring falls back to the
+// neutral "no data yet" pulse instead of holding the last known color. The
+// monitor broadcasts every 30s, so allow two full intervals for scheduling
+// and WiFi jitter; using exactly one interval can flash neutral just before
+// a healthy next broadcast arrives.
+#define STALE_READING_MS        60000
