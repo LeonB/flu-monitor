@@ -18,6 +18,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_pm.h"
 #include "esp_netif_sntp.h"
 #include "esp_ota_ops.h"
 #include "mdns.h"
@@ -110,6 +111,17 @@ static void start_sntp(void) {
   ESP_ERROR_CHECK(esp_netif_sntp_init(&config));
 }
 
+static void configure_power_management(void) {
+  // WiFi already uses modem power save by default. Automatic light sleep
+  // lets the CPU and radio sleep between sensor samples and network work.
+  const esp_pm_config_t config = {
+      .max_freq_mhz = 240,
+      .min_freq_mhz = 80,
+      .light_sleep_enable = true,
+  };
+  ESP_ERROR_CHECK(esp_pm_configure(&config));
+}
+
 void app_main(void) {
   init_nvs();
   settings_init();
@@ -138,6 +150,7 @@ void app_main(void) {
 
   if (connected) {
     ESP_LOGI(TAG, "Connected. Starting mDNS + OTA.");
+    configure_power_management();
     status_led_set(STATUS_LED_CONNECTED);
     wifi_sta_enable_auto_reconnect(wifi_status_changed);
 

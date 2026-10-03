@@ -1,6 +1,8 @@
 # Milestone 1 (WiFi + captive portal only) target settings.
 CONFIG_IDF_TARGET="esp32"
 CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
 
 # Milestone 4: OTA. Two 1500K app slots (comfortable headroom above the
 # ~984K current build size) instead of one single-app partition -- requires

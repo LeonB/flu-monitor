@@ -13,6 +13,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_pm.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -46,6 +47,17 @@ static void init_nvs(void) {
   ESP_ERROR_CHECK(err);
 }
 
+static void configure_power_management(void) {
+  // WiFi already uses modem power save by default. Automatic light sleep
+  // lets the CPU and radio sleep between LED frames and network work.
+  const esp_pm_config_t config = {
+      .max_freq_mhz = 240,
+      .min_freq_mhz = 80,
+      .light_sleep_enable = true,
+  };
+  ESP_ERROR_CHECK(esp_pm_configure(&config));
+}
+
 void app_main(void) {
   init_nvs();
   ESP_ERROR_CHECK(esp_netif_init());
@@ -68,6 +80,7 @@ void app_main(void) {
 
   if (connected) {
     ESP_LOGI(TAG, "Connected. Subscribing to flu-monitor and driving the LED ring.");
+    configure_power_management();
     status_led_set(STATUS_LED_CONNECTED);
     wifi_sta_enable_auto_reconnect(wifi_status_changed);
 
