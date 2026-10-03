@@ -115,7 +115,7 @@ function app() {
 
     get rateLabel() {
       const r = this.reading.thermocouple_rate_c_per_min || 0;
-      const deadband = this.settings.rate_deadband_c_per_min || DEFAULT_RATE_DEADBAND_C_PER_MIN;
+      const deadband = this.settings.rate_deadband_c_per_min ?? DEFAULT_RATE_DEADBAND_C_PER_MIN;
       if (Math.abs(r) < deadband) return 'Holding steady';
       return (r > 0 ? '+' : '') + r.toFixed(1) + ' °C/min';
     },
@@ -232,6 +232,17 @@ function app() {
       this.draft[key] = (Number(this.draft[key]) || 0) + delta;
     },
 
+    stepBounded(key, delta, min, max) {
+      this.draft[key] = clamp((Number(this.draft[key]) || 0) + delta, min, max);
+    },
+
+    stepPulsePeriod(key, delta) {
+      const isIdlePeriod = key === 'idle_pulse_period_ms';
+      const min = isIdlePeriod ? this.draft.fast_pulse_period_ms : 500;
+      const max = isIdlePeriod ? 30000 : this.draft.idle_pulse_period_ms;
+      this.stepBounded(key, delta, min, max);
+    },
+
     revertDraft() {
       this.draft = { ...this.settings };
     },
@@ -258,10 +269,10 @@ function app() {
       const tickMs = this.lastFrameMs ? Math.min(200, nowMs - this.lastFrameMs) : 33;
       this.lastFrameMs = nowMs;
 
-      const idlePeriodMs = this.settings.idle_pulse_period_ms || DEFAULT_IDLE_PULSE_PERIOD_MS;
-      const fastPeriodMs = this.settings.fast_pulse_period_ms || DEFAULT_FAST_PULSE_PERIOD_MS;
-      const deadband = this.settings.rate_deadband_c_per_min || DEFAULT_RATE_DEADBAND_C_PER_MIN;
-      const colorExponent = this.settings.color_transition_exponent || DEFAULT_COLOR_TRANSITION_EXPONENT;
+      const idlePeriodMs = this.settings.idle_pulse_period_ms ?? DEFAULT_IDLE_PULSE_PERIOD_MS;
+      const fastPeriodMs = this.settings.fast_pulse_period_ms ?? DEFAULT_FAST_PULSE_PERIOD_MS;
+      const deadband = this.settings.rate_deadband_c_per_min ?? DEFAULT_RATE_DEADBAND_C_PER_MIN;
+      const colorExponent = this.settings.color_transition_exponent ?? DEFAULT_COLOR_TRANSITION_EXPONENT;
 
       const valid = this.reading.thermocouple_ok;
       let rate = this.reading.thermocouple_rate_c_per_min || 0;

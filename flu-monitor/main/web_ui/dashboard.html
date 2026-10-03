@@ -255,6 +255,44 @@
       </div>
 
       <div class="field-group">
+        <h6>The pulse</h6>
+        <div class="field-list">
+          <div class="field-row">
+            <span class="field-label">Idle breathing cycle</span>
+            <div class="stepper" :class="{ changed: changed('idle_pulse_period_ms') }">
+              <button @click="stepPulsePeriod('idle_pulse_period_ms', -500)">−</button>
+              <span class="stepper-value" x-text="(draft.idle_pulse_period_ms / 1000).toFixed(1) + ' s'"></span>
+              <button @click="stepPulsePeriod('idle_pulse_period_ms', 500)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Fastest breathing cycle</span>
+            <div class="stepper" :class="{ changed: changed('fast_pulse_period_ms') }">
+              <button @click="stepPulsePeriod('fast_pulse_period_ms', -500)">−</button>
+              <span class="stepper-value" x-text="(draft.fast_pulse_period_ms / 1000).toFixed(1) + ' s'"></span>
+              <button @click="stepPulsePeriod('fast_pulse_period_ms', 500)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Ignore rate changes below</span>
+            <div class="stepper" :class="{ changed: changed('rate_deadband_c_per_min') }">
+              <button @click="stepBounded('rate_deadband_c_per_min', -0.5, 0, 20)">−</button>
+              <span class="stepper-value" x-text="Number(draft.rate_deadband_c_per_min).toFixed(1) + ' °/min'"></span>
+              <button @click="stepBounded('rate_deadband_c_per_min', 0.5, 0, 20)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Color transition curve</span>
+            <div class="stepper" :class="{ changed: changed('color_transition_exponent') }">
+              <button @click="stepBounded('color_transition_exponent', -0.5, 0.5, 12)">−</button>
+              <span class="stepper-value" x-text="Number(draft.color_transition_exponent).toFixed(1)"></span>
+              <button @click="stepBounded('color_transition_exponent', 0.5, 0.5, 12)">+</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
         <h6>Google Sheets</h6>
         <div class="field-list">
           <div class="text-field">
