@@ -73,7 +73,8 @@
   .field-row { display: flex; align-items: center; gap: 10px; padding: 10px 8px 10px 16px; }
   .field-row + .field-row { border-top: 1px solid var(--color-divider); }
   .field-row .field-label { flex: 1; font-size: 15px; font-weight: 600; }
-  .stepper { display: flex; align-items: center; border-radius: 999px; background: var(--color-bg); }
+  .field-help { display: block; margin-top: 4px; font-size: 12px; font-weight: 400; line-height: 1.4; }
+  .stepper { flex-shrink: 0; display: flex; align-items: center; border-radius: 999px; background: var(--color-bg); }
   .zone-color-picker { width: 64px; height: 44px; padding: 4px; border: 1px solid var(--color-divider); border-radius: 12px; background: var(--color-bg); cursor: pointer; }
   .zone-color-picker.changed { outline: 2px solid var(--color-accent); }
   .stepper.changed { box-shadow: 0 0 0 2px var(--color-accent); }
@@ -208,7 +209,7 @@
         <h6>The glow</h6>
         <div class="field-list">
           <div class="field-row">
-            <span class="field-label">Cold until</span>
+            <span class="field-label">Cold until<small class="field-help">At or below this temperature, the stove is in the cold zone.</small></span>
             <div class="stepper" :class="{ changed: changed('zone_cold_max_c') }">
               <button @click="step('zone_cold_max_c', -5)">−</button>
               <span class="stepper-value" x-text="Math.round(draft.zone_cold_max_c) + ' °C'"></span>
@@ -216,7 +217,7 @@
             </div>
           </div>
           <div class="field-row">
-            <span class="field-label">Optimal until</span>
+            <span class="field-label">Optimal until<small class="field-help">Above the cold zone, temperatures up to this value are optimal. Higher is hot.</small></span>
             <div class="stepper" :class="{ changed: changed('zone_optimal_max_c') }">
               <button @click="step('zone_optimal_max_c', -5)">−</button>
               <span class="stepper-value" x-text="Math.round(draft.zone_optimal_max_c) + ' °C'"></span>
@@ -224,7 +225,7 @@
             </div>
           </div>
           <div class="field-row">
-            <span class="field-label">Climbing fast</span>
+            <span class="field-label">Climbing fast<small class="field-help">A rise this fast reaches the fastest breathing cycle. Lower values speed it up sooner.</small></span>
             <div class="stepper" :class="{ changed: changed('fast_rise_c_per_min') }">
               <button @click="step('fast_rise_c_per_min', -1)">−</button>
               <span class="stepper-value" x-text="Math.round(draft.fast_rise_c_per_min) + ' °/min'"></span>
@@ -238,15 +239,15 @@
         <h6>The zone</h6>
         <div class="field-list">
           <div class="field-row">
-            <label class="field-label" for="zone-cold-color">Cold colour</label>
+            <label class="field-label" for="zone-cold-color">Cold colour<small class="field-help">Colour for the cold zone on the LED ring, dashboard and graph.</small></label>
             <input id="zone-cold-color" class="zone-color-picker" type="color" x-model="draft.zone_cold_color" :class="{ changed: changed('zone_cold_color') }">
           </div>
           <div class="field-row">
-            <label class="field-label" for="zone-optimal-color">Optimal colour</label>
+            <label class="field-label" for="zone-optimal-color">Optimal colour<small class="field-help">Colour for the optimal zone on the LED ring, dashboard and graph.</small></label>
             <input id="zone-optimal-color" class="zone-color-picker" type="color" x-model="draft.zone_optimal_color" :class="{ changed: changed('zone_optimal_color') }">
           </div>
           <div class="field-row">
-            <label class="field-label" for="zone-hot-color">Hot colour</label>
+            <label class="field-label" for="zone-hot-color">Hot colour<small class="field-help">Colour for the hot zone on the LED ring, dashboard and graph.</small></label>
             <input id="zone-hot-color" class="zone-color-picker" type="color" x-model="draft.zone_hot_color" :class="{ changed: changed('zone_hot_color') }">
           </div>
         </div>
@@ -256,7 +257,7 @@
         <h6>The logbook</h6>
         <div class="field-list">
           <div class="field-row">
-            <span class="field-label">Log on a change of</span>
+            <span class="field-label">Log on a change of<small class="field-help">Log to Google Sheets when temperature changes this much since the last logged reading.</small></span>
             <div class="stepper" :class="{ changed: changed('thermocouple_deadband_c') }">
               <button @click="step('thermocouple_deadband_c', -1)">−</button>
               <span class="stepper-value" x-text="Math.round(draft.thermocouple_deadband_c) + ' °C'"></span>
@@ -264,7 +265,7 @@
             </div>
           </div>
           <div class="field-row">
-            <span class="field-label">&hellip;or at least every</span>
+            <span class="field-label">&hellip;or at least every<small class="field-help">Log to Google Sheets after this interval, even if temperature stays steady.</small></span>
             <div class="stepper" :class="{ changed: changed('log_heartbeat_min') }">
               <button @click="step('log_heartbeat_min', -5)">−</button>
               <span class="stepper-value" x-text="Math.round(draft.log_heartbeat_min) + ' min'"></span>
@@ -278,7 +279,7 @@
         <h6>The pulse</h6>
         <div class="field-list">
           <div class="field-row">
-            <span class="field-label">Idle breathing cycle</span>
+            <span class="field-label">Idle breathing cycle<small class="field-help">Time for one full breath when temperature is steady. Higher values breathe more slowly.</small></span>
             <div class="stepper" :class="{ changed: changed('idle_pulse_period_ms') }">
               <button @click="stepPulsePeriod('idle_pulse_period_ms', -500)">−</button>
               <span class="stepper-value" x-text="(draft.idle_pulse_period_ms / 1000).toFixed(1) + ' s'"></span>
@@ -286,7 +287,7 @@
             </div>
           </div>
           <div class="field-row">
-            <span class="field-label">Fastest breathing cycle</span>
+            <span class="field-label">Fastest breathing cycle<small class="field-help">Shortest breath during rapid temperature changes. Lower values breathe faster.</small></span>
             <div class="stepper" :class="{ changed: changed('fast_pulse_period_ms') }">
               <button @click="stepPulsePeriod('fast_pulse_period_ms', -500)">−</button>
               <span class="stepper-value" x-text="(draft.fast_pulse_period_ms / 1000).toFixed(1) + ' s'"></span>
@@ -294,7 +295,7 @@
             </div>
           </div>
           <div class="field-row">
-            <span class="field-label">Minimum brightness<small style="display:block;font-size:12px;font-weight:400">LED ring · 0 is off, 255 is full</small></span>
+            <span class="field-label">Minimum brightness<small class="field-help">LED ring · 0 is off, 255 is full</small></span>
             <div class="stepper" :class="{ changed: changed('minimum_brightness') }">
               <button aria-label="Decrease minimum brightness" @click="stepBounded('minimum_brightness', -5, 0, draft.maximum_brightness)">−</button>
               <span class="stepper-value" x-text="draft.minimum_brightness"></span>
@@ -302,7 +303,7 @@
             </div>
           </div>
           <div class="field-row">
-            <span class="field-label">Maximum brightness<small style="display:block;font-size:12px;font-weight:400">LED ring · 0 is off, 255 is full</small></span>
+            <span class="field-label">Maximum brightness<small class="field-help">LED ring · 0 is off, 255 is full</small></span>
             <div class="stepper" :class="{ changed: changed('maximum_brightness') }">
               <button aria-label="Decrease maximum brightness" @click="stepBounded('maximum_brightness', -5, draft.minimum_brightness, 255)">−</button>
               <span class="stepper-value" x-text="draft.maximum_brightness"></span>
@@ -310,7 +311,7 @@
             </div>
           </div>
           <div class="field-row">
-            <span class="field-label">Breathing shape<small style="display:block;font-size:12px;font-weight:400">Lower: brighter longer · Higher: dimmer longer</small></span>
+            <span class="field-label">Breathing shape<small class="field-help">Lower: brighter longer · Higher: dimmer longer</small></span>
             <div class="stepper" :class="{ changed: changed('breathing_exponent') }">
               <button aria-label="Decrease breathing shape" @click="stepBreathingShape(-0.1)">−</button>
               <span class="stepper-value" x-text="Number(draft.breathing_exponent).toFixed(1)"></span>
@@ -318,7 +319,7 @@
             </div>
           </div>
           <div class="field-row">
-            <span class="field-label">Ignore rate changes below</span>
+            <span class="field-label">Ignore rate changes below<small class="field-help">Treat smaller rises or falls as steady, keeping the idle pulse and one zone colour.</small></span>
             <div class="stepper" :class="{ changed: changed('rate_deadband_c_per_min') }">
               <button @click="stepBounded('rate_deadband_c_per_min', -0.5, 0, 20)">−</button>
               <span class="stepper-value" x-text="Number(draft.rate_deadband_c_per_min).toFixed(1) + ' °/min'"></span>
@@ -326,7 +327,7 @@
             </div>
           </div>
           <div class="field-row">
-            <span class="field-label">Color transition curve</span>
+            <span class="field-label">Color transition curve<small class="field-help">Higher values hold the zone colour longer, switching toward the neighbouring colour near the peak.</small></span>
             <div class="stepper" :class="{ changed: changed('color_transition_exponent') }">
               <button @click="stepBounded('color_transition_exponent', -0.5, 0.5, 12)">−</button>
               <span class="stepper-value" x-text="Number(draft.color_transition_exponent).toFixed(1)"></span>
@@ -340,12 +341,14 @@
         <h6>Google Sheets</h6>
         <div class="field-list">
           <div class="text-field">
-            <label>Webhook URL</label>
-            <input class="input" x-model="draft.google_sheets_webhook_url" placeholder="https://script.google.com/macros/s/.../exec">
+            <label for="sheets-webhook">Webhook URL</label>
+            <small id="sheets-webhook-help" class="field-help" style="margin-bottom:8px">Google Apps Script endpoint that writes logs to your sheet. Leave blank to disable Sheets logging.</small>
+            <input id="sheets-webhook" aria-describedby="sheets-webhook-help" class="input" x-model="draft.google_sheets_webhook_url" placeholder="https://script.google.com/macros/s/.../exec">
           </div>
           <div class="text-field" style="padding-top:0">
-            <label>Secret</label>
-            <input class="input" x-model="draft.google_sheets_secret" placeholder="shared secret">
+            <label for="sheets-secret">Secret</label>
+            <small id="sheets-secret-help" class="field-help" style="margin-bottom:8px">Must match the shared secret configured in your Apps Script so it accepts log entries.</small>
+            <input id="sheets-secret" aria-describedby="sheets-secret-help" class="input" x-model="draft.google_sheets_secret" placeholder="shared secret">
           </div>
         </div>
       </div>
