@@ -74,6 +74,54 @@ settings" section: those used to be hardcoded independently in both
 and now come from one live source the same way the zone/rate thresholds
 already did.
 
+## Telling the two physical devices apart (and the silent mis-flash failure mode)
+
+Both devices join the same WiFi network and look superficially similar once
+connected (same `wifi_setup`/`captive_portal` stack, same OTA auth scheme),
+and flashing one project's firmware onto the other project's physical board
+does **not** fail loudly -- `app_main()` keeps booting either way, WiFi still
+joins fine, the HTTP server still starts, so the symptom is a board that
+looks alive and reachable but is quietly missing the one thing that
+mattered. This actually happened: the `flu-display` board had
+`flu-monitor`'s firmware flashed onto it at some point (most likely a wrong
+`-p` port on an earlier `idf.py flash`), so it tried to init a MCP9601 that
+physically doesn't exist on that board -- `init_mcp9601()` failed every
+single boot, `thermocouple_ok` stayed `false`/all fields zeroed forever
+(`GET /api/reading`/`/ws` both reflect whatever `sensors_read()` last wrote,
+see `flu-monitor/CLAUDE.md`'s "The regression window..." section), and it
+still answered mDNS as `flu-monitor` (`MDNS_HOSTNAME` is baked into
+whichever firmware is actually running, not tied to the physical board),
+colliding with the real sidecar's own `flu-monitor.local` and making
+`flu-monitor.local` traffic land on the broken board unpredictably instead
+of the real one. Nothing about that state looks like an obvious crash from
+a distance -- it took directly comparing a serial boot log against a REST
+response from a known-good IP to find it.
+
+**Before flashing a port you haven't confirmed, read its boot log instead of
+trusting which USB device node you *think* is which** -- macOS's
+`/dev/cu.usbserial-XXXX` numbering carries no information about which
+physical board is on which cable, and that assumption is exactly how the
+mix-up above happened. A passive serial read (`idf.py monitor`, or just
+opening the port) shows an unambiguous `app_init: Project name: flu-monitor`
+or `flu-display` line within the first second of boot, before anything
+project-specific runs -- that line can't lie. Runtime log tags are a second
+confirmation: `sensors`/`MCP9601`/`rest_api` only ever appear in
+`flu-monitor`'s own log output, since `flu-display` has no sensors.c, no
+MCP9601, and no REST API of its own -- those tags showing up at all means
+you're looking at `flu-monitor`'s firmware, regardless of which board you
+expected to be talking to.
+
+**On the network, once both are up**: each project's own `MDNS_HOSTNAME`
+(`flu-monitor`/`flu-display` in each project's own `main/config.h`) should
+resolve to exactly one IP each -- if a lookup (`dns-sd -G v4
+flu-monitor.local` or equivalent) ever returns two different addresses, or
+an address you weren't expecting, that's the signature of this exact
+mis-flash, not a flaky network. `GET /api/wifi` (queried fresh every call,
+never cached -- see `flu-monitor/CLAUDE.md`'s own note on this) is a quick
+way to tell two candidate IPs apart by RSSI/BSSID when you're not sure which
+one you're actually touching, since a board closer to the router will show
+a visibly stronger signal than one further away.
+
 ## Project goal (bigger than either subfolder's code suggests)
 
 The end goal: an ambient light display you can glance at to know if the
