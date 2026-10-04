@@ -119,7 +119,16 @@ static void configure_power_management(void) {
       .min_freq_mhz = 80,
       .light_sleep_enable = true,
   };
-  ESP_ERROR_CHECK(esp_pm_configure(&config));
+  // Not ESP_ERROR_CHECK: this previously aborted (and crash-looped) every
+  // single boot when CONFIG_PM_ENABLE was missing from a stale sdkconfig --
+  // see this file's own CLAUDE.md, "A stale, gitignored sdkconfig turned a
+  // new Kconfig default into a permanent boot crash-loop". Running without
+  // automatic light sleep is a fine fallback; bricking the device on any
+  // future esp_pm_configure() failure is not.
+  esp_err_t err = esp_pm_configure(&config);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "esp_pm_configure failed: %s -- continuing without automatic light sleep", esp_err_to_name(err));
+  }
 }
 
 void app_main(void) {

@@ -613,6 +613,43 @@ rx mblock:10`, no assertion) followed by `captive_portal: SoftAP started`
 recovered the same clean way, entering its own setup AP instead of
 crashing -- a second, independent, non-artificial confirmation.
 
+## A stale, gitignored `sdkconfig` turned a new Kconfig default into a permanent boot crash-loop
+
+`main.c`'s `configure_power_management()` (added by the "Enable automatic
+light sleep on both devices" commit) originally wrapped `esp_pm_configure()`
+in `ESP_ERROR_CHECK` -- fine as long as that call could never fail, which
+turned out not to be true. That same commit added `CONFIG_PM_ENABLE=y` to
+`sdkconfig.defaults`, but the actual `sdkconfig` (gitignored, locally
+generated, last regenerated before that commit existed) still had
+`# CONFIG_PM_ENABLE is not set` baked in from an earlier build --
+`sdkconfig.defaults` only seeds keys *missing* from `sdkconfig`, it never
+overrides a key that's already present, so the stale value won silently.
+With `CONFIG_PM_ENABLE` actually off, `esp_pm_configure()` returned
+`ESP_ERR_NOT_SUPPORTED` (confirmed directly against the installed ESP-IDF
+5.5.5 source -- `esp_pm/pm_impl.c`'s own `#ifndef CONFIG_PM_ENABLE`
+early-return) on every single boot, right after WiFi connected --
+`ESP_ERROR_CHECK` turned that into a hard `abort()`, rebooting forever
+before the REST/WS servers ever registered. The symptom that actually
+surfaced from this was confusing by itself: `GET /api/reading`/`/ws`
+intermittently showed `thermocouple_ok:false` with every field zeroed and
+`thermocouple_zone:"unknown"`, which looked like a sensor/I2C problem (the
+zone classifier can only read "unknown" if no read has ever succeeded since
+the last reset) but was actually just whichever request happened to land
+during the reboot window.
+
+Fixed two ways: deleting the stale `sdkconfig` and letting `idf.py build`
+regenerate it fresh from `sdkconfig.defaults` resolved this specific
+occurrence (verified via a clean serial boot log and 5+ minutes of
+uninterrupted sensor reads afterward), and `configure_power_management()`
+itself no longer uses `ESP_ERROR_CHECK` -- it logs a warning and continues
+without automatic light sleep on any future `esp_pm_configure()` failure,
+since that's a far better fallback than bricking the device over a
+recoverable power-management config problem. Any future addition to
+`sdkconfig.defaults` carries the same latent staleness risk on a machine
+with an already-generated `sdkconfig` sitting around -- seeding is one-way,
+not a sync, so this exact failure mode can recur for a *different* Kconfig
+option later even with this specific fix in place.
+
 ## The 24h graph had three real gaps vs. the original design, only one of them a genuine logic bug
 
 Caught by comparing a live screenshot against the original design mockup
