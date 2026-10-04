@@ -95,7 +95,7 @@ curl http://flu-monitor.local/api/wifi       # live SSID/BSSID/channel/RSSI, not
 curl http://flu-monitor.local/api/settings
 curl -X POST http://flu-monitor.local/api/settings \
   -H "Content-Type: application/json" \
-  -d '{"log_heartbeat_min":15,"zone_cold_max_c":150,"zone_optimal_max_c":280,"fast_rise_c_per_min":20,"thermocouple_deadband_c":5,"google_sheets_webhook_url":"","google_sheets_secret":"","idle_pulse_period_ms":8000,"fast_pulse_period_ms":1400,"rate_deadband_c_per_min":3,"color_transition_exponent":3,"zone_cold_color":"#003cff","zone_optimal_color":"#ff3700","zone_hot_color":"#ff0000"}'
+  -d '{"log_heartbeat_min":15,"zone_cold_max_c":150,"zone_optimal_max_c":280,"fast_rise_c_per_min":20,"thermocouple_deadband_c":5,"google_sheets_webhook_url":"","google_sheets_secret":"","idle_pulse_period_ms":8000,"fast_pulse_period_ms":1400,"rate_deadband_c_per_min":3,"color_transition_exponent":3,"zone_cold_color":"#003cff","zone_optimal_color":"#ff3700","zone_hot_color":"#ff0000","breathing_exponent":1}'
 ```
 
 `POST /api/settings` replaces the whole settings object (no partial/PATCH
@@ -210,3 +210,7 @@ power-enable line with STEMMA QT (GPIO2, already driven high by
 | Onboard NeoPixel data  | GPIO0 (WiFi status color, see above) |
 | MCP9601 I2C address    | 0x67 |
 | I2C bus speed          | 50kHz (see `CLAUDE.md`'s MCP960x errata notes) |
+
+Breathing shape under **The pulse** adjusts the brightness envelope of both the
+UI halo and LED ring (0.3–3.0, default 1.0). Lower values stay bright longer;
+higher values stay dim longer. The colour-transition curve remains independent.

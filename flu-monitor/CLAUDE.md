@@ -781,3 +781,28 @@ Physical flicker improvement has not been judged visually. Initial mDNS
 queries and a subsequent HTTP/WS connection timed out; restarting the
 display after the monitor was running recovered resolution and subscription.
 That existing startup/network flakiness remains a separate issue.
+
+
+## Adjustable breathing shape
+
+`breathing_exponent` ranges from 0.3 to 3.0 and defaults to 1.0. Apply
+`pow(envelope, breathing_exponent)` to brightness and the UI halo only; colour
+interpolation continues to use the raw envelope and its separate exponent.
+The settings control uses 0.1 steps with rounding and existing Save/Undo.
+
+The float is appended after the palette fields. NVS loading accepts the current
+size, the pre-palette prefix, and the palette-only prefix over initialized
+defaults. Existing tuning, colours, and logging credentials are preserved.
+Older POST clients preserve the current shape when omitting it; the display
+defaults to 1.0 when an older monitor omits the field. Reject non-numeric,
+non-finite, and out-of-range values. Both firmware builds and host migration/
+validation checks pass. Chrome Save/Undo/reload checks pass without console
+warnings or errors.
+
+Both devices updated over OTA on 2026-10-04. All monitor settings were
+compared before/after and preserved. Display logs confirmed shape 1.0, a
+live change to 0.7, then restoration to 1.0, alongside real readings and
+33.9 FPS with zero refresh failures. After an OTA upload, allow startup to
+complete before opening idf monitor: it resets the board, and resetting a
+pending image before WiFi confirmation can trigger rollback. The first
+display attempt rolled back; retrying with startup time succeeded.

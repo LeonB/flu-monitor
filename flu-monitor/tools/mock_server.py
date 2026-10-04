@@ -59,6 +59,7 @@ settings = {
     "fast_pulse_period_ms": 1400,
     "rate_deadband_c_per_min": 3,
     "color_transition_exponent": 3,
+    "breathing_exponent": 1,
     "zone_cold_color": "#003cff",
     "zone_optimal_color": "#ff3700",
     "zone_hot_color": "#ff0000",

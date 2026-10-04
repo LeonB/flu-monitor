@@ -28,6 +28,7 @@ static float s_rate_deadband_c_per_min = RATE_DEADBAND_C_PER_MIN;
 static uint32_t s_idle_pulse_period_ms = IDLE_PULSE_PERIOD_MS;
 static uint32_t s_fast_pulse_period_ms = FAST_PULSE_PERIOD_MS;
 static float s_color_transition_exponent = COLOR_TRANSITION_EXPONENT;
+static float s_breathing_exponent = 1.0f;
 
 typedef struct {
   uint8_t r, g, b;
@@ -139,6 +140,7 @@ static void render_task(void *arg) {
     portEXIT_CRITICAL(&s_state_lock);
 
     float zone_cold_max_c, zone_optimal_max_c, fast_rise_c_per_min, rate_deadband_c_per_min, color_transition_exponent;
+    float breathing_exponent;
     uint32_t idle_pulse_period_ms, fast_pulse_period_ms;
     rgb_t colors[3];
     portENTER_CRITICAL(&s_threshold_lock);
@@ -149,6 +151,7 @@ static void render_task(void *arg) {
     idle_pulse_period_ms = s_idle_pulse_period_ms;
     fast_pulse_period_ms = s_fast_pulse_period_ms;
     color_transition_exponent = s_color_transition_exponent;
+    breathing_exponent = s_breathing_exponent;
     for (int i = 0; i < 3; i++) colors[i] = s_zone_colors[i];
     portEXIT_CRITICAL(&s_threshold_lock);
 
@@ -164,7 +167,8 @@ static void render_task(void *arg) {
     cycle_pos = fmod(cycle_pos + (double) elapsed_us / ((double) period_ms * 1000.0), 1.0);
 
     float envelope = clampf(breath_envelope(cycle_pos), 0.0f, 1.0f);
-    float brightness = lerpf((float) PULSE_BRIGHTNESS_MIN, (float) PULSE_BRIGHTNESS_MAX, envelope);
+    float breathing_envelope = powf(envelope, breathing_exponent);
+    float brightness = lerpf((float) PULSE_BRIGHTNESS_MIN, (float) PULSE_BRIGHTNESS_MAX, breathing_envelope);
 
     if (valid) {
       // The dim trough always shows the true current-zone color, so the
@@ -248,7 +252,7 @@ void led_display_set_reading(bool valid, float temperature_c, float rate_c_per_m
 
 void led_display_set_tuning(float zone_cold_max_c, float zone_optimal_max_c, float fast_rise_c_per_min,
                             float rate_deadband_c_per_min, uint32_t idle_pulse_period_ms,
-                            uint32_t fast_pulse_period_ms, float color_transition_exponent) {
+                            uint32_t fast_pulse_period_ms, float color_transition_exponent, float breathing_exponent) {
   portENTER_CRITICAL(&s_threshold_lock);
   s_zone_cold_max_c = zone_cold_max_c;
   s_zone_optimal_max_c = zone_optimal_max_c;
@@ -257,6 +261,7 @@ void led_display_set_tuning(float zone_cold_max_c, float zone_optimal_max_c, flo
   s_idle_pulse_period_ms = idle_pulse_period_ms;
   s_fast_pulse_period_ms = fast_pulse_period_ms;
   s_color_transition_exponent = color_transition_exponent;
+  s_breathing_exponent = breathing_exponent;
   portEXIT_CRITICAL(&s_threshold_lock);
 }
 

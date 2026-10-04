@@ -197,6 +197,7 @@ static void settings_to_json(const settings_t *s, cJSON *root) {
   cJSON_AddStringToObject(root, "zone_cold_color", s->zone_cold_color);
   cJSON_AddStringToObject(root, "zone_optimal_color", s->zone_optimal_color);
   cJSON_AddStringToObject(root, "zone_hot_color", s->zone_hot_color);
+  cJSON_AddNumberToObject(root, "breathing_exponent", round_to(s->breathing_exponent, 0.1));
 }
 
 static esp_err_t settings_get_handler(httpd_req_t *req) {
@@ -224,7 +225,8 @@ static const httpd_uri_t settings_get_uri = {
 // bar (no per-field PATCH to preserve) -- a field missing from the request
 // body becomes that field's zero value (numeric) or empty string, not
 // "leave whatever was there before". Colours are the compatibility exception:
-// older clients may omit them, retaining the saved palette.
+// older clients may omit them, retaining the saved palette. Breathing shape
+// likewise retains its saved value when omitted.
 static esp_err_t settings_post_handler(httpd_req_t *req) {
   if (req->content_len <= 0 || req->content_len >= 1024) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Request body too large");
@@ -296,6 +298,9 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
   // values must be exactly #RRGGBB; never truncate invalid input into validity.
   settings_t current;
   settings_get(&current);
+  item = cJSON_GetObjectItemCaseSensitive(root, "breathing_exponent");
+  s.breathing_exponent = item == NULL ? current.breathing_exponent :
+                        cJSON_IsNumber(item) ? (float) item->valuedouble : NAN;
   const char *keys[] = {"zone_cold_color", "zone_optimal_color", "zone_hot_color"};
   char *colors[] = {s.zone_cold_color, s.zone_optimal_color, s.zone_hot_color};
   const char *previous[] = {current.zone_cold_color, current.zone_optimal_color, current.zone_hot_color};

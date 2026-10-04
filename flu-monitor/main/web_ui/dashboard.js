@@ -27,6 +27,7 @@ const DEFAULT_IDLE_PULSE_PERIOD_MS = 8000;
 const DEFAULT_FAST_PULSE_PERIOD_MS = 1400;
 const DEFAULT_RATE_DEADBAND_C_PER_MIN = 3.0;
 const DEFAULT_COLOR_TRANSITION_EXPONENT = 3.0;
+const DEFAULT_BREATHING_EXPONENT = 1.0;
 
 // Colours are saved as #RRGGBB and shared with the physical LED ring.
 const ZONE_ORDER = ['cold', 'optimal', 'hot'];
@@ -134,7 +135,7 @@ function app() {
     async fetchSettings() {
       try {
         const res = await fetch('/api/settings');
-        this.settings = { ...Object.fromEntries(ZONE_ORDER.map((zone) => [`zone_${zone}_color`, DEFAULT_ZONE_COLORS[zone]])), ...await res.json() };
+        this.settings = { breathing_exponent: DEFAULT_BREATHING_EXPONENT, ...Object.fromEntries(ZONE_ORDER.map((zone) => [`zone_${zone}_color`, DEFAULT_ZONE_COLORS[zone]])), ...await res.json() };
         this.draft = { ...this.settings };
       } catch (e) { /* keeps whatever was loaded before, if anything */ }
     },
@@ -229,6 +230,10 @@ function app() {
       this.draft[key] = clamp((Number(this.draft[key]) || 0) + delta, min, max);
     },
 
+    stepBreathingShape(delta) {
+      this.draft.breathing_exponent = Number(clamp((this.draft.breathing_exponent ?? DEFAULT_BREATHING_EXPONENT) + delta, 0.3, 3.0).toFixed(1));
+    },
+
     stepPulsePeriod(key, delta) {
       const isIdlePeriod = key === 'idle_pulse_period_ms';
       const min = isIdlePeriod ? this.draft.fast_pulse_period_ms : 500;
@@ -276,7 +281,8 @@ function app() {
         : idlePeriodMs;
       this.cyclePos += tickMs / periodMs;
       if (this.cyclePos > 1) this.cyclePos -= 1;
-      const envelope = breathEnvelope(this.cyclePos);
+      const envelope = clamp(breathEnvelope(this.cyclePos), 0, 1);
+      const breathingEnvelope = Math.pow(envelope, this.settings.breathing_exponent ?? DEFAULT_BREATHING_EXPONENT);
 
       if (valid) {
         const zone = this.reading.thermocouple_zone;
@@ -285,12 +291,12 @@ function app() {
         const colorT = Math.pow(envelope, colorExponent);
         const bg = lerpRgb(trough.bg, peak.bg, colorT);
         const text = lerpRgb(trough.text, peak.text, colorT);
-        const haloAlpha = lerp(0.25, 0.7, envelope);
-        const haloSpread = Math.round(lerp(14, 26, envelope));
+        const haloAlpha = lerp(0.25, 0.7, breathingEnvelope);
+        const haloSpread = Math.round(lerp(14, 26, breathingEnvelope));
         this.glowInnerStyle = `background-color:${rgbCss(bg)};color:${rgbCss(text)}`;
         this.glowOuterStyle = `box-shadow:0 0 0 ${haloSpread}px rgba(${Math.round(bg[0])},${Math.round(bg[1])},${Math.round(bg[2])},${haloAlpha.toFixed(2)})`;
       } else {
-        const alpha = lerp(0.15, 0.4, envelope);
+        const alpha = lerp(0.15, 0.4, breathingEnvelope);
         this.glowInnerStyle = 'background-color:var(--color-neutral-300);color:var(--color-neutral-700)';
         this.glowOuterStyle = `box-shadow:0 0 0 18px rgba(160,150,134,${alpha.toFixed(2)})`;
       }

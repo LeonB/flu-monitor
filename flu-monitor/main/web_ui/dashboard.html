@@ -294,6 +294,14 @@
             </div>
           </div>
           <div class="field-row">
+            <span class="field-label">Breathing shape<small style="display:block;font-size:12px;font-weight:400">Lower: brighter longer · Higher: dimmer longer</small></span>
+            <div class="stepper" :class="{ changed: changed('breathing_exponent') }">
+              <button aria-label="Decrease breathing shape" @click="stepBreathingShape(-0.1)">−</button>
+              <span class="stepper-value" x-text="Number(draft.breathing_exponent).toFixed(1)"></span>
+              <button aria-label="Increase breathing shape" @click="stepBreathingShape(0.1)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
             <span class="field-label">Ignore rate changes below</span>
             <div class="stepper" :class="{ changed: changed('rate_deadband_c_per_min') }">
               <button @click="stepBounded('rate_deadband_c_per_min', -0.5, 0, 20)">−</button>

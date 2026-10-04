@@ -2,6 +2,7 @@
 
 #include <string.h>
 #include <stddef.h>
+#include <math.h>
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -35,6 +36,7 @@ static void set_defaults(settings_t *s) {
   strcpy(s->zone_cold_color, "#003cff");
   strcpy(s->zone_optimal_color, "#ff3700");
   strcpy(s->zone_hot_color, "#ff0000");
+  s->breathing_exponent = DEFAULT_BREATHING_EXPONENT;
 }
 
 static bool valid_color(const char color[8]) {
@@ -47,6 +49,7 @@ static bool valid_color(const char color[8]) {
 }
 
 static bool validate(const settings_t *s) {
+  if (!isfinite(s->breathing_exponent) || s->breathing_exponent < 0.3f || s->breathing_exponent > 3.0f) return false;
   if (!valid_color(s->zone_cold_color) || !valid_color(s->zone_optimal_color) || !valid_color(s->zone_hot_color)) return false;
   if (s->zone_cold_max_c >= s->zone_optimal_max_c) {
     return false;
@@ -82,10 +85,11 @@ void settings_init(void) {
   if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) == ESP_OK) {
     settings_t from_nvs = loaded;
     size_t len = sizeof(from_nvs);
-    // The old blob is the unchanged prefix ending before the new colours.
-    // Seed first so an old blob retains all settings and gets default colours.
+    // Both earlier layouts are unchanged prefixes (before colours, or before
+    // breathing shape). Seed missing tail fields while retaining old values.
     if (nvs_get_blob(handle, NVS_KEY_BLOB, &from_nvs, &len) == ESP_OK &&
-        (len == sizeof(from_nvs) || len == offsetof(settings_t, zone_cold_color)) &&
+        (len == sizeof(from_nvs) || len == offsetof(settings_t, zone_cold_color) ||
+         len == offsetof(settings_t, breathing_exponent)) &&
         validate(&from_nvs)) {
       loaded = from_nvs;
       ESP_LOGI(TAG, "Loaded settings from NVS");

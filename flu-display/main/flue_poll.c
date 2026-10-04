@@ -194,17 +194,27 @@ static void fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
     return;
   }
 
+  // Older sidecars omit the shape field; preserve the original envelope.
+  cJSON *shape = cJSON_GetObjectItemCaseSensitive(root, "breathing_exponent");
+  float breathing_exponent = shape == NULL ? 1.0f :
+                             cJSON_IsNumber(shape) ? (float) shape->valuedouble : NAN;
+  if (!isfinite(breathing_exponent) || breathing_exponent < 0.3f || breathing_exponent > 3.0f) {
+    ESP_LOGW(TAG, "Rejected invalid breathing shape");
+    cJSON_Delete(root);
+    return;
+  }
+
   ESP_LOGI(TAG,
            "Applying settings: zone_cold_max_c=%.1f zone_optimal_max_c=%.1f fast_rise_c_per_min=%.1f "
            "rate_deadband_c_per_min=%.1f idle_pulse_period_ms=%.0f fast_pulse_period_ms=%.0f "
-           "color_transition_exponent=%.1f",
+           "color_transition_exponent=%.1f breathing_exponent=%.1f",
            zone_cold_max_c->valuedouble, zone_optimal_max_c->valuedouble, fast_rise_c_per_min->valuedouble,
            rate_deadband_c_per_min->valuedouble, idle_pulse_period_ms->valuedouble, fast_pulse_period_ms->valuedouble,
-           color_transition_exponent->valuedouble);
+           color_transition_exponent->valuedouble, (double) breathing_exponent);
   led_display_set_tuning((float) zone_cold_max_c->valuedouble, (float) zone_optimal_max_c->valuedouble,
                          (float) fast_rise_c_per_min->valuedouble, (float) rate_deadband_c_per_min->valuedouble,
                          (uint32_t) idle_pulse_period_ms->valuedouble, (uint32_t) fast_pulse_period_ms->valuedouble,
-                         (float) color_transition_exponent->valuedouble);
+                         (float) color_transition_exponent->valuedouble, breathing_exponent);
   uint32_t cold, optimal, hot;
   if (parse_zone_color(cJSON_GetObjectItemCaseSensitive(root, "zone_cold_color"), &cold) &&
       parse_zone_color(cJSON_GetObjectItemCaseSensitive(root, "zone_optimal_color"), &optimal) &&
