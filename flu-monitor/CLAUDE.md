@@ -822,3 +822,14 @@ independent and the UI halo keeps its screen-specific treatment.
 Both firmware builds pass. Host checks cover migration of all previous
 layouts, persistence, equal/off/full bounds and reversed-limit rejection.
 Chrome confirms both steppers, Undo, Save and reload persistence.
+
+
+## Zone theme presets
+
+`ZONE_THEMES` in dashboard.js defines four palettes in `ZONE_ORDER`. The
+selector derives its name from the draft colours with case-insensitive
+matching, so manual edits and Undo automatically select Custom or a matching
+preset. `applyZoneTheme` only fills the three draft colour fields. No theme
+identifier is stored or sent to the API: saved colours remain the single
+source for the dashboard, graph and ring. Menu buttons show swatches, the
+selected state, and support Tab/Enter plus Escape and outside-click dismissal.

@@ -75,6 +75,17 @@
   .field-row .field-label { flex: 1; font-size: 15px; font-weight: 600; }
   .field-help { display: block; margin-top: 4px; font-size: 12px; font-weight: 400; line-height: 1.4; }
   .stepper { flex-shrink: 0; display: flex; align-items: center; border-radius: 999px; background: var(--color-bg); }
+  .zone-theme { padding: 10px 16px 14px; }
+  .zone-theme-label { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+  .theme-select, .theme-option { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 10px 14px; border: none; font: inherit; font-size: 14px; font-weight: 600; color: var(--color-text); text-align: left; cursor: pointer; }
+  .theme-select { border: 1px solid var(--color-divider); border-radius: 18px; background: var(--color-bg); }
+  .theme-select.changed { outline: 2px solid var(--color-accent); }
+  .theme-swatches { display: inline-flex; gap: 4px; flex-shrink: 0; }
+  .theme-swatch { width: 18px; height: 18px; border-radius: 50%; border: 1px solid rgba(0,0,0,.15); }
+  .theme-name { flex: 1; }
+  .theme-options { margin-top: 6px; padding: 4px; border: 1px solid var(--color-divider); border-radius: 18px; background: var(--color-bg); }
+  .theme-option { background: none; border-radius: 14px; }
+  .theme-option:hover, .theme-option[aria-pressed="true"] { background: var(--color-surface); }
   .zone-color-picker { width: 64px; height: 44px; padding: 4px; border: 1px solid var(--color-divider); border-radius: 12px; background: var(--color-bg); cursor: pointer; }
   .zone-color-picker.changed { outline: 2px solid var(--color-accent); }
   .stepper.changed { box-shadow: 0 0 0 2px var(--color-accent); }
@@ -238,6 +249,26 @@
       <div class="field-group">
         <h6>The zone</h6>
         <div class="field-list">
+          <div class="zone-theme" @click.outside="themeMenuOpen = false" @keydown.escape.stop="themeMenuOpen = false; $refs.themeButton.focus()">
+            <span class="zone-theme-label" id="zone-theme-label">Theme</span>
+            <button type="button" class="theme-select" x-ref="themeButton" @click="themeMenuOpen = !themeMenuOpen" :aria-expanded="themeMenuOpen" aria-controls="zone-theme-options" :aria-label="'Theme: ' + (zoneTheme ? zoneTheme.name : 'Custom')" :class="{ changed: ZONE_ORDER.some(zone => changed('zone_' + zone + '_color')) }">
+              <span class="theme-swatches" aria-hidden="true">
+                <template x-for="zone in ZONE_ORDER" :key="zone"><span class="theme-swatch" :style="'background-color:' + draft['zone_' + zone + '_color']"></span></template>
+              </span>
+              <span class="theme-name" x-text="zoneTheme ? zoneTheme.name : 'Custom'"></span>
+              <span aria-hidden="true">▾</span>
+            </button>
+            <div id="zone-theme-options" class="theme-options" x-show="themeMenuOpen" role="group" aria-labelledby="zone-theme-label">
+              <template x-for="theme in ZONE_THEMES" :key="theme.id">
+                <button type="button" class="theme-option" :aria-pressed="zoneTheme?.id === theme.id" @click="applyZoneTheme(theme.id); $refs.themeButton.focus()" :aria-label="theme.name">
+                  <span class="theme-swatches" aria-hidden="true"><template x-for="(color, index) in theme.colors" :key="index"><span class="theme-swatch" :style="'background-color:' + color"></span></template></span>
+                  <span class="theme-name" x-text="theme.name"></span>
+                  <span aria-hidden="true" x-show="zoneTheme?.id === theme.id">✓</span>
+                </button>
+              </template>
+            </div>
+            <small class="field-help">Choose a palette, then adjust any colour below. Your own combination appears as Custom.</small>
+          </div>
           <div class="field-row">
             <label class="field-label" for="zone-cold-color">Cold colour<small class="field-help">Colour for the cold zone on the LED ring, dashboard and graph.</small></label>
             <input id="zone-cold-color" class="zone-color-picker" type="color" x-model="draft.zone_cold_color" :class="{ changed: changed('zone_cold_color') }">

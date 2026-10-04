@@ -32,6 +32,13 @@ const DEFAULT_BREATHING_EXPONENT = 1.0;
 // Colours are saved as #RRGGBB and shared with the physical LED ring.
 const ZONE_ORDER = ['cold', 'optimal', 'hot'];
 const DEFAULT_ZONE_COLORS = { cold: '#003cff', optimal: '#ff3700', hot: '#ff0000' };
+// Presets only fill the existing draft colour fields; no extra saved setting.
+const ZONE_THEMES = [
+  { id: 'classic', name: 'Classic', colors: ['#003cff', '#ff3700', '#ff0000'] },
+  { id: 'ember', name: 'Ember', colors: ['#547ca6', '#f3b54a', '#e85a24'] },
+  { id: 'forest', name: 'Forest', colors: ['#526780', '#32845a', '#cb542e'] },
+  { id: 'contrast', name: 'High contrast', colors: ['#0072b2', '#f0e442', '#d55e00'] },
+];
 function zoneColor(zoneName, settings = {}) {
   const zone = ZONE_ORDER.includes(zoneName) ? zoneName : 'cold';
   const value = settings[`zone_${zone}_color`];
@@ -79,6 +86,9 @@ function app() {
   return {
     view: 'dashboard',
     sheetOpen: false,
+    themeMenuOpen: false,
+    ZONE_THEMES,
+    ZONE_ORDER,
     toast: '',
     toastTimer: null,
 
@@ -207,11 +217,25 @@ function app() {
 
     openSettings() {
       this.draft = { ...this.settings };
+      this.themeMenuOpen = false;
       this.view = 'settings';
     },
 
     closeSettings() {
+      this.themeMenuOpen = false;
       this.view = 'dashboard';
+    },
+
+    get zoneTheme() {
+      return ZONE_THEMES.find(theme => ZONE_ORDER.every((zone, i) =>
+        (this.draft[`zone_${zone}_color`] || '').toLowerCase() === theme.colors[i])) || null;
+    },
+
+    applyZoneTheme(id) {
+      const theme = ZONE_THEMES.find(theme => theme.id === id);
+      if (!theme) return;
+      ZONE_ORDER.forEach((zone, i) => { this.draft[`zone_${zone}_color`] = theme.colors[i]; });
+      this.themeMenuOpen = false;
     },
 
     changed(key) {
