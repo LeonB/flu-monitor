@@ -95,14 +95,15 @@ curl http://flu-monitor.local/api/wifi       # live SSID/BSSID/channel/RSSI, not
 curl http://flu-monitor.local/api/settings
 curl -X POST http://flu-monitor.local/api/settings \
   -H "Content-Type: application/json" \
-  -d '{"log_heartbeat_min":15,"zone_cold_max_c":150,"zone_optimal_max_c":280,"fast_rise_c_per_min":20,"thermocouple_deadband_c":5,"google_sheets_webhook_url":"","google_sheets_secret":"","idle_pulse_period_ms":8000,"fast_pulse_period_ms":1400,"rate_deadband_c_per_min":3,"color_transition_exponent":3}'
+  -d '{"log_heartbeat_min":15,"zone_cold_max_c":150,"zone_optimal_max_c":280,"fast_rise_c_per_min":20,"thermocouple_deadband_c":5,"google_sheets_webhook_url":"","google_sheets_secret":"","idle_pulse_period_ms":8000,"fast_pulse_period_ms":1400,"rate_deadband_c_per_min":3,"color_transition_exponent":3,"zone_cold_color":"#003cff","zone_optimal_color":"#ff3700","zone_hot_color":"#ff0000"}'
 ```
 
 `POST /api/settings` replaces the whole settings object (no partial/PATCH
 semantics) and validates before persisting — an invalid payload (e.g.
 `zone_cold_max_c >= zone_optimal_max_c`) gets a `400` and leaves the stored
 settings untouched. On success, it also broadcasts `{"type":"settings_changed"}`
-over `/ws` (see below).
+over `/ws` (see below). The three `zone_*_color` fields accept exactly
+`#RRGGBB`; older clients can omit them to preserve the saved colours.
 
 ## Woodstove event logging (once connected to WiFi)
 
@@ -139,7 +140,10 @@ embedded HTML/Alpine.js page (`main/web_ui/`, no build step, REST-polled
 every 5s — WS is reserved for the `flu-display` link, not this human-facing
 UI). The event-log bottom sheet uses the same `GET /api/events`/
 `POST /api/event` as any other client. Settings edits use a draft/Save-bar
-pattern (nothing is sent until you tap Save).
+pattern (nothing is sent until you tap Save). Cold, Optimal, and Hot colour
+pickers control the dashboard glow, graph bands, and physical LED ring.
+Defaults are blue (`#003cff`), amber (`#ff3700`), and red (`#ff0000`).
+Both devices need this firmware update for the ring to use the saved palette.
 
 ```sh
 curl http://flu-monitor.local/api/history

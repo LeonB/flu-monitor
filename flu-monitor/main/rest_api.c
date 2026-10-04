@@ -194,6 +194,9 @@ static void settings_to_json(const settings_t *s, cJSON *root) {
   cJSON_AddNumberToObject(root, "fast_pulse_period_ms", s->fast_pulse_period_ms);
   cJSON_AddNumberToObject(root, "rate_deadband_c_per_min", round_to(s->rate_deadband_c_per_min, 0.1));
   cJSON_AddNumberToObject(root, "color_transition_exponent", round_to(s->color_transition_exponent, 0.1));
+  cJSON_AddStringToObject(root, "zone_cold_color", s->zone_cold_color);
+  cJSON_AddStringToObject(root, "zone_optimal_color", s->zone_optimal_color);
+  cJSON_AddStringToObject(root, "zone_hot_color", s->zone_hot_color);
 }
 
 static esp_err_t settings_get_handler(httpd_req_t *req) {
@@ -220,14 +223,15 @@ static const httpd_uri_t settings_get_uri = {
 // Full-replace semantics, matching the planned web UI's single sticky Save
 // bar (no per-field PATCH to preserve) -- a field missing from the request
 // body becomes that field's zero value (numeric) or empty string, not
-// "leave whatever was there before".
+// "leave whatever was there before". Colours are the compatibility exception:
+// older clients may omit them, retaining the saved palette.
 static esp_err_t settings_post_handler(httpd_req_t *req) {
-  if (req->content_len <= 0 || req->content_len >= 512) {
+  if (req->content_len <= 0 || req->content_len >= 1024) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Request body too large");
     return ESP_FAIL;
   }
 
-  char body[512] = {0};
+  char body[1024] = {0};
   int received = 0;
   while (received < req->content_len) {
     int ret = httpd_req_recv(req, body + received, req->content_len - received);
@@ -288,6 +292,25 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
   item = cJSON_GetObjectItem(root, "color_transition_exponent");
   s.color_transition_exponent = cJSON_IsNumber(item) ? (float) item->valuedouble : 0.0f;
 
+  // Older API clients omit colours: retain those already saved. Explicit
+  // values must be exactly #RRGGBB; never truncate invalid input into validity.
+  settings_t current;
+  settings_get(&current);
+  const char *keys[] = {"zone_cold_color", "zone_optimal_color", "zone_hot_color"};
+  char *colors[] = {s.zone_cold_color, s.zone_optimal_color, s.zone_hot_color};
+  const char *previous[] = {current.zone_cold_color, current.zone_optimal_color, current.zone_hot_color};
+  for (int i = 0; i < 3; i++) {
+    item = cJSON_GetObjectItemCaseSensitive(root, keys[i]);
+    if (item == NULL) {
+      memcpy(colors[i], previous[i], 8);
+    } else if (cJSON_IsString(item) && strlen(item->valuestring) == 7) {
+      memcpy(colors[i], item->valuestring, 8);
+    } else {
+      cJSON_Delete(root);
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Colours must be #RRGGBB");
+      return ESP_FAIL;
+    }
+  }
   cJSON_Delete(root);
 
   esp_err_t err = settings_set(&s);

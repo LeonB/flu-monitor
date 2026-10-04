@@ -716,3 +716,31 @@ endpoint rather than past it.
   port open exclusively** — a concurrent `idf.py flash`/`ota_flash.sh` from
   another shell will fail with "Resource temporarily unavailable" until it's
   stopped.
+
+
+## Zone colours are saved settings
+
+`zone_cold_color`, `zone_optimal_color`, and `zone_hot_color` are eight-byte
+NUL-terminated `#RRGGBB` strings appended to `settings_t`. The prior NVS blob
+layout is its exact prefix: load it over default-initialized settings and
+accept the old prefix length as well as the new full size. This preserves
+thresholds, logging credentials, and pulse tuning rather than resetting
+them when the palette fields are introduced. Future layout changes must
+retain or explicitly migrate this prefix; do not silently reinterpret it.
+
+The settings page uses native colour pickers with the existing draft, Save,
+and Undo flow. Defaults match the physical ring's blue/amber/red. Saved
+colours drive the glow, status dot, and tinted graph bands. The LED firmware
+fetches them through the existing settings_changed notification and snapshots
+the palette under its rendering lock. Older sidecars omit these fields, so
+the ring retains its current palette; older API clients can omit colours
+without resetting them. Explicit invalid colours are rejected.
+
+Both settings POST and the display's HTTP response buffer allow 1024 bytes
+so the palette plus maximum-length logging URL/secret fit. Host checks cover
+legacy blob migration, persistence/validation, and app save/undo/reload. Both
+ESP-IDF builds pass. Chrome visual QA against the local mock server confirms
+the native pickers, Save/Undo, reload persistence, and graph palette, with no
+console warnings/errors. Both devices were subsequently updated on hardware; the monitor retained
+all previous settings and the display fetched settings and real readings.
+Physical colour appearance remains for the user to judge.

@@ -30,11 +30,17 @@ typedef struct {
   uint16_t fast_pulse_period_ms;
   float rate_deadband_c_per_min;
   float color_transition_exponent;
+  // CSS-compatible #RRGGBB, shared by the web UI and LED ring. Append only:
+  // settings_init migrates the previous NVS layout without losing settings.
+  char zone_cold_color[8];
+  char zone_optimal_color[8];
+  char zone_hot_color[8];
 } settings_t;
 
 // Loads settings from NVS, seeding config.h's compile-time defaults if NVS
 // doesn't have a usable copy yet (first boot, or a corrupted/old-layout
-// entry). Call once at startup before settings_get()/settings_set() are used
+// entry). The preceding layout migrates with default colours, preserving
+// all existing values. Call once at startup before settings_get()/settings_set() are used
 // anywhere else.
 void settings_init(void);
 

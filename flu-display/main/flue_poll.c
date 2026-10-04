@@ -53,7 +53,7 @@ static const char *TAG = "flue_poll";
 
 #define HTTP_TIMEOUT_MS         5000
 #define URL_BUF_SIZE            64
-#define HTTP_RESPONSE_BUF_SIZE  512  // must comfortably fit a settings response with a full webhook URL + secret
+#define HTTP_RESPONSE_BUF_SIZE  1024  // must comfortably fit a settings response with a full webhook URL + secret
 
 #define WS_MSG_BUF_SIZE  512
 
@@ -132,6 +132,22 @@ static bool resolve_sidecar(esp_ip4_addr_t *out_addr) {
 // comment for why this matters (a threshold changed via the sidecar's REST
 // API should actually move the ring's gradient, not just its own
 // classification).
+// Older sidecars omit colours. Keep the ring defaults until all three are present.
+static bool parse_zone_color(const cJSON *item, uint32_t *out) {
+  if (!cJSON_IsString(item) || strlen(item->valuestring) != 7 || item->valuestring[0] != '#') return false;
+  uint32_t value = 0;
+  for (int i = 1; i <= 6; i++) {
+    char c = item->valuestring[i];
+    int digit = c >= '0' && c <= '9' ? c - '0' :
+                c >= 'a' && c <= 'f' ? c - 'a' + 10 :
+                c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+    if (digit < 0) return false;
+    value = (value << 4) | (uint32_t) digit;
+  }
+  *out = value;
+  return true;
+}
+
 static void fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
   char url[URL_BUF_SIZE];
   snprintf(url, sizeof(url), "http://" IPSTR "/api/settings", IP2STR(ip));
@@ -189,6 +205,13 @@ static void fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
                          (float) fast_rise_c_per_min->valuedouble, (float) rate_deadband_c_per_min->valuedouble,
                          (uint32_t) idle_pulse_period_ms->valuedouble, (uint32_t) fast_pulse_period_ms->valuedouble,
                          (float) color_transition_exponent->valuedouble);
+  uint32_t cold, optimal, hot;
+  if (parse_zone_color(cJSON_GetObjectItemCaseSensitive(root, "zone_cold_color"), &cold) &&
+      parse_zone_color(cJSON_GetObjectItemCaseSensitive(root, "zone_optimal_color"), &optimal) &&
+      parse_zone_color(cJSON_GetObjectItemCaseSensitive(root, "zone_hot_color"), &hot)) {
+    led_display_set_zone_colors(cold, optimal, hot);
+  }
+
 
   cJSON_Delete(root);
 }

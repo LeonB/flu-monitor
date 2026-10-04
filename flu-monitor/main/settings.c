@@ -1,6 +1,7 @@
 #include "settings.h"
 
 #include <string.h>
+#include <stddef.h>
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -31,9 +32,22 @@ static void set_defaults(settings_t *s) {
   s->fast_pulse_period_ms = DEFAULT_FAST_PULSE_PERIOD_MS;
   s->rate_deadband_c_per_min = DEFAULT_RATE_DEADBAND_C_PER_MIN;
   s->color_transition_exponent = DEFAULT_COLOR_TRANSITION_EXPONENT;
+  strcpy(s->zone_cold_color, "#003cff");
+  strcpy(s->zone_optimal_color, "#ff3700");
+  strcpy(s->zone_hot_color, "#ff0000");
+}
+
+static bool valid_color(const char color[8]) {
+  if (color[0] != '#' || color[7] != '\0') return false;
+  for (int i = 1; i <= 6; i++) {
+    char c = color[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) return false;
+  }
+  return true;
 }
 
 static bool validate(const settings_t *s) {
+  if (!valid_color(s->zone_cold_color) || !valid_color(s->zone_optimal_color) || !valid_color(s->zone_hot_color)) return false;
   if (s->zone_cold_max_c >= s->zone_optimal_max_c) {
     return false;
   }
@@ -66,11 +80,12 @@ void settings_init(void) {
 
   nvs_handle_t handle;
   if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) == ESP_OK) {
-    settings_t from_nvs;
+    settings_t from_nvs = loaded;
     size_t len = sizeof(from_nvs);
-    // The length/validate checks also cover a future struct-layout change
-    // silently corrupting old NVS bytes into nonsense values.
-    if (nvs_get_blob(handle, NVS_KEY_BLOB, &from_nvs, &len) == ESP_OK && len == sizeof(from_nvs) &&
+    // The old blob is the unchanged prefix ending before the new colours.
+    // Seed first so an old blob retains all settings and gets default colours.
+    if (nvs_get_blob(handle, NVS_KEY_BLOB, &from_nvs, &len) == ESP_OK &&
+        (len == sizeof(from_nvs) || len == offsetof(settings_t, zone_cold_color)) &&
         validate(&from_nvs)) {
       loaded = from_nvs;
       ESP_LOGI(TAG, "Loaded settings from NVS");

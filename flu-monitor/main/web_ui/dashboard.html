@@ -74,6 +74,8 @@
   .field-row + .field-row { border-top: 1px solid var(--color-divider); }
   .field-row .field-label { flex: 1; font-size: 15px; font-weight: 600; }
   .stepper { display: flex; align-items: center; border-radius: 999px; background: var(--color-bg); }
+  .zone-color-picker { width: 64px; height: 44px; padding: 4px; border: 1px solid var(--color-divider); border-radius: 12px; background: var(--color-bg); cursor: pointer; }
+  .zone-color-picker.changed { outline: 2px solid var(--color-accent); }
   .stepper.changed { box-shadow: 0 0 0 2px var(--color-accent); }
   .stepper button { width: 40px; height: 40px; border-radius: 50%; border: none; background: none; font-size: 18px; font-family: inherit; cursor: pointer; color: var(--color-text); }
   .stepper .stepper-value { min-width: 68px; text-align: center; font-weight: 700; font-size: 14px; }
@@ -228,6 +230,24 @@
               <span class="stepper-value" x-text="Math.round(draft.fast_rise_c_per_min) + ' °/min'"></span>
               <button @click="step('fast_rise_c_per_min', 1)">+</button>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <h6>The zone</h6>
+        <div class="field-list">
+          <div class="field-row">
+            <label class="field-label" for="zone-cold-color">Cold colour</label>
+            <input id="zone-cold-color" class="zone-color-picker" type="color" x-model="draft.zone_cold_color" :class="{ changed: changed('zone_cold_color') }">
+          </div>
+          <div class="field-row">
+            <label class="field-label" for="zone-optimal-color">Optimal colour</label>
+            <input id="zone-optimal-color" class="zone-color-picker" type="color" x-model="draft.zone_optimal_color" :class="{ changed: changed('zone_optimal_color') }">
+          </div>
+          <div class="field-row">
+            <label class="field-label" for="zone-hot-color">Hot colour</label>
+            <input id="zone-hot-color" class="zone-color-picker" type="color" x-model="draft.zone_hot_color" :class="{ changed: changed('zone_hot_color') }">
           </div>
         </div>
       </div>

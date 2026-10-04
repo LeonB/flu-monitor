@@ -33,6 +33,9 @@ void led_display_set_tuning(float zone_cold_max_c, float zone_optimal_max_c, flo
                             float rate_deadband_c_per_min, uint32_t idle_pulse_period_ms,
                             uint32_t fast_pulse_period_ms, float color_transition_exponent);
 
+// Updates the three zone colours (packed 0xRRGGBB). Thread-safe.
+void led_display_set_zone_colors(uint32_t cold, uint32_t optimal, uint32_t hot);
+
 #ifdef __cplusplus
 }
 #endif

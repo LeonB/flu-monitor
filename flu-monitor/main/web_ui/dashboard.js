@@ -28,31 +28,24 @@ const DEFAULT_FAST_PULSE_PERIOD_MS = 1400;
 const DEFAULT_RATE_DEADBAND_C_PER_MIN = 3.0;
 const DEFAULT_COLOR_TRANSITION_EXPONENT = 3.0;
 
-// Zone colors: the physical LED ring uses saturated blue/amber/red (tuned
-// for a diffused physical light), but this design system has no blue token
-// at all -- reusing its own accent/accent-2/neutral families instead keeps
-// the web UI visually consistent with the rest of the design (captive
-// portal, settings mockups) rather than introducing a clashing foreign hue.
-// Keyed by name, not number: GET /api/reading serializes thermocouple_zone
-// as a string ("cold"/"optimal"/"hot"/"unknown") via
-// thermocouple_zone_name(), unlike GET /api/history's compact per-sample
-// arrays, which use the raw numeric enum for payload size (see
-// rest_api.c) -- these are genuinely two different wire representations
-// for the same underlying zone, not a bug to unify.
+// Colours are saved as #RRGGBB and shared with the physical LED ring.
 const ZONE_ORDER = ['cold', 'optimal', 'hot'];
-const ZONE_COLORS = {
-  cold: { bg: [192, 182, 165], text: [46, 43, 37] },     // neutral-400 / neutral-900
-  optimal: { bg: [174, 191, 146], text: [39, 46, 27] },  // accent-2-400 / accent-2-900
-  hot: { bg: [246, 160, 107], text: [64, 35, 16] },      // accent-400 / accent-900
-};
-function zoneColor(zoneName) {
-  return ZONE_COLORS[zoneName] || ZONE_COLORS.cold;
+const DEFAULT_ZONE_COLORS = { cold: '#003cff', optimal: '#ff3700', hot: '#ff0000' };
+function zoneColor(zoneName, settings = {}) {
+  const zone = ZONE_ORDER.includes(zoneName) ? zoneName : 'cold';
+  const value = settings[`zone_${zone}_color`];
+  const hex = /^#[0-9a-f]{6}$/i.test(value || '') ? value : DEFAULT_ZONE_COLORS[zone];
+  const bg = [1, 3, 5].map((offset) => parseInt(hex.slice(offset, offset + 2), 16));
+  // Pick the higher-contrast text colour using relative luminance.
+  const linear = bg.map((v) => { const c = v / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
+  const luminance = linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+  return { bg, text: luminance > 0.179 ? [0, 0, 0] : [255, 255, 255] };
 }
-function peakZoneColor(zoneName, rate) {
+function peakZoneColor(zoneName, rate, settings) {
   const i = Math.max(0, ZONE_ORDER.indexOf(zoneName));
-  if (rate > 0) return zoneColor(ZONE_ORDER[Math.min(2, i + 1)]);
-  if (rate < 0) return zoneColor(ZONE_ORDER[Math.max(0, i - 1)]);
-  return zoneColor(zoneName);
+  if (rate > 0) return zoneColor(ZONE_ORDER[Math.min(2, i + 1)], settings);
+  if (rate < 0) return zoneColor(ZONE_ORDER[Math.max(0, i - 1)], settings);
+  return zoneColor(zoneName, settings);
 }
 // History graph range picker (see the graph screen's .range-picker) -- all
 // four just slice the same 24h/4min-cadence ring buffer GET /api/history
@@ -121,7 +114,7 @@ function app() {
     },
 
     get currentZoneCss() {
-      return rgbCss(zoneColor(this.reading.thermocouple_zone).bg);
+      return rgbCss(zoneColor(this.reading.thermocouple_zone, this.settings).bg);
     },
 
     async init() {
@@ -141,7 +134,7 @@ function app() {
     async fetchSettings() {
       try {
         const res = await fetch('/api/settings');
-        this.settings = await res.json();
+        this.settings = { ...Object.fromEntries(ZONE_ORDER.map((zone) => [`zone_${zone}_color`, DEFAULT_ZONE_COLORS[zone]])), ...await res.json() };
         this.draft = { ...this.settings };
       } catch (e) { /* keeps whatever was loaded before, if anything */ }
     },
@@ -287,8 +280,8 @@ function app() {
 
       if (valid) {
         const zone = this.reading.thermocouple_zone;
-        const trough = zoneColor(zone);
-        const peak = peakZoneColor(zone, rate);
+        const trough = zoneColor(zone, this.settings);
+        const peak = peakZoneColor(zone, rate, this.settings);
         const colorT = Math.pow(envelope, colorExponent);
         const bg = lerpRgb(trough.bg, peak.bg, colorT);
         const text = lerpRgb(trough.text, peak.text, colorT);
@@ -351,7 +344,7 @@ function app() {
       const xOf = (ageS) => W - (clamp(ageS, 0, maxAgeS) / maxAgeS) * W;
 
       const ZONE_NAME = { 1: 'cold', 2: 'optimal', 3: 'hot' };
-      const ZONE_FILL = { 1: 'var(--color-neutral-200)', 2: 'var(--color-accent-2-200)', 3: 'var(--color-accent-200)' };
+      const ZONE_FILL = Object.fromEntries([1, 2, 3].map((n) => [n, rgbCss(lerpRgb(zoneColor(ZONE_NAME[n], this.settings).bg, [255, 255, 255], 0.85))]));
       let svg = '';
       // Zone bands, cold at the bottom
       const bandTop = [yOf(yMax), yOf(optimalMax), yOf(coldMax)];
@@ -378,7 +371,7 @@ function app() {
 
       const last = plotSamples[plotSamples.length - 1];
       const lastZoneName = this.reading.thermocouple_ok ? this.reading.thermocouple_zone : ZONE_NAME[last[3]];
-      const lastColor = rgbCss(zoneColor(lastZoneName).bg);
+      const lastColor = rgbCss(zoneColor(lastZoneName, this.settings).bg);
       svg += `<circle cx="${xOf(last[0]).toFixed(1)}" cy="${yOf(last[1]).toFixed(1)}" r="6" fill="${lastColor}" stroke="var(--color-bg)" stroke-width="2.5"></circle>`;
 
       for (const ev of (this.history.events || [])) {

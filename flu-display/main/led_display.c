@@ -38,9 +38,7 @@ typedef enum {
   ZONE_HOT = 2,
 } zone_t;
 
-static const rgb_t COLOR_COLD = {0, 60, 255};
-static const rgb_t COLOR_OPTIMAL = {255, 55, 0};
-static const rgb_t COLOR_HOT = {255, 0, 0};
+static rgb_t s_zone_colors[3] = {{0, 60, 255}, {255, 55, 0}, {255, 0, 0}};
 
 static float lerpf(float a, float b, float t) {
   return a + (b - a) * t;
@@ -72,20 +70,6 @@ static zone_t temperature_to_zone(float temperature_c, float zone_cold_max_c, fl
   return ZONE_HOT;
 }
 
-static rgb_t zone_color(zone_t zone) {
-  switch (zone) {
-    case ZONE_COLD: return COLOR_COLD;
-    case ZONE_OPTIMAL: return COLOR_OPTIMAL;
-    default: return COLOR_HOT;
-  }
-}
-
-// No blending between zones -- solid blue/amber/red only, picked straight
-// off the same thresholds the sidecar uses to classify its own zone.
-static rgb_t temperature_to_color(float temperature_c, float zone_cold_max_c, float zone_optimal_max_c) {
-  return zone_color(temperature_to_zone(temperature_c, zone_cold_max_c, zone_optimal_max_c));
-}
-
 // The pure color of the *next* zone in the trend direction -- used only for
 // the pulse's bright-peak hue, so a heating/cooling reading pulses toward
 // where it's headed. Already at the hottest/coldest zone and still trending
@@ -93,15 +77,15 @@ static rgb_t temperature_to_color(float temperature_c, float zone_cold_max_c, fl
 // shift). A stable reading (rate 0) also gets no shift, same color as the
 // trough.
 static rgb_t trend_neighbor_color(float temperature_c, float rate_c_per_min, float zone_cold_max_c,
-                                  float zone_optimal_max_c) {
+                                  float zone_optimal_max_c, const rgb_t colors[3]) {
   zone_t zone = temperature_to_zone(temperature_c, zone_cold_max_c, zone_optimal_max_c);
   if (rate_c_per_min > 0.0f) {
-    return zone_color(zone < ZONE_HOT ? zone + 1 : zone);
+    return colors[zone < ZONE_HOT ? zone + 1 : zone];
   }
   if (rate_c_per_min < 0.0f) {
-    return zone_color(zone > ZONE_COLD ? zone - 1 : zone);
+    return colors[zone > ZONE_COLD ? zone - 1 : zone];
   }
-  return zone_color(zone);
+  return colors[zone];
 }
 
 // Maps a rate of rise to a breathing-pulse period: idle pace normally,
@@ -142,6 +126,7 @@ static void render_task(void *arg) {
 
     float zone_cold_max_c, zone_optimal_max_c, fast_rise_c_per_min, rate_deadband_c_per_min, color_transition_exponent;
     uint32_t idle_pulse_period_ms, fast_pulse_period_ms;
+    rgb_t colors[3];
     portENTER_CRITICAL(&s_threshold_lock);
     zone_cold_max_c = s_zone_cold_max_c;
     zone_optimal_max_c = s_zone_optimal_max_c;
@@ -150,6 +135,7 @@ static void render_task(void *arg) {
     idle_pulse_period_ms = s_idle_pulse_period_ms;
     fast_pulse_period_ms = s_fast_pulse_period_ms;
     color_transition_exponent = s_color_transition_exponent;
+    for (int i = 0; i < 3; i++) colors[i] = s_zone_colors[i];
     portEXIT_CRITICAL(&s_threshold_lock);
 
     if (fabsf(rate_c_per_min) < rate_deadband_c_per_min) {
@@ -173,8 +159,8 @@ static void render_task(void *arg) {
       // to the pure neighboring zone's color in the trend direction. A
       // stable reading (rate 0) has no shift, so it stays one solid color
       // through the whole pulse, same as before this was added.
-      rgb_t trough_color = temperature_to_color(temperature_c, zone_cold_max_c, zone_optimal_max_c);
-      rgb_t peak_color = trend_neighbor_color(temperature_c, rate_c_per_min, zone_cold_max_c, zone_optimal_max_c);
+      rgb_t trough_color = colors[temperature_to_zone(temperature_c, zone_cold_max_c, zone_optimal_max_c)];
+      rgb_t peak_color = trend_neighbor_color(temperature_c, rate_c_per_min, zone_cold_max_c, zone_optimal_max_c, colors);
       float color_t = powf(envelope, color_transition_exponent);
       rgb_t color = lerp_rgb(trough_color, peak_color, color_t);
       uint32_t r = (uint32_t) color.r * brightness / 255;
@@ -239,5 +225,15 @@ void led_display_set_tuning(float zone_cold_max_c, float zone_optimal_max_c, flo
   s_idle_pulse_period_ms = idle_pulse_period_ms;
   s_fast_pulse_period_ms = fast_pulse_period_ms;
   s_color_transition_exponent = color_transition_exponent;
+  portEXIT_CRITICAL(&s_threshold_lock);
+}
+
+// Packed 0xRRGGBB, copied under the same lock as the other rendering settings.
+void led_display_set_zone_colors(uint32_t cold, uint32_t optimal, uint32_t hot) {
+  const uint32_t packed[3] = {cold, optimal, hot};
+  portENTER_CRITICAL(&s_threshold_lock);
+  for (int i = 0; i < 3; i++) {
+    s_zone_colors[i] = (rgb_t) {(packed[i] >> 16) & 255, (packed[i] >> 8) & 255, packed[i] & 255};
+  }
   portEXIT_CRITICAL(&s_threshold_lock);
 }
