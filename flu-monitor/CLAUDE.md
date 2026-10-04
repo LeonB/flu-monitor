@@ -744,3 +744,40 @@ the native pickers, Save/Undo, reload persistence, and graph palette, with no
 console warnings/errors. Both devices were subsequently updated on hardware; the monitor retained
 all previous settings and the display fetched settings and real readings.
 Physical colour appearance remains for the user to judge.
+
+
+## Breathing pulse precision and timing
+
+`flu-display/main/led_display.c` keeps colour interpolation and brightness
+in floating point until one final rounded conversion per 8-bit channel.
+The old path truncated brightness, interpolated colour, and scaled colour
+separately, causing a downward bias and coarse steps near the dim trough.
+This reduces avoidable quantization; it does not add hardware brightness
+resolution or prove physical flicker is eliminated. No dithering or brightness
+floor changes were introduced.
+
+The render loop uses an absolute 30ms FreeRTOS schedule and monotonic elapsed
+time for pulse phase, so LED transmission time is included in the frame
+budget instead of added to the sleep, and scheduling jitter does not stretch
+the pulse period. Every 30s it logs observed FPS, average/minimum/maximum
+frame interval, and refresh failure count. Read those measurements on hardware
+before attributing residual flicker to low frame rate.
+
+
+Hardware verification on 2026-10-04: boot logs identify display on
+`/dev/cu.usbserial-1140` (192.168.1.138) and monitor on
+`/dev/cu.usbserial-5C671828951` (192.168.1.137). Verify these anew before any
+future flash rather than treating this mapping as permanent. Display updated
+over USB after a failed WiFi join put its old firmware into setup mode;
+monitor updated over OTA. All prior monitor settings were compared before
+and after and retained, including logging credentials. Re-saving the unchanged
+settings produced settings_changed and a successful fetch on the display.
+
+With valid thermocouple readings arriving, three consecutive diagnostic
+samples measured 33.9–34.0 FPS, average intervals 29.38–29.49ms, minimum
+intervals 13.43–16.46ms, maximum intervals 40.76–45.20ms, zero refresh failures.
+There is scheduling jitter, but no sustained low frame rate in this test.
+Physical flicker improvement has not been judged visually. Initial mDNS
+queries and a subsequent HTTP/WS connection timed out; restarting the
+display after the monitor was running recovered resolution and subscription.
+That existing startup/network flakiness remains a separate issue.

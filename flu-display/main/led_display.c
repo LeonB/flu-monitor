@@ -4,6 +4,7 @@
 
 #include "config.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "led_strip.h"
@@ -50,13 +51,11 @@ static float clampf(float v, float lo, float hi) {
   return v;
 }
 
-static rgb_t lerp_rgb(rgb_t a, rgb_t b, float t) {
-  rgb_t out = {
-      (uint8_t) lerpf(a.r, b.r, t),
-      (uint8_t) lerpf(a.g, b.g, t),
-      (uint8_t) lerpf(a.b, b.b, t),
-  };
-  return out;
+// Preserve fractional colour and brightness until the final 8-bit output.
+// Rounding once avoids the downward bias from three successive truncations.
+static uint8_t scaled_channel(uint8_t trough, uint8_t peak, float color_t, float brightness) {
+  float value = lerpf((float) trough, (float) peak, color_t) * brightness / 255.0f;
+  return (uint8_t) lroundf(clampf(value, 0.0f, 255.0f));
 }
 
 // Matches the sidecar's own "Thermocouple Zone" classification (see
@@ -112,9 +111,24 @@ static float breath_envelope(double cycle_pos) {
 }
 
 static void render_task(void *arg) {
-  double cycle_pos = 0.0;  // 0..1 fraction of the way through the current pulse cycle
+  (void) arg;
+  double cycle_pos = 0.0;  // 0..1 fraction of the current pulse cycle
+  TickType_t next_frame = xTaskGetTickCount();
+  int64_t previous_frame_us = 0;
+  int64_t stats_start_us = esp_timer_get_time();
+  int64_t interval_total_us = 0, interval_min_us = INT64_MAX, interval_max_us = 0;
+  uint32_t frames = 0, refresh_failures = 0;
 
   while (true) {
+    int64_t now_us = esp_timer_get_time();
+    int64_t elapsed_us = previous_frame_us ? now_us - previous_frame_us : 0;
+    previous_frame_us = now_us;
+    if (elapsed_us > 0) {
+      interval_total_us += elapsed_us;
+      if (elapsed_us < interval_min_us) interval_min_us = elapsed_us;
+      if (elapsed_us > interval_max_us) interval_max_us = elapsed_us;
+      frames++;
+    }
     bool valid;
     float temperature_c, rate_c_per_min;
 
@@ -145,13 +159,12 @@ static void render_task(void *arg) {
     uint32_t period_ms = valid ? rate_to_pulse_period_ms(rate_c_per_min, fast_rise_c_per_min, idle_pulse_period_ms,
                                                           fast_pulse_period_ms)
                                 : idle_pulse_period_ms;
-    cycle_pos += (double) LED_RENDER_TICK_MS / (double) period_ms;
-    if (cycle_pos > 1.0) {
-      cycle_pos -= 1.0;
-    }
+    // Real elapsed time keeps the pulse period correct through scheduling
+    // jitter and LED transmission time, instead of assuming every frame is 30ms.
+    cycle_pos = fmod(cycle_pos + (double) elapsed_us / ((double) period_ms * 1000.0), 1.0);
 
-    float envelope = breath_envelope(cycle_pos);  // 0..1
-    uint8_t brightness = (uint8_t) lerpf((float) PULSE_BRIGHTNESS_MIN, (float) PULSE_BRIGHTNESS_MAX, envelope);
+    float envelope = clampf(breath_envelope(cycle_pos), 0.0f, 1.0f);
+    float brightness = lerpf((float) PULSE_BRIGHTNESS_MIN, (float) PULSE_BRIGHTNESS_MAX, envelope);
 
     if (valid) {
       // The dim trough always shows the true current-zone color, so the
@@ -162,10 +175,9 @@ static void render_task(void *arg) {
       rgb_t trough_color = colors[temperature_to_zone(temperature_c, zone_cold_max_c, zone_optimal_max_c)];
       rgb_t peak_color = trend_neighbor_color(temperature_c, rate_c_per_min, zone_cold_max_c, zone_optimal_max_c, colors);
       float color_t = powf(envelope, color_transition_exponent);
-      rgb_t color = lerp_rgb(trough_color, peak_color, color_t);
-      uint32_t r = (uint32_t) color.r * brightness / 255;
-      uint32_t g = (uint32_t) color.g * brightness / 255;
-      uint32_t b = (uint32_t) color.b * brightness / 255;
+      uint8_t r = scaled_channel(trough_color.r, peak_color.r, color_t, brightness);
+      uint8_t g = scaled_channel(trough_color.g, peak_color.g, color_t, brightness);
+      uint8_t b = scaled_channel(trough_color.b, peak_color.b, color_t, brightness);
       for (int i = 0; i < LED_COUNT; i++) {
         led_strip_set_pixel_rgbw(s_strip, i, r, g, b, 0);
       }
@@ -173,12 +185,32 @@ static void render_task(void *arg) {
       // Neutral "no data yet" state: pulse the warm-white channel only, so
       // it reads as distinctly different from any real temperature color.
       for (int i = 0; i < LED_COUNT; i++) {
-        led_strip_set_pixel_rgbw(s_strip, i, 0, 0, 0, brightness);
+        led_strip_set_pixel_rgbw(s_strip, i, 0, 0, 0, (uint8_t) lroundf(brightness));
       }
     }
-    led_strip_refresh(s_strip);
+    if (led_strip_refresh(s_strip) != ESP_OK) refresh_failures++;
 
-    vTaskDelay(pdMS_TO_TICKS(LED_RENDER_TICK_MS));
+    // A compact, infrequent diagnostic lets a serial log distinguish actual
+    // dropped frames from the LEDs' remaining 8-bit brightness steps.
+    if (now_us - stats_start_us >= 30000000 && frames > 0) {
+      ESP_LOGI(TAG, "LED frames: %.1f fps, interval avg %.2f/min %.2f/max %.2f ms, refresh failures %lu",
+               (double) frames * 1000000.0 / (double) interval_total_us,
+               (double) interval_total_us / (double) frames / 1000.0,
+               (double) interval_min_us / 1000.0, (double) interval_max_us / 1000.0,
+               (unsigned long) refresh_failures);
+      stats_start_us = now_us;
+      interval_total_us = 0;
+      interval_min_us = INT64_MAX;
+      interval_max_us = 0;
+      frames = 0;
+      refresh_failures = 0;
+    }
+
+    // Absolute schedule includes render/transmit time rather than adding it
+    // to the delay. If a frame overruns, resume from now instead of bursting.
+    if (xTaskDelayUntil(&next_frame, pdMS_TO_TICKS(LED_RENDER_TICK_MS)) == pdFALSE) {
+      next_frame = xTaskGetTickCount();
+    }
   }
 }
 
