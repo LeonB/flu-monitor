@@ -37,6 +37,8 @@ static void set_defaults(settings_t *s) {
   strcpy(s->zone_optimal_color, "#ff3700");
   strcpy(s->zone_hot_color, "#ff0000");
   s->breathing_exponent = DEFAULT_BREATHING_EXPONENT;
+  s->minimum_brightness = DEFAULT_MINIMUM_BRIGHTNESS;
+  s->maximum_brightness = DEFAULT_MAXIMUM_BRIGHTNESS;
 }
 
 static bool valid_color(const char color[8]) {
@@ -49,6 +51,7 @@ static bool valid_color(const char color[8]) {
 }
 
 static bool validate(const settings_t *s) {
+  if (s->maximum_brightness > 255 || s->minimum_brightness > s->maximum_brightness) return false;
   if (!isfinite(s->breathing_exponent) || s->breathing_exponent < 0.3f || s->breathing_exponent > 3.0f) return false;
   if (!valid_color(s->zone_cold_color) || !valid_color(s->zone_optimal_color) || !valid_color(s->zone_hot_color)) return false;
   if (s->zone_cold_max_c >= s->zone_optimal_max_c) {
@@ -85,11 +88,12 @@ void settings_init(void) {
   if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) == ESP_OK) {
     settings_t from_nvs = loaded;
     size_t len = sizeof(from_nvs);
-    // Both earlier layouts are unchanged prefixes (before colours, or before
-    // breathing shape). Seed missing tail fields while retaining old values.
+    // Earlier layouts are unchanged prefixes (before colours, shape, or
+    // minimum brightness). Seed missing tail fields while retaining old values.
     if (nvs_get_blob(handle, NVS_KEY_BLOB, &from_nvs, &len) == ESP_OK &&
         (len == sizeof(from_nvs) || len == offsetof(settings_t, zone_cold_color) ||
-         len == offsetof(settings_t, breathing_exponent)) &&
+         len == offsetof(settings_t, breathing_exponent) ||
+         len == offsetof(settings_t, maximum_brightness)) &&
         validate(&from_nvs)) {
       loaded = from_nvs;
       ESP_LOGI(TAG, "Loaded settings from NVS");

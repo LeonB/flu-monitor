@@ -135,7 +135,7 @@ function app() {
     async fetchSettings() {
       try {
         const res = await fetch('/api/settings');
-        this.settings = { breathing_exponent: DEFAULT_BREATHING_EXPONENT, ...Object.fromEntries(ZONE_ORDER.map((zone) => [`zone_${zone}_color`, DEFAULT_ZONE_COLORS[zone]])), ...await res.json() };
+        this.settings = { minimum_brightness: 20, maximum_brightness: 255, breathing_exponent: DEFAULT_BREATHING_EXPONENT, ...Object.fromEntries(ZONE_ORDER.map((zone) => [`zone_${zone}_color`, DEFAULT_ZONE_COLORS[zone]])), ...await res.json() };
         this.draft = { ...this.settings };
       } catch (e) { /* keeps whatever was loaded before, if anything */ }
     },

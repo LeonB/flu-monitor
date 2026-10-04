@@ -806,3 +806,19 @@ live change to 0.7, then restoration to 1.0, alongside real readings and
 complete before opening idf monitor: it resets the board, and resetting a
 pending image before WiFi confirmation can trigger rollback. The first
 display attempt rolled back; retrying with startup time succeeded.
+
+
+## LED brightness limits
+
+`maximum_brightness` and `minimum_brightness` are appended uint32 fields,
+validated as integers with 0 <= minimum <= maximum <= 255. Defaults 20/255
+preserve the previous LED curve. Missing API fields retain saved values;
+older monitors give the display default limits. NVS also accepts the
+breathing-shape-era prefix ending before maximum_brightness. Limits are
+snapshotted under the rendering lock and interpolated with the shaped
+envelope, including the neutral no-data pulse. Colour transitions remain
+independent and the UI halo keeps its screen-specific treatment.
+
+Both firmware builds pass. Host checks cover migration of all previous
+layouts, persistence, equal/off/full bounds and reversed-limit rejection.
+Chrome confirms both steppers, Undo, Save and reload persistence.

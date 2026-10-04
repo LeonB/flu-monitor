@@ -195,6 +195,27 @@ static void fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
   }
 
   // Older sidecars omit the shape field; preserve the original envelope.
+  cJSON *minimum = cJSON_GetObjectItemCaseSensitive(root, "minimum_brightness");
+  double minimum_brightness = minimum == NULL ? 20 : cJSON_IsNumber(minimum) ? minimum->valuedouble : NAN;
+  if (!isfinite(minimum_brightness) || minimum_brightness < 0 || minimum_brightness > 255 ||
+      floor(minimum_brightness) != minimum_brightness) {
+    ESP_LOGW(TAG, "/api/settings minimum brightness invalid");
+    cJSON_Delete(root);
+    return;
+  }
+  cJSON *maximum = cJSON_GetObjectItemCaseSensitive(root, "maximum_brightness");
+  double maximum_brightness = maximum == NULL ? 255 : cJSON_IsNumber(maximum) ? maximum->valuedouble : NAN;
+  if (!isfinite(maximum_brightness) || maximum_brightness < 0 || maximum_brightness > 255 ||
+      floor(maximum_brightness) != maximum_brightness) {
+    ESP_LOGW(TAG, "/api/settings maximum brightness invalid");
+    cJSON_Delete(root);
+    return;
+  }
+  if (minimum_brightness > maximum_brightness) {
+    ESP_LOGW(TAG, "/api/settings brightness limits reversed");
+    cJSON_Delete(root);
+    return;
+  }
   cJSON *shape = cJSON_GetObjectItemCaseSensitive(root, "breathing_exponent");
   float breathing_exponent = shape == NULL ? 1.0f :
                              cJSON_IsNumber(shape) ? (float) shape->valuedouble : NAN;
@@ -207,14 +228,14 @@ static void fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
   ESP_LOGI(TAG,
            "Applying settings: zone_cold_max_c=%.1f zone_optimal_max_c=%.1f fast_rise_c_per_min=%.1f "
            "rate_deadband_c_per_min=%.1f idle_pulse_period_ms=%.0f fast_pulse_period_ms=%.0f "
-           "color_transition_exponent=%.1f breathing_exponent=%.1f",
+           "color_transition_exponent=%.1f breathing_exponent=%.1f minimum_brightness=%.0f maximum_brightness=%.0f",
            zone_cold_max_c->valuedouble, zone_optimal_max_c->valuedouble, fast_rise_c_per_min->valuedouble,
            rate_deadband_c_per_min->valuedouble, idle_pulse_period_ms->valuedouble, fast_pulse_period_ms->valuedouble,
-           color_transition_exponent->valuedouble, (double) breathing_exponent);
+           color_transition_exponent->valuedouble, (double) breathing_exponent, minimum_brightness, maximum_brightness);
   led_display_set_tuning((float) zone_cold_max_c->valuedouble, (float) zone_optimal_max_c->valuedouble,
                          (float) fast_rise_c_per_min->valuedouble, (float) rate_deadband_c_per_min->valuedouble,
                          (uint32_t) idle_pulse_period_ms->valuedouble, (uint32_t) fast_pulse_period_ms->valuedouble,
-                         (float) color_transition_exponent->valuedouble, breathing_exponent);
+                         (float) color_transition_exponent->valuedouble, breathing_exponent, (uint32_t) minimum_brightness, (uint32_t) maximum_brightness);
   uint32_t cold, optimal, hot;
   if (parse_zone_color(cJSON_GetObjectItemCaseSensitive(root, "zone_cold_color"), &cold) &&
       parse_zone_color(cJSON_GetObjectItemCaseSensitive(root, "zone_optimal_color"), &optimal) &&

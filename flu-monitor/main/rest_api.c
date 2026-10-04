@@ -197,6 +197,8 @@ static void settings_to_json(const settings_t *s, cJSON *root) {
   cJSON_AddStringToObject(root, "zone_cold_color", s->zone_cold_color);
   cJSON_AddStringToObject(root, "zone_optimal_color", s->zone_optimal_color);
   cJSON_AddStringToObject(root, "zone_hot_color", s->zone_hot_color);
+  cJSON_AddNumberToObject(root, "maximum_brightness", s->maximum_brightness);
+  cJSON_AddNumberToObject(root, "minimum_brightness", s->minimum_brightness);
   cJSON_AddNumberToObject(root, "breathing_exponent", round_to(s->breathing_exponent, 0.1));
 }
 
@@ -298,6 +300,22 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
   // values must be exactly #RRGGBB; never truncate invalid input into validity.
   settings_t current;
   settings_get(&current);
+  item = cJSON_GetObjectItemCaseSensitive(root, "minimum_brightness");
+  if (item != NULL && (!cJSON_IsNumber(item) || !isfinite(item->valuedouble) ||
+      item->valuedouble < 0 || item->valuedouble > 255 || floor(item->valuedouble) != item->valuedouble)) {
+    cJSON_Delete(root);
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Minimum brightness must be an integer from 0 to 255");
+    return ESP_FAIL;
+  }
+  s.minimum_brightness = item == NULL ? current.minimum_brightness : (uint32_t) item->valuedouble;
+  item = cJSON_GetObjectItemCaseSensitive(root, "maximum_brightness");
+  if (item != NULL && (!cJSON_IsNumber(item) || !isfinite(item->valuedouble) ||
+      item->valuedouble < 0 || item->valuedouble > 255 || floor(item->valuedouble) != item->valuedouble)) {
+    cJSON_Delete(root);
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Maximum brightness must be an integer from 0 to 255");
+    return ESP_FAIL;
+  }
+  s.maximum_brightness = item == NULL ? current.maximum_brightness : (uint32_t) item->valuedouble;
   item = cJSON_GetObjectItemCaseSensitive(root, "breathing_exponent");
   s.breathing_exponent = item == NULL ? current.breathing_exponent :
                         cJSON_IsNumber(item) ? (float) item->valuedouble : NAN;

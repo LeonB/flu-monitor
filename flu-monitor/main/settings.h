@@ -36,6 +36,8 @@ typedef struct {
   char zone_optimal_color[8];
   char zone_hot_color[8];
   float breathing_exponent;  // 0.3..3.0; 1.0 preserves the original envelope
+  uint32_t maximum_brightness; // 0..255, must be >= minimum
+  uint32_t minimum_brightness; // 0..255, LED channel floor
 } settings_t;
 
 // Loads settings from NVS, seeding config.h's compile-time defaults if NVS

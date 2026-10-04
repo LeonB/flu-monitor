@@ -294,6 +294,22 @@
             </div>
           </div>
           <div class="field-row">
+            <span class="field-label">Minimum brightness<small style="display:block;font-size:12px;font-weight:400">LED ring · 0 is off, 255 is full</small></span>
+            <div class="stepper" :class="{ changed: changed('minimum_brightness') }">
+              <button aria-label="Decrease minimum brightness" @click="stepBounded('minimum_brightness', -5, 0, draft.maximum_brightness)">−</button>
+              <span class="stepper-value" x-text="draft.minimum_brightness"></span>
+              <button aria-label="Increase minimum brightness" @click="stepBounded('minimum_brightness', 5, 0, draft.maximum_brightness)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Maximum brightness<small style="display:block;font-size:12px;font-weight:400">LED ring · 0 is off, 255 is full</small></span>
+            <div class="stepper" :class="{ changed: changed('maximum_brightness') }">
+              <button aria-label="Decrease maximum brightness" @click="stepBounded('maximum_brightness', -5, draft.minimum_brightness, 255)">−</button>
+              <span class="stepper-value" x-text="draft.maximum_brightness"></span>
+              <button aria-label="Increase maximum brightness" @click="stepBounded('maximum_brightness', 5, draft.minimum_brightness, 255)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
             <span class="field-label">Breathing shape<small style="display:block;font-size:12px;font-weight:400">Lower: brighter longer · Higher: dimmer longer</small></span>
             <div class="stepper" :class="{ changed: changed('breathing_exponent') }">
               <button aria-label="Decrease breathing shape" @click="stepBreathingShape(-0.1)">−</button>

@@ -31,7 +31,7 @@ void led_display_set_reading(bool valid, float temperature_c, float rate_c_per_m
 // just the zone/rate classification thresholds it originally did.
 void led_display_set_tuning(float zone_cold_max_c, float zone_optimal_max_c, float fast_rise_c_per_min,
                             float rate_deadband_c_per_min, uint32_t idle_pulse_period_ms,
-                            uint32_t fast_pulse_period_ms, float color_transition_exponent, float breathing_exponent);
+                            uint32_t fast_pulse_period_ms, float color_transition_exponent, float breathing_exponent, uint32_t minimum_brightness, uint32_t maximum_brightness);
 
 // Updates the three zone colours (packed 0xRRGGBB). Thread-safe.
 void led_display_set_zone_colors(uint32_t cold, uint32_t optimal, uint32_t hot);
