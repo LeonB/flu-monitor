@@ -57,7 +57,10 @@ static float clampf(float v, float lo, float hi) {
 // Preserve fractional colour and brightness until the final 8-bit output.
 // Rounding once avoids the downward bias from three successive truncations.
 static uint8_t scaled_channel(uint8_t trough, uint8_t peak, float color_t, float brightness) {
-  float value = lerpf((float) trough, (float) peak, color_t) * brightness / 255.0f;
+  // Screen-picked colours need perceptual correction for linear LED PWM.
+  // Correct hue channels before global pulse brightness, preserving its range.
+  float channel = lerpf((float) trough, (float) peak, color_t) / 255.0f;
+  float value = powf(clampf(channel, 0.0f, 1.0f), 2.8f) * brightness;
   return (uint8_t) lroundf(clampf(value, 0.0f, 255.0f));
 }
 

@@ -464,3 +464,15 @@ The original ESP32 has no RMT DMA; do not enable with_dma as a workaround.
 The boot log reports buffer/core to verify allocation. This reduces a
 possible underrun source; electrical signal integrity (level shifting,
 ground, cable and supply) and visual flicker still require confirmation.
+
+
+## LED colour gamma trial
+
+After the RGB matrix swap, user-picked orange appeared white. Hex parsing
+and RGB unpacking preserve the saved channels; rendering now applies
+pow(channel / 255, 2.8) after colour interpolation and before global
+brightness. This follows Adafruit’s NeoPixel gamma starting point, rather
+than a measured panel calibration. Pure primaries and RGB white keep their
+endpoints; breathing limits are not gamma-corrected. Neutral no-data white
+remains unchanged. Appearance must be judged on the panel; do not claim
+the gamma trial proves the cause of a white-looking colour.
