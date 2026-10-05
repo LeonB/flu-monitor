@@ -113,8 +113,12 @@ static float breath_envelope(double cycle_pos) {
   return (raw - kExpSinMin) / (kExpSinMax - kExpSinMin);
 }
 
+static void init_strip(void);
+
 static void render_task(void *arg) {
   (void) arg;
+  // Allocate the RMT interrupt on this task’s core, away from Wi-Fi.
+  init_strip();
   double cycle_pos = 0.0;  // 0..1 fraction of the current pulse cycle
   TickType_t next_frame = xTaskGetTickCount();
   int64_t previous_frame_us = 0;
@@ -224,7 +228,7 @@ static void render_task(void *arg) {
   }
 }
 
-void led_display_init(void) {
+static void init_strip(void) {
   led_strip_config_t strip_config = {
       .strip_gpio_num = LED_GPIO,
       .max_leds = LED_COUNT,
@@ -237,6 +241,8 @@ void led_display_init(void) {
   led_strip_rmt_config_t rmt_config = {
       .clk_src = RMT_CLK_SRC_DEFAULT,
       .resolution_hz = 10 * 1000 * 1000,
+      // Four hardware blocks allow 4x longer between interrupt refills.
+      .mem_block_symbols = 256,
       .flags = {
           .with_dma = false,
       },
@@ -244,8 +250,14 @@ void led_display_init(void) {
   ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &s_strip));
   ESP_ERROR_CHECK(led_strip_clear(s_strip));
 
-  xTaskCreate(render_task, "led_render", 4096, NULL, tskIDLE_PRIORITY + 1, NULL);
-  ESP_LOGI(TAG, "RGB matrix initialized on GPIO%d, %d pixels", LED_GPIO, LED_COUNT);
+  ESP_LOGI(TAG, "RGB matrix initialized on GPIO%d, %d pixels, RMT buffer 256, core %d",
+           LED_GPIO, LED_COUNT, xPortGetCoreID());
+}
+
+void led_display_init(void) {
+  BaseType_t created = xTaskCreatePinnedToCore(render_task, "led_render", 4096, NULL,
+                                            tskIDLE_PRIORITY + 1, NULL, 1);
+  ESP_ERROR_CHECK(created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
 }
 
 void led_display_set_reading(bool valid, float temperature_c, float rate_c_per_min) {

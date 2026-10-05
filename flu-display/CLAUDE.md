@@ -451,3 +451,16 @@ restore LED_MODEL_SK6812 while retaining three-byte GRB. The installed
 led_strip encoder sends a 0.6us high for SK6812 one-bits, versus 0.9us for
 WS2812. A successful refresh and steady FPS do not establish signal integrity
 or correct colours; visual confirmation is still required.
+
+
+## RGB matrix RMT refill stability
+
+Random red flashes on a few pixels persisted with SK6812 timing while the
+monitor reported a cold reading. Increase mem_block_symbols from the
+driver default 64 to 256, extending interrupt refill headroom fourfold.
+Create the RMT channel inside the render task pinned to core 1, so its
+interrupt is allocated there rather than on the Wi-Fi task’s core 0.
+The original ESP32 has no RMT DMA; do not enable with_dma as a workaround.
+The boot log reports buffer/core to verify allocation. This reduces a
+possible underrun source; electrical signal integrity (level shifting,
+ground, cable and supply) and visual flicker still require confirmation.
