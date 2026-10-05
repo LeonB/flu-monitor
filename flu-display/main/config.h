@@ -66,10 +66,10 @@
 // pulse-tuning constants now live in settings").
 #define RATE_DEADBAND_C_PER_MIN 3.0f
 
-// --- Milestone 3: LED ring ---
+// --- LED display: Adafruit 1487 8x8 RGB NeoMatrix ---
 
 #define LED_GPIO                13
-#define LED_COUNT               24
+#define LED_COUNT               64
 
 // Breathing-pulse timing: how long one dim->bright->dim cycle takes at the
 // two ends of the range. Speeds up smoothly toward FAST_PULSE_PERIOD_MS as

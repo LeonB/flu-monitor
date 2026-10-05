@@ -188,13 +188,14 @@ static void render_task(void *arg) {
       uint8_t g = scaled_channel(trough_color.g, peak_color.g, color_t, brightness);
       uint8_t b = scaled_channel(trough_color.b, peak_color.b, color_t, brightness);
       for (int i = 0; i < LED_COUNT; i++) {
-        led_strip_set_pixel_rgbw(s_strip, i, r, g, b, 0);
+        led_strip_set_pixel(s_strip, i, r, g, b);
       }
     } else {
-      // Neutral "no data yet" state: pulse the warm-white channel only, so
-      // it reads as distinctly different from any real temperature color.
+      // RGB matrix has no dedicated white channel: use equal RGB values
+      // for the neutral "no data yet" breathing pulse.
+      uint8_t white = (uint8_t) lroundf(brightness);
       for (int i = 0; i < LED_COUNT; i++) {
-        led_strip_set_pixel_rgbw(s_strip, i, 0, 0, 0, (uint8_t) lroundf(brightness));
+        led_strip_set_pixel(s_strip, i, white, white, white);
       }
     }
     if (led_strip_refresh(s_strip) != ESP_OK) refresh_failures++;
@@ -227,8 +228,8 @@ void led_display_init(void) {
   led_strip_config_t strip_config = {
       .strip_gpio_num = LED_GPIO,
       .max_leds = LED_COUNT,
-      .led_model = LED_MODEL_SK6812,
-      .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRBW,
+      .led_model = LED_MODEL_WS2812,
+      .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
       .flags = {
           .invert_out = false,
       },
@@ -244,7 +245,7 @@ void led_display_init(void) {
   ESP_ERROR_CHECK(led_strip_clear(s_strip));
 
   xTaskCreate(render_task, "led_render", 4096, NULL, tskIDLE_PRIORITY + 1, NULL);
-  ESP_LOGI(TAG, "LED ring initialized on GPIO%d, %d pixels", LED_GPIO, LED_COUNT);
+  ESP_LOGI(TAG, "RGB matrix initialized on GPIO%d, %d pixels", LED_GPIO, LED_COUNT);
 }
 
 void led_display_set_reading(bool valid, float temperature_c, float rate_c_per_min) {

@@ -1,7 +1,7 @@
 # flu-display
 
 Plain ESP-IDF firmware (not ESPHome/Arduino) for a **Lolin D32 Pro** driving a
-24-LED SK6812 RGBW NeoPixel ring, showing the flue temperature reported by the
+64-LED Adafruit NeoPixel NeoMatrix 8x8 RGB (product 1487), showing the flue temperature reported by the
 `flu-monitor` sidecar as a color/pulse gradient.
 
 ## Files
@@ -9,7 +9,7 @@ Plain ESP-IDF firmware (not ESPHome/Arduino) for a **Lolin D32 Pro** driving a
 - `main/` — `main.c` (WiFi + LED wiring), `config.h` (all tunables),
   `flue_poll.c/.h` (subscribes to `flu-monitor`'s WebSocket broadcast and
   fetches its zone/rate settings over REST), `led_display.c/.h` (renders the
-  ring)
+  matrix)
 - `../components/wifi_setup/`, `../components/captive_portal/`,
   `../components/dns_server/` — WiFi credential storage (NVS) and the
   fallback setup access point, with a live test-connect-before-save flow;
@@ -54,8 +54,8 @@ partition layouts -- after that, OTA works going forward.
 
 ## Onboard LED: WiFi status at a glance
 
-`status_led.c` blinks the board's onboard LED (separate from the 24-LED
-ring, which is dedicated to the temperature reading) to reflect the WiFi
+`status_led.c` blinks the board's onboard LED (separate from the 64-LED
+matrix, which is dedicated to the temperature reading) to reflect the WiFi
 connection lifecycle: slow blink while attempting to join stored
 credentials, solid on once connected, fast blink while the setup access
 point / captive portal is active. Since it joins almost instantly whenever
@@ -67,8 +67,21 @@ for the active-low wiring gotcha.
 
 | Function              | Pin/value |
 |-----------------------|-----------|
-| LED ring data (DIN)   | GPIO13 |
-| LED ring model        | 24x SK6812 RGBW |
-| LED ring power        | External 5V supply, **not** off the board's own 3.3V/USB rail |
-| Common ground         | Ring GND, ESP32 GND, and the 5V supply's GND all need to be tied together |
+| LED matrix data (DIN)   | GPIO13 |
+| LED matrix model      | Adafruit 1487, 64x RGB WS2812B/SK6812, GRB order |
+| LED matrix power        | External 5V supply, **not** off the board's own 3.3V/USB rail |
+| Common ground         | Matrix GND, ESP32 GND, and the 5V supply's GND all need to be tied together |
 | Onboard status LED    | GPIO5, wired **active-low** (see `CLAUDE.md`) |
+
+The matrix needs external 5V power sized for the intended brightness.
+Using 60mA per pixel as a conservative full-white estimate gives 3.84A for
+64 pixels; a regulated 5V 4A or larger supply covers this LED load. Keep a
+common ground and connect GPIO13 to DIN (not DOUT). For reliable 5V operation,
+use a 3.3V-to-5V logic buffer such as a 74AHCT125 on the data line. Follow
+[Adafruit’s wiring guidance](https://learn.adafruit.com/adafruit-neopixel-uberguide/best-practices)
+for the data resistor and supply capacitor.
+
+All 64 pixels show the same breathing colour, so no row/column mapping is
+needed. Zone colours, themes and pulse tuning remain unchanged. The neutral
+no-data pulse uses equal RGB values instead of a separate warm-white channel.
+This RGB firmware is incompatible with the previous RGBW ring.
