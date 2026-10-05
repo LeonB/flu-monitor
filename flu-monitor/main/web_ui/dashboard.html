@@ -267,7 +267,7 @@
                 </button>
               </template>
             </div>
-            <small class="field-help">Choose a palette, then adjust any colour below. Your own combination appears as Custom.</small>
+            <small class="field-help">Choose a palette, then adjust any colour below. Your own combination appears as Custom. Close the colour picker before pressing Save.</small>
           </div>
           <div class="field-row">
             <label class="field-label" for="zone-cold-color">Cold colour<small class="field-help">Colour for the cold zone on the LED ring, dashboard and graph.</small></label>
@@ -388,7 +388,7 @@
         <div class="save-bar">
           <span x-text="changeCount + (changeCount === 1 ? ' change' : ' changes')"></span>
           <button class="btn-revert" @click="revertDraft()">Undo</button>
-          <button class="btn-save" @click="saveSettings()" x-text="saving ? 'Saving…' : 'Save'"></button>
+          <button class="btn-save" :disabled="saving" @click="saveSettings()" x-text="saving ? 'Saving…' : 'Save'"></button>
         </div>
       </template>
     </div>

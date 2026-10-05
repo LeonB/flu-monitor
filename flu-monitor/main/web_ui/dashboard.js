@@ -271,15 +271,17 @@ function app() {
     },
 
     async saveSettings() {
+      if (this.saving) return;
+      const submitted = { ...this.draft };
       this.saving = true;
       try {
         const res = await fetch('/api/settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(this.draft),
+          body: JSON.stringify(submitted),
         });
         if (!res.ok) throw new Error('rejected');
-        this.settings = { ...this.draft };
+        this.settings = submitted;
         this.showToast('Settings saved');
       } catch (e) {
         this.showToast('Save failed -- check the values');
