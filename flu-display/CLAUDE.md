@@ -437,10 +437,17 @@ broadcast" below.
 
 The configured display is now the 8x8 64-pixel RGB NeoMatrix, replacing the
 24-pixel SK6812 RGBW ring. Product 1487 can ship with WS2812B or SK6812 RGB
-pixels using the same NeoPixel protocol. Use LED_MODEL_WS2812 with GRB
+pixels using the same NeoPixel protocol. Use LED_MODEL_SK6812 with GRB
 three-channel format and led_strip_set_pixel; never send four-byte RGBW
 frames to this panel. GPIO13 remains DIN. Every pixel shows the same colour,
 so serpentine addressing has no effect. Neutral no-data white uses equal RGB
 channels and the saved brightness limits. Earlier ring-specific observations
 above are historical; physical colours and frame timing need verification
 on the replacement panel. Power/wiring requirements are in README.md.
+
+Wrong-colour flashes were reported after switching the driver to WS2812
+timing. The installed matrix was identified by the user as SK6812, so
+restore LED_MODEL_SK6812 while retaining three-byte GRB. The installed
+led_strip encoder sends a 0.6us high for SK6812 one-bits, versus 0.9us for
+WS2812. A successful refresh and steady FPS do not establish signal integrity
+or correct colours; visual confirmation is still required.
