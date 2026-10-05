@@ -220,7 +220,7 @@ and peak on a 0–255 scale, in steps of 5. Defaults are 20 and 255. Minimum
 cannot exceed maximum; equal limits give steady brightness, and both zero
 turn the ring off. These controls affect the ring, not the screen halo.
 
-The **Theme** selector under **The zone** offers Classic, Ember, Forest and
+The **Theme** selector under **The zone** offers Classic, Fire (yellow/amber/red), Ember, Forest and
 High contrast palettes with previews in cold/optimal/hot order. Selecting a
 theme fills the three colour pickers; Save applies it and Undo restores the
 saved palette. Any combination that does not match a preset shows Custom.

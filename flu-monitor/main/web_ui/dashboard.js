@@ -35,6 +35,7 @@ const DEFAULT_ZONE_COLORS = { cold: '#003cff', optimal: '#ff3700', hot: '#ff0000
 // Presets only fill the existing draft colour fields; no extra saved setting.
 const ZONE_THEMES = [
   { id: 'classic', name: 'Classic', colors: ['#003cff', '#ff3700', '#ff0000'] },
+  { id: 'fire', name: 'Fire', colors: ['#ffff00', '#ffbf00', '#ff0000'] },
   { id: 'ember', name: 'Ember', colors: ['#547ca6', '#f3b54a', '#e85a24'] },
   { id: 'forest', name: 'Forest', colors: ['#526780', '#32845a', '#cb542e'] },
   { id: 'contrast', name: 'High contrast', colors: ['#0072b2', '#f0e442', '#d55e00'] },

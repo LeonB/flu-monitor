@@ -826,10 +826,13 @@ Chrome confirms both steppers, Undo, Save and reload persistence.
 
 ## Zone theme presets
 
-`ZONE_THEMES` in dashboard.js defines four palettes in `ZONE_ORDER`. The
+`ZONE_THEMES` in dashboard.js defines five palettes in `ZONE_ORDER`. The
 selector derives its name from the draft colours with case-insensitive
 matching, so manual edits and Undo automatically select Custom or a matching
 preset. `applyZoneTheme` only fills the three draft colour fields. No theme
 identifier is stored or sent to the API: saved colours remain the single
 source for the dashboard, graph and ring. Menu buttons show swatches, the
 selected state, and support Tab/Enter plus Escape and outside-click dismissal.
+
+The Fire preset uses yellow #ffff00, amber #ffbf00 and red #ff0000 in
+cold/optimal/hot order. The matrix applies its colour gamma correction.
