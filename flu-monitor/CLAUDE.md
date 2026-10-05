@@ -834,5 +834,5 @@ identifier is stored or sent to the API: saved colours remain the single
 source for the dashboard, graph and ring. Menu buttons show swatches, the
 selected state, and support Tab/Enter plus Escape and outside-click dismissal.
 
-The Fire preset uses yellow #ffff00, amber #ffbf00 and red #ff0000 in
+The Fire preset uses amber #f29900, orange #f66d00 and red #ff0000 in
 cold/optimal/hot order. The matrix applies its colour gamma correction.
