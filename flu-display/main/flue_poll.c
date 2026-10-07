@@ -16,6 +16,8 @@
 #include "freertos/task.h"
 #include "led_display.h"
 #include "mdns.h"
+#include "lwip/sockets.h"
+#include "lwipopts.h"
 
 static const char *TAG = "flue_poll";
 
@@ -176,7 +178,7 @@ static bool fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
 
   cJSON *root = cJSON_ParseWithLength(s_response_buf, s_response_len);
   if (root == NULL) {
-    ESP_LOGW(TAG, "Failed to parse /api/settings response: '%.*s'", s_response_len, s_response_buf);
+    ESP_LOGW(TAG, "Failed to parse /api/settings response (%d bytes)", s_response_len);
     return false;
   }
 
@@ -190,7 +192,7 @@ static bool fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
   if (!cJSON_IsNumber(zone_cold_max_c) || !cJSON_IsNumber(zone_optimal_max_c) || !cJSON_IsNumber(fast_rise_c_per_min) ||
       !cJSON_IsNumber(rate_deadband_c_per_min) || !cJSON_IsNumber(idle_pulse_period_ms) ||
       !cJSON_IsNumber(fast_pulse_period_ms) || !cJSON_IsNumber(color_transition_exponent)) {
-    ESP_LOGW(TAG, "/api/settings response missing expected numeric fields: '%.*s'", s_response_len, s_response_buf);
+    ESP_LOGW(TAG, "/api/settings response missing expected numeric fields");
     cJSON_Delete(root);
     return false;
   }
@@ -242,6 +244,8 @@ static bool fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
       parse_zone_color(cJSON_GetObjectItemCaseSensitive(root, "zone_optimal_color"), &optimal) &&
       parse_zone_color(cJSON_GetObjectItemCaseSensitive(root, "zone_hot_color"), &hot)) {
     led_display_set_zone_colors(cold, optimal, hot);
+    ESP_LOGI(TAG, "Applied palette: cold=#%06lx optimal=#%06lx hot=#%06lx",
+             (unsigned long)cold, (unsigned long)optimal, (unsigned long)hot);
   }
 
 
@@ -406,6 +410,33 @@ static void ws_event_handler(void *handler_arg, esp_event_base_t base, int32_t e
 // its initial settings, connects the WebSocket client, then just waits for
 // "settings changed" broadcasts to re-fetch. Runs for the lifetime of the
 // device; everything after the first connect is event-driven.
+static void log_socket_usage(void) {
+  unsigned count = 0;
+  for (int fd = LWIP_SOCKET_OFFSET; fd < LWIP_SOCKET_OFFSET + CONFIG_LWIP_MAX_SOCKETS; fd++) {
+    int type;
+    socklen_t length = sizeof(type);
+    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &length) != 0) continue;
+    count++;
+    struct sockaddr_storage peer;
+    length = sizeof(peer);
+    if (type == SOCK_STREAM && getpeername(fd, (struct sockaddr *)&peer, &length) == 0) {
+      char address[INET6_ADDRSTRLEN];
+      unsigned port;
+      if (peer.ss_family == AF_INET) {
+        struct sockaddr_in *v4 = (struct sockaddr_in *)&peer;
+        inet_ntop(AF_INET, &v4->sin_addr, address, sizeof(address));
+        port = ntohs(v4->sin_port);
+      } else {
+        struct sockaddr_in6 *v6 = (struct sockaddr_in6 *)&peer;
+        inet_ntop(AF_INET6, &v6->sin6_addr, address, sizeof(address));
+        port = ntohs(v6->sin6_port);
+      }
+      ESP_LOGI(TAG, "Socket fd=%d TCP peer=%s:%u", fd, address, port);
+    }
+  }
+  ESP_LOGI(TAG, "Display sockets: %u/%d", count, CONFIG_LWIP_MAX_SOCKETS);
+}
+
 static void settings_task(void *arg) {
   (void) arg;
 
@@ -421,18 +452,27 @@ static void settings_task(void *arg) {
   snprintf(ws_uri, sizeof(ws_uri), "ws://" IPSTR "/ws", IP2STR(&ip));
 
   esp_websocket_client_config_t ws_config = {
+#ifdef FLU_DISPLAY_TEST_WS_URI
+      .uri = FLU_DISPLAY_TEST_WS_URI,
+#else
       .uri = ws_uri,
+#endif
   };
   s_ws_client = esp_websocket_client_init(&ws_config);
   esp_websocket_register_events(s_ws_client, WEBSOCKET_EVENT_ANY, ws_event_handler, NULL);
   esp_websocket_client_start(s_ws_client);
 
   bool synced = false;
+  int64_t last_socket_log_us = 0;
   while (true) {
     // Retry failed fetches; periodic refresh also recovers a missed notification.
     xSemaphoreTake(s_refetch_settings_sem, pdMS_TO_TICKS(synced ? 30000 : 5000));
     ESP_LOGI(TAG, "Refreshing display settings");
     synced = fetch_and_apply_settings(&ip);
+    if (esp_timer_get_time() - last_socket_log_us >= 30000000) {
+      log_socket_usage();
+      last_socket_log_us = esp_timer_get_time();
+    }
   }
 }
 

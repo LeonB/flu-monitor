@@ -488,3 +488,50 @@ five seconds, and refresh every 30 seconds even without a notification.
 The monitor UI waits for a matching revision acknowledgement and reports
 saved-but-unconfirmed settings separately from a failed save.
 Hardware logs verified minimum 0 / maximum 45 applied and acknowledged.
+
+
+## WebSocket redirect socket exhaustion
+
+On 2026-10-08 the display could not fetch settings, connect WS or accept
+OTA connections: `ESP_ERR_ESP_TLS_CANNOT_CREATE_SOCKET`, errno 23. Its last
+WS handshake status was 303. The installed esp_websocket_client 1.8.0
+redirect branch restarted connection attempts without closing the previous
+transport; the next plain-TCP connect overwrote the descriptor. Our captive
+portal returns 303 for unmatched routes. The original runtime log does not
+establish exactly when or why that redirect was encountered.
+
+Controlled hardware reproduction with an HTTP 303 server left 13 TCP
+connections simultaneously open and exhausted the remaining socket capacity.
+This device has a fixed monitor WS endpoint, so redirect responses now abort
+and close the handshake connection, then use normal reconnect backoff without
+changing URI. `tools/prepare_websocket_client.py` generates a project-local
+copy of the managed client source during CMake configuration. The managed
+package and SDK are untouched. Configure dependencies regenerate the copy;
+source-shape guards stop the build for review if a dependency update changes
+the expected branch or component source layout. This workaround is specific
+to flu-display, not a general-purpose client library redirect policy.
+
+`flue_poll.c` logs total socket usage and connected TCP peers every 30s,
+plus the applied palette. Settings parsing failures no longer dump the
+response containing logging credentials into serial output.
+
+Hardware fault injection uses `tools/test_ws_fault_server.py` and an explicit
+`idf.py -D FLU_DISPLAY_TEST_WS_URI=ws://<test-host>:8768/ws build`. The server
+supports redirect, drop and success through `/tmp/flu-ws-test-mode`; success
+sends synthetic 65 C readings. Always clear the override with
+`idf.py -D FLU_DISPLAY_TEST_WS_URI= build`, then flash production firmware.
+The override is empty by default and the final production binary was checked
+for absence of the fault-server URI. Do not leave diagnostic firmware on the
+display. The fixed hardware test closed each of five consecutive rejected
+redirect connections, returning the server to zero live connections between
+attempts, then connected when a valid WS handshake became available. A host
+check compiled the actual old/fixed redirect branches: old leaked 13,
+fixed released all 500 connections across 301/302/303/307/308 responses.
+
+Production firmware subsequently installed over OTA after clearing the test
+URI. The monitor confirmed `display_applied: true` for revision 158140703,
+whose palette was Fire (#f29900/#f66d00/#ff0000). A passive final serial
+capture produced no lines, so no settled production-wide socket count was
+established in that final capture; the fault server directly verified the
+fixed redirect connections were released. Physical colour appearance remains
+for the user to judge.
