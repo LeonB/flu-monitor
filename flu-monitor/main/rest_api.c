@@ -15,6 +15,7 @@
 #include "settings.h"
 #include "sheets_logger.h"
 #include "ws_server.h"
+#include "web_assets_generated.h"
 
 static const char *TAG = "rest_api";
 
@@ -43,31 +44,69 @@ extern const char web_ui_font_figtree_600_end[] asm("_binary_figtree_600_woff2_e
 extern const char web_ui_font_figtree_700_start[] asm("_binary_figtree_700_woff2_start");
 extern const char web_ui_font_figtree_700_end[] asm("_binary_figtree_700_woff2_end");
 
+// Cache across visits, but revalidate on every use so an OTA cannot leave stale UI.
+// Payloads are compressed at build time; no compression work or buffers on ESP32.
+static bool accepts_gzip(httpd_req_t *req) {
+  char encodings[160];
+  if (httpd_req_get_hdr_value_str(req, "Accept-Encoding", encodings, sizeof(encodings)) != ESP_OK) return false;
+  char *save = NULL;
+  for (char *token = strtok_r(encodings, ",", &save); token; token = strtok_r(NULL, ",", &save)) {
+    while (*token == ' ' || *token == '\t') token++;
+    char *params = strchr(token, ';');
+    if (params) *params++ = 0;
+    char *end = token + strlen(token);
+    while (end > token && (end[-1] == ' ' || end[-1] == '\t')) *--end = 0;
+    if (strcasecmp(token, "gzip") != 0) continue;
+    if (params) {
+      while (*params == ' ' || *params == '\t') params++;
+      if (strncasecmp(params, "q=", 2) == 0 && strtod(params + 2, NULL) <= 0) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+static esp_err_t serve_asset(httpd_req_t *req, const char *type,
+                             const char *raw, size_t raw_len, const char *raw_etag,
+                             const unsigned char *gzip, size_t gzip_len, const char *gzip_etag) {
+  bool compressed = gzip && accepts_gzip(req);
+  const char *etag = compressed ? gzip_etag : raw_etag;
+  char condition[256];
+  bool unchanged = httpd_req_get_hdr_value_str(req, "If-None-Match", condition, sizeof(condition)) == ESP_OK
+                   && (strstr(condition, etag) || strcmp(condition, "*") == 0);
+  httpd_resp_set_type(req, type);
+  httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+  httpd_resp_set_hdr(req, "ETag", etag);
+  if (gzip) httpd_resp_set_hdr(req, "Vary", "Accept-Encoding");
+  if (compressed) httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+  if (unchanged) {
+    httpd_resp_set_status(req, "304 Not Modified");
+    return httpd_resp_send(req, NULL, 0);
+  }
+  return httpd_resp_send(req, compressed ? (const char *)gzip : raw, compressed ? gzip_len : raw_len);
+}
+
 static esp_err_t web_ui_html_get_handler(httpd_req_t *req) {
-  httpd_resp_set_type(req, "text/html");
-  httpd_resp_send(req, web_ui_html_start, web_ui_html_end - web_ui_html_start);
-  return ESP_OK;
+  return serve_asset(req, "text/html", web_ui_html_start, web_ui_html_end - web_ui_html_start,
+                     ASSET_html_ETAG, asset_html_gzip, sizeof(asset_html_gzip), ASSET_html_GZIP_ETAG);
 }
 static const httpd_uri_t web_ui_html_uri = {.uri = "/", .method = HTTP_GET, .handler = web_ui_html_get_handler};
 
 static esp_err_t web_ui_js_get_handler(httpd_req_t *req) {
-  httpd_resp_set_type(req, "application/javascript");
-  httpd_resp_send(req, web_ui_js_start, web_ui_js_end - web_ui_js_start);
-  return ESP_OK;
+  return serve_asset(req, "application/javascript", web_ui_js_start, web_ui_js_end - web_ui_js_start,
+                     ASSET_js_ETAG, asset_js_gzip, sizeof(asset_js_gzip), ASSET_js_GZIP_ETAG);
 }
 static const httpd_uri_t web_ui_js_uri = {.uri = "/dashboard.js", .method = HTTP_GET, .handler = web_ui_js_get_handler};
 
 static esp_err_t web_ui_css_get_handler(httpd_req_t *req) {
-  httpd_resp_set_type(req, "text/css");
-  httpd_resp_send(req, web_ui_css_start, web_ui_css_end - web_ui_css_start);
-  return ESP_OK;
+  return serve_asset(req, "text/css", web_ui_css_start, web_ui_css_end - web_ui_css_start,
+                     ASSET_css_ETAG, asset_css_gzip, sizeof(asset_css_gzip), ASSET_css_GZIP_ETAG);
 }
 static const httpd_uri_t web_ui_css_uri = {.uri = "/dashboard.css", .method = HTTP_GET, .handler = web_ui_css_get_handler};
 
 static esp_err_t web_ui_alpine_js_get_handler(httpd_req_t *req) {
-  httpd_resp_set_type(req, "application/javascript");
-  httpd_resp_send(req, web_ui_alpine_js_start, web_ui_alpine_js_end - web_ui_alpine_js_start);
-  return ESP_OK;
+  return serve_asset(req, "application/javascript", web_ui_alpine_js_start, web_ui_alpine_js_end - web_ui_alpine_js_start,
+                     ASSET_alpine_js_ETAG, asset_alpine_js_gzip, sizeof(asset_alpine_js_gzip), ASSET_alpine_js_GZIP_ETAG);
 }
 static const httpd_uri_t web_ui_alpine_js_uri = {
     .uri = "/alpinejs.min.js", .method = HTTP_GET, .handler = web_ui_alpine_js_get_handler};
@@ -75,33 +114,29 @@ static const httpd_uri_t web_ui_alpine_js_uri = {
 // Self-hosted Caprasimo/Figtree woff2 files -- see dashboard.html's own
 // comment for why these are embedded rather than loaded from Google's CDN.
 static esp_err_t web_ui_font_caprasimo_400_get_handler(httpd_req_t *req) {
-  httpd_resp_set_type(req, "font/woff2");
-  httpd_resp_send(req, web_ui_font_caprasimo_400_start, web_ui_font_caprasimo_400_end - web_ui_font_caprasimo_400_start);
-  return ESP_OK;
+  return serve_asset(req, "font/woff2", web_ui_font_caprasimo_400_start,
+                     web_ui_font_caprasimo_400_end - web_ui_font_caprasimo_400_start, ASSET_caprasimo_400_ETAG, NULL, 0, NULL);
 }
 static const httpd_uri_t web_ui_font_caprasimo_400_uri = {
     .uri = "/fonts/caprasimo-400.woff2", .method = HTTP_GET, .handler = web_ui_font_caprasimo_400_get_handler};
 
 static esp_err_t web_ui_font_figtree_400_get_handler(httpd_req_t *req) {
-  httpd_resp_set_type(req, "font/woff2");
-  httpd_resp_send(req, web_ui_font_figtree_400_start, web_ui_font_figtree_400_end - web_ui_font_figtree_400_start);
-  return ESP_OK;
+  return serve_asset(req, "font/woff2", web_ui_font_figtree_400_start,
+                     web_ui_font_figtree_400_end - web_ui_font_figtree_400_start, ASSET_figtree_400_ETAG, NULL, 0, NULL);
 }
 static const httpd_uri_t web_ui_font_figtree_400_uri = {
     .uri = "/fonts/figtree-400.woff2", .method = HTTP_GET, .handler = web_ui_font_figtree_400_get_handler};
 
 static esp_err_t web_ui_font_figtree_600_get_handler(httpd_req_t *req) {
-  httpd_resp_set_type(req, "font/woff2");
-  httpd_resp_send(req, web_ui_font_figtree_600_start, web_ui_font_figtree_600_end - web_ui_font_figtree_600_start);
-  return ESP_OK;
+  return serve_asset(req, "font/woff2", web_ui_font_figtree_600_start,
+                     web_ui_font_figtree_600_end - web_ui_font_figtree_600_start, ASSET_figtree_600_ETAG, NULL, 0, NULL);
 }
 static const httpd_uri_t web_ui_font_figtree_600_uri = {
     .uri = "/fonts/figtree-600.woff2", .method = HTTP_GET, .handler = web_ui_font_figtree_600_get_handler};
 
 static esp_err_t web_ui_font_figtree_700_get_handler(httpd_req_t *req) {
-  httpd_resp_set_type(req, "font/woff2");
-  httpd_resp_send(req, web_ui_font_figtree_700_start, web_ui_font_figtree_700_end - web_ui_font_figtree_700_start);
-  return ESP_OK;
+  return serve_asset(req, "font/woff2", web_ui_font_figtree_700_start,
+                     web_ui_font_figtree_700_end - web_ui_font_figtree_700_start, ASSET_figtree_700_ETAG, NULL, 0, NULL);
 }
 static const httpd_uri_t web_ui_font_figtree_700_uri = {
     .uri = "/fonts/figtree-700.woff2", .method = HTTP_GET, .handler = web_ui_font_figtree_700_get_handler};

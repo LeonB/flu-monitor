@@ -884,3 +884,28 @@ pushes every four minutes (24 sampling ticks), keeping its 24-hour capacity.
 Socket diagnostics remain at 30-second intervals. Sheets logging still uses
 its configured deadband/heartbeat, not one log per sensor tick. Earlier
 30-second references in this file describe the previous configuration.
+
+## Compressed web assets and cache validation
+
+`tools/generate_web_assets.py` generates deterministic gzip payloads for
+HTML/CSS/JS and content-hash ETags for all static assets, including fonts.
+The main component's custom build dependency regenerates the header whenever
+an asset changes. Original embedded assets remain available for clients that
+do not accept gzip (including `gzip;q=0`). WOFF2 fonts are already compressed
+and are served unchanged. Compression takes place on the build machine.
+
+Static responses use `Cache-Control: no-cache`, which permits storage but
+requires validation, with `If-None-Match` returning an empty 304 when content
+is unchanged. Compressed and identity representations have separate ETags
+and `Vary: Accept-Encoding`. Changed assets get new tags, so an OTA cannot
+leave a browser using stale UI files. REST settings/reading responses do not
+use this static-asset handler.
+
+Built and flashed on 2026-10-08. `python3 tools/test_web_assets.py <monitor-ip>`
+verified every static payload against source, 304 responses, stale-tag
+recovery, identity fallback and gzip refusal. Chrome rendered the live UI.
+The four text assets shrank from 117534 to 37340 bytes. Same-firmware
+sequential direct-IP tests measured 0.29–0.36s compressed versus 0.72s
+identity on the then-current link; these are transfer timings, not full
+browser load times. Saved settings were preserved. Hostname resolution is
+unchanged by this update.
