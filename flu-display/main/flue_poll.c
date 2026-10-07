@@ -77,6 +77,7 @@ static char s_ws_msg_buf[WS_MSG_BUF_SIZE];
 static int s_ws_msg_len = 0;
 
 static SemaphoreHandle_t s_refetch_settings_sem;
+static esp_websocket_client_handle_t s_ws_client;
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
   // Body data reaches this callback already de-chunked by the underlying
@@ -148,7 +149,7 @@ static bool parse_zone_color(const cJSON *item, uint32_t *out) {
   return true;
 }
 
-static void fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
+static bool fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
   char url[URL_BUF_SIZE];
   snprintf(url, sizeof(url), "http://" IPSTR "/api/settings", IP2STR(ip));
 
@@ -166,17 +167,17 @@ static void fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
 
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "GET /api/settings failed: %s", esp_err_to_name(err));
-    return;
+    return false;
   }
   if (status != 200) {
     ESP_LOGW(TAG, "GET /api/settings returned status %d", status);
-    return;
+    return false;
   }
 
   cJSON *root = cJSON_ParseWithLength(s_response_buf, s_response_len);
   if (root == NULL) {
     ESP_LOGW(TAG, "Failed to parse /api/settings response: '%.*s'", s_response_len, s_response_buf);
-    return;
+    return false;
   }
 
   cJSON *zone_cold_max_c = cJSON_GetObjectItemCaseSensitive(root, "zone_cold_max_c");
@@ -191,7 +192,7 @@ static void fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
       !cJSON_IsNumber(fast_pulse_period_ms) || !cJSON_IsNumber(color_transition_exponent)) {
     ESP_LOGW(TAG, "/api/settings response missing expected numeric fields: '%.*s'", s_response_len, s_response_buf);
     cJSON_Delete(root);
-    return;
+    return false;
   }
 
   // Older sidecars omit the shape field; preserve the original envelope.
@@ -201,7 +202,7 @@ static void fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
       floor(minimum_brightness) != minimum_brightness) {
     ESP_LOGW(TAG, "/api/settings minimum brightness invalid");
     cJSON_Delete(root);
-    return;
+    return false;
   }
   cJSON *maximum = cJSON_GetObjectItemCaseSensitive(root, "maximum_brightness");
   double maximum_brightness = maximum == NULL ? 255 : cJSON_IsNumber(maximum) ? maximum->valuedouble : NAN;
@@ -209,12 +210,12 @@ static void fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
       floor(maximum_brightness) != maximum_brightness) {
     ESP_LOGW(TAG, "/api/settings maximum brightness invalid");
     cJSON_Delete(root);
-    return;
+    return false;
   }
   if (minimum_brightness > maximum_brightness) {
     ESP_LOGW(TAG, "/api/settings brightness limits reversed");
     cJSON_Delete(root);
-    return;
+    return false;
   }
   cJSON *shape = cJSON_GetObjectItemCaseSensitive(root, "breathing_exponent");
   float breathing_exponent = shape == NULL ? 1.0f :
@@ -222,7 +223,7 @@ static void fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
   if (!isfinite(breathing_exponent) || breathing_exponent < 0.3f || breathing_exponent > 3.0f) {
     ESP_LOGW(TAG, "Rejected invalid breathing shape");
     cJSON_Delete(root);
-    return;
+    return false;
   }
 
   ESP_LOGI(TAG,
@@ -244,7 +245,19 @@ static void fetch_and_apply_settings(const esp_ip4_addr_t *ip) {
   }
 
 
+  cJSON *revision = cJSON_GetObjectItemCaseSensitive(root, "settings_revision");
+  bool acknowledged = false;
+  if (cJSON_IsNumber(revision) && revision->valuedouble >= 1 && revision->valuedouble <= UINT32_MAX &&
+      floor(revision->valuedouble) == revision->valuedouble && s_ws_client &&
+      esp_websocket_client_is_connected(s_ws_client)) {
+    char ack[96];
+    int length = snprintf(ack, sizeof(ack), "{\"type\":\"settings_applied\",\"revision\":%.0f}", revision->valuedouble);
+    acknowledged = esp_websocket_client_send_text(s_ws_client, ack, length, pdMS_TO_TICKS(1000)) == length;
+    ESP_LOGI(TAG, "Settings revision %.0f applied, acknowledgement %s", revision->valuedouble,
+             acknowledged ? "sent" : "failed");
+  }
   cJSON_Delete(root);
+  return acknowledged;
 }
 
 // Applies the same sanity-clamp + suspicious-jump-confirmation gating the
@@ -354,6 +367,7 @@ static void ws_event_handler(void *handler_arg, esp_event_base_t base, int32_t e
   switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED:
       ESP_LOGI(TAG, "WebSocket connected");
+      xSemaphoreGive(s_refetch_settings_sem);
       break;
     case WEBSOCKET_EVENT_DISCONNECTED:
       ESP_LOGW(TAG, "WebSocket disconnected -- auto-reconnect will retry");
@@ -409,14 +423,16 @@ static void settings_task(void *arg) {
   esp_websocket_client_config_t ws_config = {
       .uri = ws_uri,
   };
-  esp_websocket_client_handle_t ws_client = esp_websocket_client_init(&ws_config);
-  esp_websocket_register_events(ws_client, WEBSOCKET_EVENT_ANY, ws_event_handler, NULL);
-  esp_websocket_client_start(ws_client);
+  s_ws_client = esp_websocket_client_init(&ws_config);
+  esp_websocket_register_events(s_ws_client, WEBSOCKET_EVENT_ANY, ws_event_handler, NULL);
+  esp_websocket_client_start(s_ws_client);
 
+  bool synced = false;
   while (true) {
-    xSemaphoreTake(s_refetch_settings_sem, portMAX_DELAY);
-    ESP_LOGI(TAG, "Settings changed -- re-fetching");
-    fetch_and_apply_settings(&ip);
+    // Retry failed fetches; periodic refresh also recovers a missed notification.
+    xSemaphoreTake(s_refetch_settings_sem, pdMS_TO_TICKS(synced ? 30000 : 5000));
+    ESP_LOGI(TAG, "Refreshing display settings");
+    synced = fetch_and_apply_settings(&ip);
   }
 }
 

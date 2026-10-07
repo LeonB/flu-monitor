@@ -384,9 +384,13 @@
         </div>
       </div>
 
-      <template x-if="changeCount > 0">
+      <div x-show="displaySyncError" role="alert" style="position:fixed;left:16px;right:16px;bottom:16px;max-width:428px;margin:auto;padding:16px;background:var(--color-bg);border:2px solid var(--color-accent);border-radius:24px;box-shadow:var(--shadow-lg);z-index:20">
+        <span x-text="displaySyncError"></span>
+        <button type="button" @click="displaySyncError = ''" style="display:block;margin-top:8px;background:transparent;border:0;text-decoration:underline;font:inherit;cursor:pointer" aria-label="Dismiss display delivery warning">Dismiss</button>
+      </div>
+      <template x-if="changeCount > 0 || saving">
         <div class="save-bar">
-          <span x-text="changeCount + (changeCount === 1 ? ' change' : ' changes')"></span>
+          <span x-text="saving ? 'Saving and checking display…' : changeCount + (changeCount === 1 ? ' change' : ' changes')"></span>
           <button class="btn-revert" @click="revertDraft()">Undo</button>
           <button class="btn-save" :disabled="saving" @click="saveSettings()" x-text="saving ? 'Saving…' : 'Save'"></button>
         </div>

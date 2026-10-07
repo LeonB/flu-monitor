@@ -103,6 +103,7 @@ function app() {
     historyRange: '24h',
     HISTORY_RANGE_KEYS,
     saving: false,
+    displaySyncError: '',
 
     // Glow animation state, updated ~30fps by a requestAnimationFrame loop
     // -- see runGlowFrame() below.
@@ -274,6 +275,8 @@ function app() {
       if (this.saving) return;
       const submitted = { ...this.draft };
       this.saving = true;
+      this.displaySyncError = '';
+      let saved = false;
       try {
         const res = await fetch('/api/settings', {
           method: 'POST',
@@ -281,12 +284,40 @@ function app() {
           body: JSON.stringify(submitted),
         });
         if (!res.ok) throw new Error('rejected');
+        saved = true;
+        const result = await res.json();
+        submitted.settings_revision = result.settings_revision;
+        this.draft.settings_revision = result.settings_revision;
         this.settings = submitted;
-        this.showToast('Settings saved');
+        const applied = await this.waitForDisplaySettings(result.settings_revision);
+        if (applied) this.showToast('Settings saved and applied by display');
+        else this.reportDisplaySyncError('Settings saved, but the display has not confirmed applying them. It may be disconnected or unable to fetch settings.');
       } catch (e) {
-        this.showToast('Save failed -- check the values');
+        if (saved) this.reportDisplaySyncError('Settings saved, but display delivery could not be verified. Check the display connection.');
+        else this.showToast('Save failed -- check the values or connection');
       }
       this.saving = false;
+    },
+
+    reportDisplaySyncError(message) {
+      this.displaySyncError = message;
+    },
+
+    async waitForDisplaySettings(revision) {
+      if (!Number.isInteger(revision)) return false;
+      const deadline = Date.now() + 20000;
+      while (Date.now() < deadline) {
+        try {
+          const res = await fetch('/api/settings/status', { signal: AbortSignal.timeout(3000), cache: 'no-store' });
+          if (res.ok) {
+            const status = await res.json();
+            if (status.settings_revision !== revision) return false;
+            if (status.display_applied === true) return true;
+          }
+        } catch (e) { /* keep checking until the acknowledgement deadline */ }
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      return false;
     },
 
     // --- Glow animation ---

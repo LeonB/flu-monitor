@@ -836,3 +836,38 @@ selected state, and support Tab/Enter plus Escape and outside-click dismissal.
 
 The Fire preset uses amber #f29900, orange #f66d00 and red #ff0000 in
 cold/optimal/hot order. The matrix applies its colour gamma correction.
+
+
+## Settings delivery acknowledgement and HTTP session recovery
+
+A successful settings POST confirms NVS persistence, not display delivery.
+The response and settings GET include a boot-randomized uint32
+`settings_revision`; each successful POST advances it. The display sends
+`{"type":"settings_applied","revision":...}` over its WebSocket only after
+fetching and applying that revision. `GET /api/settings/status` returns the
+current revision and `display_applied`. The UI checks the exact submitted
+revision for up to 20 seconds, reports confirmed delivery only on matching
+acknowledgement, and otherwise shows a persistent alert while retaining the
+saved settings. This proves firmware application, not physical LED appearance.
+The display refreshes on reconnect, retries failures after five seconds and
+periodically refreshes every 30 seconds to recover missed notifications.
+
+The seven-slot HTTP server formerly used default `lru_purge_enable=false`
+and TCP keepalive disabled. Idle HTTP keepalive connections could fill all
+slots and prevent new settings fetches, independently of WebSocket leakage.
+LRU eviction now permits new requests, with streaming WS clients refreshed
+when requests arrive so idle HTTP sessions are preferred. TCP keepalive
+uses 30s idle / 10s interval / three retries. The close callback removes WS
+bookkeeping for every server session teardown and explicitly closes the fd.
+Queued broadcasts carry a client generation to reject reused descriptors.
+Diagnostics report peer address, port and HTTP/WS classification; the old
+count-only log cannot establish what occupied the original seven slots.
+
+Verification on hardware: unchanged settings were re-saved, applied and
+acknowledged by the display (minimum 0, maximum 45). Seven held HTTP
+connections did not block a new status request. Ten TCP WS disconnects
+without close frames were each removed by the close callback; the server
+returned to one WS connection. Both builds pass. Chrome verified the
+persistent missing-acknowledgement alert using the mock server with
+`MOCK_DISPLAY_APPLIED=false`. Host checks: `node tools/test_settings_sync.js`.
+Live socket check: `python3 tools/test_http_socket_recovery.py <monitor-ip>`.

@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "lwip/sockets.h"
 
 #include "sensors.h"
 #include "settings.h"
@@ -183,6 +184,7 @@ static const httpd_uri_t wifi_get_uri = {
 };
 
 static void settings_to_json(const settings_t *s, cJSON *root) {
+  cJSON_AddNumberToObject(root, "settings_revision", ws_server_settings_revision(false));
   cJSON_AddNumberToObject(root, "log_heartbeat_min", s->log_heartbeat_min);
   cJSON_AddNumberToObject(root, "zone_cold_max_c", round_to(s->zone_cold_max_c, 0.1));
   cJSON_AddNumberToObject(root, "zone_optimal_max_c", round_to(s->zone_optimal_max_c, 0.1));
@@ -345,10 +347,13 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
 
   // Lets flu-display (and any other WS client) know its cached zone
   // thresholds are stale, without waiting for its own next poll cycle.
+  uint32_t revision = ws_server_settings_revision(true);
   ws_server_broadcast_settings_changed();
 
   httpd_resp_set_type(req, "application/json");
-  httpd_resp_sendstr(req, "{\"success\":true}");
+  char response[96];
+  snprintf(response, sizeof(response), "{\"success\":true,\"settings_revision\":%lu}", (unsigned long) revision);
+  httpd_resp_sendstr(req, response);
   return ESP_OK;
 }
 
@@ -567,6 +572,18 @@ static const httpd_uri_t history_get_uri = {
     .handler = history_get_handler,
 };
 
+static esp_err_t settings_status_handler(httpd_req_t *req) {
+  uint32_t revision = ws_server_settings_revision(false);
+  char json[112];
+  snprintf(json, sizeof(json), "{\"settings_revision\":%lu,\"display_applied\":%s}",
+           (unsigned long) revision, ws_server_settings_applied(revision) ? "true" : "false");
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, json);
+}
+static const httpd_uri_t settings_status_uri = {
+    .uri = "/api/settings/status", .method = HTTP_GET, .handler = settings_status_handler,
+};
+
 // Explicit, not just relying on HTTPD_DEFAULT_CONFIG()'s own default (also
 // 7) -- rest_api_log_socket_usage() below needs to size its client_fds
 // buffer to match whatever this is actually set to.
@@ -588,12 +605,20 @@ httpd_handle_t rest_api_start(void) {
   // one that fails once the ceiling is hit).
   config.max_uri_handlers = 24;
   config.max_open_sockets = REST_API_MAX_OPEN_SOCKETS;
+  config.lru_purge_enable = true;
+  config.keep_alive_enable = true;
+  config.keep_alive_idle = 30;
+  config.keep_alive_interval = 10;
+  config.keep_alive_count = 3;
+  config.open_fn = ws_server_session_open;
+  config.close_fn = ws_server_session_close;
 
   ESP_LOGI(TAG, "Starting REST API server on port %d", config.server_port);
   ESP_ERROR_CHECK(httpd_start(&server, &config));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &reading_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &wifi_get_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &settings_get_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &settings_status_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &settings_post_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &events_get_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &event_post_uri));
@@ -633,6 +658,23 @@ void rest_api_log_socket_usage(void) {
   char fds_str[REST_API_MAX_OPEN_SOCKETS * 5 + 1] = {0};
   size_t pos = 0;
   for (size_t i = 0; i < count && pos < sizeof(fds_str) - 5; i++) {
+    struct sockaddr_storage peer;
+    socklen_t peer_len = sizeof(peer);
+    if (getpeername(client_fds[i], (struct sockaddr *) &peer, &peer_len) == 0) {
+      char address[INET6_ADDRSTRLEN];
+      const void *ip;
+      uint16_t port;
+      if (peer.ss_family == AF_INET6) {
+        struct sockaddr_in6 *v6 = (struct sockaddr_in6 *) &peer;
+        ip = &v6->sin6_addr; port = v6->sin6_port;
+      } else {
+        struct sockaddr_in *v4 = (struct sockaddr_in *) &peer;
+        ip = &v4->sin_addr; port = v4->sin_port;
+      }
+      inet_ntop(peer.ss_family, ip, address, sizeof(address));
+      ESP_LOGI(TAG, "Socket fd=%d peer=%s:%u type=%s", client_fds[i], address, ntohs(port),
+               httpd_ws_get_fd_info(s_server, client_fds[i]) == HTTPD_WS_CLIENT_WEBSOCKET ? "WS" : "HTTP");
+    }
     pos += snprintf(fds_str + pos, sizeof(fds_str) - pos, "%d ", client_fds[i]);
   }
   ESP_LOGI(TAG, "Open sockets: %u/%d [%s]", (unsigned) count, REST_API_MAX_OPEN_SOCKETS, fds_str);

@@ -19,6 +19,7 @@ built to let us reproduce and verify without real hardware.
 """
 import http.server
 import json
+import os
 import math
 import random
 import time
@@ -48,6 +49,7 @@ EVENTS = [
 EVENT_LABEL = {e["slug"]: e["label"] for e in EVENTS}
 
 settings = {
+    "settings_revision": 1,
     "log_heartbeat_min": 15,
     "zone_cold_max_c": 150,
     "zone_optimal_max_c": 280,
@@ -199,6 +201,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json(current_reading())
             return
 
+        if path == "/api/settings/status":
+            self._json({"settings_revision": settings["settings_revision"], "display_applied": os.environ.get("MOCK_DISPLAY_APPLIED", "true").lower() == "true"})
+            return
+
         if path == "/api/settings":
             self._json(settings)
             return
@@ -228,9 +234,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/settings":
             for k in settings:
-                if k in data:
+                if k in data and k != "settings_revision":
                     settings[k] = data[k]
-            self._json({"success": True})
+            settings["settings_revision"] += 1
+            self._json({"success": True, "settings_revision": settings["settings_revision"]})
             return
 
         if path == "/api/event":

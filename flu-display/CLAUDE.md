@@ -476,3 +476,15 @@ than a measured panel calibration. Pure primaries and RGB white keep their
 endpoints; breathing limits are not gamma-corrected. Neutral no-data white
 remains unchanged. Appearance must be judged on the panel; do not claim
 the gamma trial proves the cause of a white-looking colour.
+
+
+## Confirming settings delivery
+
+The monitor provides a boot-randomized `settings_revision` in settings GET.
+After applying tuning and palette, send a matching `settings_applied` text
+frame over the existing WS connection. Never acknowledge a failed fetch.
+Refresh immediately on WS connect/reconnect, retry fetch/ack failure after
+five seconds, and refresh every 30 seconds even without a notification.
+The monitor UI waits for a matching revision acknowledgement and reports
+saved-but-unconfirmed settings separately from a failed save.
+Hardware logs verified minimum 0 / maximum 45 applied and acknowledged.

@@ -1,0 +1,59 @@
+// Run with node tools/test_settings_sync.js.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const context = { console, AbortSignal, setTimeout, clearTimeout, Date };
+vm.createContext(context);
+vm.runInContext(fs.readFileSync('main/web_ui/dashboard.js', 'utf8'), context);
+
+async function saveCase(confirmation) {
+  const a = context.app();
+  a.settings = { maximum_brightness: 200, settings_revision: 1 };
+  a.draft = { maximum_brightness: 100, settings_revision: 1 };
+  a.showToast = message => { a.toast = message; };
+  a.waitForDisplaySettings = async revision => { assert.equal(revision, 2); return confirmation; };
+  context.fetch = async () => ({ ok: true, json: async () => ({ settings_revision: 2 }) });
+  await a.saveSettings();
+  assert.equal(a.settings.maximum_brightness, 100);
+  assert.equal(a.changeCount, 0);
+  assert.equal(a.saving, false);
+  if (confirmation) assert.equal(a.toast, 'Settings saved and applied by display');
+  else assert.match(a.displaySyncError, /Settings saved, but/);
+}
+(async () => {
+  await saveCase(true);
+  await saveCase(false);
+  const a = context.app();
+  a.settings = { maximum_brightness: 200 };
+  a.draft = { maximum_brightness: 100 };
+  a.showToast = () => {};
+  a.waitForDisplaySettings = async () => true;
+  let finish, requests = 0;
+  context.fetch = async () => { requests++; return new Promise(resolve => { finish = resolve; }); };
+  const pending = a.saveSettings();
+  await a.saveSettings();
+  assert.equal(requests, 1);
+  a.draft.maximum_brightness = 50;
+  finish({ ok: true, json: async () => ({ settings_revision: 2 }) });
+  await pending;
+  assert.equal(a.settings.maximum_brightness, 100);
+  assert.equal(a.draft.maximum_brightness, 50);
+  assert.equal(a.changeCount, 1);
+  context.fetch = async () => { throw new Error('offline'); };
+  await a.saveSettings();
+  assert.equal(a.saving, false);
+  assert.equal(a.changeCount, 1);
+  context.fetch = async () => ({ ok: true, json: async () => ({ settings_revision: 3, display_applied: true }) });
+  a.waitForDisplaySettings = context.app().waitForDisplaySettings;
+  assert.equal(await a.waitForDisplaySettings(2), false);
+  assert.equal(await a.waitForDisplaySettings(3), true);
+  let clock = 0;
+  const realDate = context.Date, realTimeout = context.setTimeout;
+  context.Date = { now: () => clock };
+  context.setTimeout = callback => { clock += 5000; callback(); };
+  context.fetch = async () => { throw new Error('status offline'); };
+  assert.equal(await a.waitForDisplaySettings(3), false);
+  assert.ok(clock >= 20000);
+  context.Date = realDate; context.setTimeout = realTimeout;
+  console.log('PASS: display success/failure, duplicate saves, pending edits, network failure, exact revision, acknowledgement timeout');
+})().catch(error => { console.error(error); process.exitCode = 1; });
