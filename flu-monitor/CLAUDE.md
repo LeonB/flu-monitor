@@ -871,3 +871,16 @@ returned to one WS connection. Both builds pass. Chrome verified the
 persistent missing-acknowledgement alert using the mock server with
 `MOCK_DISPLAY_APPLIED=false`. Host checks: `node tools/test_settings_sync.js`.
 Live socket check: `python3 tools/test_http_socket_recovery.py <monitor-ip>`.
+
+
+## Ten-second temperature sampling
+
+`SENSOR_READ_INTERVAL_MS` is now 10000. The continuously converting MCP9601
+is read and broadcast on an absolute FreeRTOS ten-second schedule. The UI
+already polls every five seconds; the LED display consumes each WS reading.
+Rate regression now keeps 16 samples instead of six, preserving the original
+150-second first-to-last span and using actual timestamps. History still
+pushes every four minutes (24 sampling ticks), keeping its 24-hour capacity.
+Socket diagnostics remain at 30-second intervals. Sheets logging still uses
+its configured deadband/heartbeat, not one log per sensor tick. Earlier
+30-second references in this file describe the previous configuration.

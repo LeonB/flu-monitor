@@ -48,12 +48,9 @@ esp_err_t sensors_init(void);
 // Takes one reading from the MCP9601 (already free-running at its own
 // internal cadence), and -- if the thermocouple reading is plausible --
 // admits it into the rate/zone regression window. Call this on a fixed,
-// sensor-matching cadence only
-// (currently every 30s, from main.c's sensor_log_task): the regression
-// assumes each call is a genuinely new sample at that cadence, which is
-// exactly the assumption an arbitrary-rate poller (e.g. a REST client) would
-// break -- see flu-display/CLAUDE.md's own writeup of the rate-inflation bug
-// this design avoids. Anything that just wants the latest values without
+// sampling cadence only (currently every 10s, from main.c's sensor_log_task).
+// MCP9601's continuous conversions are faster than this sampling interval.
+// The regression uses actual timestamps over a 150-second rolling window. Anything that just wants the latest values without
 // triggering a new I2C read or feeding the window should call
 // sensors_get_last_reading() instead.
 void sensors_read(sensor_reading_t *out);
@@ -64,9 +61,9 @@ void sensors_read(sensor_reading_t *out);
 void sensors_get_last_reading(sensor_reading_t *out);
 
 // Ring buffer capacity for sensors_get_history() below -- ~4min resolution
-// * 360 = 24h. Deliberately coarser than sensors_read()'s own ~30s cadence
+// * 360 = 24h. Deliberately coarser than sensors_read()'s own 10s cadence
 // (see sensors.c's HISTORY_PUSH_EVERY_N): a phone-width graph has no use
-// for 2880 raw samples, and building a cJSON tree that large risks
+// for 8640 raw samples, and building a cJSON tree that large risks
 // exhausting heap. Exposed (not just a private sensors.c define) so
 // rest_api.c's GET /api/history handler can size its own output buffer to
 // match.

@@ -53,6 +53,8 @@ static void wifi_status_changed(bool connected) {
 // reachable over the network until WiFi connects and rest_api_start() runs.
 static void sensor_log_task(void *arg) {
   (void) arg;
+  TickType_t next_read = xTaskGetTickCount();
+  unsigned diagnostic_ticks = 0;
   while (true) {
     sensor_reading_t reading;
     sensors_read(&reading);
@@ -72,11 +74,10 @@ static void sensor_log_task(void *arg) {
     // Diagnostic for chasing an apparent REST API hang (see CLAUDE.md) --
     // a no-op until rest_api_start() has run. Piggybacking this task's own
     // cadence rather than a dedicated timer.
-    rest_api_log_socket_usage();
+    if (diagnostic_ticks++ % (30000 / SENSOR_READ_INTERVAL_MS) == 0)
+      rest_api_log_socket_usage();
 
-    // Matches the ESPHome sidecar's own 30s update_interval for a fair
-    // side-by-side comparison.
-    vTaskDelay(pdMS_TO_TICKS(30000));
+    xTaskDelayUntil(&next_read, pdMS_TO_TICKS(SENSOR_READ_INTERVAL_MS));
   }
 }
 

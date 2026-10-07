@@ -44,12 +44,10 @@ bool thermocouple_reading_plausible(float c) {
   return c >= -40.0f && c <= 600.0f;
 }
 
-// Rolling window feeding the rate regression below -- ported 1:1 from the
-// ESPHome sidecar's own `thermocouple_history_c`/`_ms`/`_count` globals. 6
-// samples at the sensor's own ~30s update cadence is ~3 minutes of history;
-// a stovepipe changes over minutes, not seconds, so this costs nothing in
-// real responsiveness.
-#define THERMOCOUPLE_HISTORY_LEN 6
+// Keep the original 150-second regression span (six readings 30s apart),
+// with more samples at the faster cadence rather than less smoothing.
+#define THERMOCOUPLE_HISTORY_LEN (150000 / SENSOR_READ_INTERVAL_MS + 1)
+_Static_assert(150000 % SENSOR_READ_INTERVAL_MS == 0, "Regression window must contain whole sampling intervals");
 static float s_tc_history_c[THERMOCOUPLE_HISTORY_LEN] = {0};
 static int64_t s_tc_history_ms[THERMOCOUPLE_HISTORY_LEN] = {0};
 static uint8_t s_tc_history_count = 0;
@@ -126,13 +124,14 @@ static sensor_reading_t s_last_reading;
 static SemaphoreHandle_t s_last_reading_mutex;
 
 // 24h history ring buffer for GET /api/history's graph -- pushed at a
-// coarser cadence than sensors_read()'s own ~30s tick (see
+// coarser cadence than sensors_read()'s own 10s tick (see
 // HISTORY_PUSH_EVERY_N below), guarded by the same mutex as s_last_reading
 // since both are only ever written together, from the same sensors_read()
 // call. Capacity is SENSORS_HISTORY_CAPACITY (sensors.h), not a private
 // define here, since rest_api.c's GET /api/history handler needs to know
 // it too.
-#define HISTORY_PUSH_EVERY_N 8  // 8 * ~30s sensor ticks = ~4min between pushes
+#define HISTORY_PUSH_EVERY_N (240000 / SENSOR_READ_INTERVAL_MS)
+_Static_assert(240000 % SENSOR_READ_INTERVAL_MS == 0, "History must retain a four-minute interval");
 static history_sample_t s_history[SENSORS_HISTORY_CAPACITY];
 static size_t s_history_count = 0;  // valid entries so far, caps at SENSORS_HISTORY_CAPACITY
 static size_t s_history_head = 0;   // index the next push writes to
@@ -277,7 +276,7 @@ static esp_err_t init_mcp9601(void) {
   // 0x0000 default. That reading passes the plausibility clamp fine (0.00C
   // is well inside -40..600), so it was getting admitted into the rate
   // regression window as if it were real, producing a wildly wrong initial
-  // rate once a genuine second sample arrived 30s later.
+  // rate once a genuine second sample arrived at the next sampling tick.
   vTaskDelay(pdMS_TO_TICKS(400));
   return ESP_OK;
 }

@@ -30,6 +30,9 @@
 
 // --- Milestone 2: sensors (MCP9601 over I2C; BMP581 physically removed) ---
 
+// MCP9601 runs continuous conversions; sample and broadcast every ten seconds.
+#define SENSOR_READ_INTERVAL_MS 10000
+
 // Same bus/pins as the existing ESPHome sidecar's flu-monitor.yaml `i2c:`
 // block -- keeps this rewrite's readings directly comparable to it.
 #define I2C_SDA_GPIO      22
