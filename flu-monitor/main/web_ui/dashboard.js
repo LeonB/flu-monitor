@@ -29,6 +29,14 @@ const DEFAULT_RATE_DEADBAND_C_PER_MIN = 3.0;
 const DEFAULT_COLOR_TRANSITION_EXPONENT = 3.0;
 const DEFAULT_BREATHING_EXPONENT = 1.0;
 
+// Only changes consumed by the display need its delivery acknowledgement.
+const DISPLAY_SETTING_KEYS = [
+  'zone_cold_max_c', 'zone_optimal_max_c', 'fast_rise_c_per_min',
+  'rate_deadband_c_per_min', 'idle_pulse_period_ms', 'fast_pulse_period_ms',
+  'color_transition_exponent', 'breathing_exponent', 'minimum_brightness', 'maximum_brightness',
+  'zone_cold_color', 'zone_optimal_color', 'zone_hot_color',
+];
+
 // Colours are saved as #RRGGBB and shared with the physical LED ring.
 const ZONE_ORDER = ['cold', 'optimal', 'hot'];
 const DEFAULT_ZONE_COLORS = { cold: '#003cff', optimal: '#ff3700', hot: '#ff0000' };
@@ -103,6 +111,7 @@ function app() {
     historyRange: '24h',
     HISTORY_RANGE_KEYS,
     saving: false,
+    savingDisplaySettings: false,
     displaySyncError: '',
 
     // Glow animation state, updated ~30fps by a requestAnimationFrame loop
@@ -274,6 +283,8 @@ function app() {
     async saveSettings() {
       if (this.saving) return;
       const submitted = { ...this.draft };
+      const needsDisplay = DISPLAY_SETTING_KEYS.some(key => submitted[key] !== this.settings[key]);
+      this.savingDisplaySettings = needsDisplay;
       this.saving = true;
       this.displaySyncError = '';
       let saved = false;
@@ -289,14 +300,18 @@ function app() {
         submitted.settings_revision = result.settings_revision;
         this.draft.settings_revision = result.settings_revision;
         this.settings = submitted;
-        const applied = await this.waitForDisplaySettings(result.settings_revision);
-        if (applied) this.showToast('Settings saved and applied by display');
-        else this.reportDisplaySyncError('Settings saved, but the display has not confirmed applying them. It may be disconnected or unable to fetch settings.');
+        if (needsDisplay) {
+          const applied = await this.waitForDisplaySettings(result.settings_revision);
+          if (applied) this.showToast('Settings saved and applied by display');
+          else this.reportDisplaySyncError('Settings saved, but the display has not confirmed applying them. It may be disconnected or unable to fetch settings.');
+        } else this.showToast('Settings saved');
       } catch (e) {
-        if (saved) this.reportDisplaySyncError('Settings saved, but display delivery could not be verified. Check the display connection.');
+        if (saved && needsDisplay) this.reportDisplaySyncError('Settings saved, but display delivery could not be verified. Check the display connection.');
+        else if (saved) this.showToast('Settings saved, but confirmation could not be read. Reload to check saved values.');
         else this.showToast('Save failed -- check the values or connection');
       }
       this.saving = false;
+      this.savingDisplaySettings = false;
     },
 
     reportDisplaySyncError(message) {

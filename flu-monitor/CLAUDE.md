@@ -909,3 +909,16 @@ sequential direct-IP tests measured 0.29–0.36s compressed versus 0.72s
 identity on the then-current link; these are transfer timings, not full
 browser load times. Saved settings were preserved. Hostname resolution is
 unchanged by this update.
+
+
+## Settings acknowledgement follows setting ownership
+
+`DISPLAY_SETTING_KEYS` in dashboard.js lists colours, zone/rate thresholds,
+brightness and breathing controls consumed by the display. Save compares the
+submitted snapshot against the last saved settings before issuing the POST.
+Only changes to those keys wait for the matching display revision. Logging
+heartbeat, thermocouple logging deadband and Sheets URL/secret need only the
+monitor's successful settings POST; mixed saves still wait for the display.
+The save bar says Saving rather than checking display for monitor-only edits.
+`node tools/test_settings_sync.js` covers each monitor-only field plus mixed
+logging/colour changes and existing acknowledgement success/failure cases.

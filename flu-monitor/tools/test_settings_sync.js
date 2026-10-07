@@ -23,6 +23,29 @@ async function saveCase(confirmation) {
 (async () => {
   await saveCase(true);
   await saveCase(false);
+  for (const key of ['log_heartbeat_min', 'thermocouple_deadband_c', 'google_sheets_webhook_url', 'google_sheets_secret']) {
+    const logging = context.app();
+    logging.settings = { [key]: 'before', maximum_brightness: 100 };
+    logging.draft = { [key]: 'after', maximum_brightness: 100 };
+    logging.showToast = message => { logging.toast = message; };
+    logging.waitForDisplaySettings = () => { throw new Error('Monitor-only save contacted display'); };
+    let calls = 0;
+    context.fetch = async () => { calls++; return { ok: true, json: async () => ({ settings_revision: 2 }) }; };
+    await logging.saveSettings();
+    assert.equal(calls, 1);
+    assert.equal(logging.toast, 'Settings saved');
+    assert.equal(logging.displaySyncError, '');
+    assert.equal(logging.settings[key], 'after');
+  }
+  const mixed = context.app();
+  mixed.settings = { log_heartbeat_min: 15, zone_cold_color: '#003cff' };
+  mixed.draft = { log_heartbeat_min: 20, zone_cold_color: '#f29900' };
+  mixed.showToast = () => {};
+  let checked = false;
+  mixed.waitForDisplaySettings = async () => { checked = true; return true; };
+  context.fetch = async () => ({ ok: true, json: async () => ({ settings_revision: 2 }) });
+  await mixed.saveSettings();
+  assert.equal(checked, true);
   const a = context.app();
   a.settings = { maximum_brightness: 200 };
   a.draft = { maximum_brightness: 100 };
@@ -55,5 +78,5 @@ async function saveCase(confirmation) {
   assert.equal(await a.waitForDisplaySettings(3), false);
   assert.ok(clock >= 20000);
   context.Date = realDate; context.setTimeout = realTimeout;
-  console.log('PASS: display success/failure, duplicate saves, pending edits, network failure, exact revision, acknowledgement timeout');
+  console.log('PASS: monitor-only saves, mixed changes, display success/failure, duplicate saves, pending edits, network failure, exact revision, acknowledgement timeout');
 })().catch(error => { console.error(error); process.exitCode = 1; });
