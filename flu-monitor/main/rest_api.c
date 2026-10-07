@@ -218,6 +218,32 @@ static const httpd_uri_t wifi_get_uri = {
     .handler = wifi_get_handler,
 };
 
+static esp_err_t devices_wifi_get_handler(httpd_req_t *req) {
+  wifi_ap_record_t info;
+  bool monitor_connected = esp_wifi_sta_get_ap_info(&info) == ESP_OK;
+  int display_rssi = 0;
+  bool display_connected = ws_server_display_wifi(&display_rssi);
+  cJSON *root = cJSON_CreateObject();
+  cJSON *monitor = cJSON_AddObjectToObject(root, "monitor");
+  cJSON *display = cJSON_AddObjectToObject(root, "display");
+  cJSON_AddBoolToObject(monitor, "connected", monitor_connected);
+  if (monitor_connected) cJSON_AddNumberToObject(monitor, "rssi", info.rssi);
+  else cJSON_AddNullToObject(monitor, "rssi");
+  cJSON_AddBoolToObject(display, "connected", display_connected);
+  if (display_connected) cJSON_AddNumberToObject(display, "rssi", display_rssi);
+  else cJSON_AddNullToObject(display, "rssi");
+  char *json = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  esp_err_t result = httpd_resp_sendstr(req, json);
+  free(json);
+  return result;
+}
+static const httpd_uri_t devices_wifi_get_uri = {
+    .uri = "/api/devices/wifi", .method = HTTP_GET, .handler = devices_wifi_get_handler,
+};
+
 static void settings_to_json(const settings_t *s, cJSON *root) {
   cJSON_AddNumberToObject(root, "settings_revision", ws_server_settings_revision(false));
   cJSON_AddNumberToObject(root, "log_heartbeat_min", s->log_heartbeat_min);
@@ -652,6 +678,7 @@ httpd_handle_t rest_api_start(void) {
   ESP_ERROR_CHECK(httpd_start(&server, &config));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &reading_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &wifi_get_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &devices_wifi_get_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &settings_get_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &settings_status_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &settings_post_uri));

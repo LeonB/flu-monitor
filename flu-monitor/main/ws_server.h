@@ -21,6 +21,8 @@ esp_err_t ws_server_session_open(httpd_handle_t server, int fd);
 void ws_server_session_close(httpd_handle_t server, int fd);
 uint32_t ws_server_settings_revision(bool advance);
 bool ws_server_settings_applied(uint32_t revision);
+// Latest display RSSI is valid only while its WS session is open and report fresh.
+bool ws_server_display_wifi(int *rssi);
 
 // Broadcasts {"type":"settings_changed"} -- lets a connected client (e.g.
 // flu-display) know its own cached copy of the zone thresholds is stale,

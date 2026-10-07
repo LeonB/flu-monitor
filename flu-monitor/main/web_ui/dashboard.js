@@ -94,6 +94,8 @@ function ratePulsePeriodMs(rateCPerMin, fastRiseCPerMin, idlePeriodMs, fastPerio
 function app() {
   return {
     view: 'dashboard',
+    WIFI_DEVICES: [{ key: 'monitor', label: 'Monitor' }, { key: 'display', label: 'Display' }],
+    deviceWifi: {},
     sheetOpen: false,
     themeMenuOpen: false,
     ZONE_THEMES,
@@ -140,9 +142,30 @@ function app() {
     },
 
     async init() {
-      await Promise.all([this.fetchReading(), this.fetchSettings(), this.fetchEvents()]);
+      await Promise.all([this.fetchReading(), this.fetchSettings(), this.fetchEvents(), this.fetchDeviceWifi()]);
       setInterval(() => this.fetchReading(), 5000);
+      setInterval(() => this.fetchDeviceWifi(), 10000);
       requestAnimationFrame((t) => this.runGlowFrame(t));
+    },
+
+    async fetchDeviceWifi() {
+      try {
+        const res = await fetch('/api/devices/wifi', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+        if (!res.ok) throw new Error('unavailable');
+        this.deviceWifi = await res.json();
+      } catch (e) {
+        this.deviceWifi = {}; // Never show a cached signal as a live connection.
+      }
+    },
+
+    wifiSignal(key) {
+      const device = this.deviceWifi[key];
+      if (!device) return { label: 'Unavailable', bars: 0, tone: 'muted', value: '—' };
+      if (!device.connected || !Number.isFinite(device.rssi)) return { label: 'Offline', bars: 0, tone: 'muted', value: '—' };
+      const rssi = device.rssi;
+      const bars = rssi >= -60 ? 4 : rssi >= -70 ? 3 : rssi >= -80 ? 2 : 1;
+      return { label: ['Weak', 'Fair', 'Good', 'Strong'][bars - 1], bars,
+        tone: bars <= 2 ? 'weak' : 'good', value: `${rssi} dBm` };
     },
 
     async fetchReading() {

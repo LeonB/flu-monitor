@@ -201,6 +201,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json(current_reading())
             return
 
+        if path == "/api/devices/wifi":
+            self._json({
+                "monitor": {"connected": os.environ.get("MOCK_MONITOR_CONNECTED", "true").lower() == "true", "rssi": int(os.environ.get("MOCK_MONITOR_RSSI", "-83"))},
+                "display": {"connected": os.environ.get("MOCK_DISPLAY_CONNECTED", "true").lower() == "true", "rssi": int(os.environ.get("MOCK_DISPLAY_RSSI", "-58"))},
+            })
+            return
+
         if path == "/api/settings/status":
             self._json({"settings_revision": settings["settings_revision"], "display_applied": os.environ.get("MOCK_DISPLAY_APPLIED", "true").lower() == "true"})
             return

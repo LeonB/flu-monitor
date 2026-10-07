@@ -922,3 +922,30 @@ monitor's successful settings POST; mixed saves still wait for the display.
 The save bar says Saving rather than checking display for monitor-only edits.
 `node tools/test_settings_sync.js` covers each monitor-only field plus mixed
 logging/colour changes and existing acknowledgement success/failure cases.
+
+## Live WiFi indicators for both devices
+
+The dashboard shows Monitor and Display signal bars, a strength label and
+RSSI in dBm. `GET /api/devices/wifi` returns the monitor's current AP RSSI and
+the display's latest `wifi_status` WS report; the UI polls every ten seconds.
+The display uses its existing WS connection, not an extra HTTP connection.
+The monitor invalidates the display value immediately when its reporting
+session closes, or after 35 seconds without a report. Offline means the
+display link/report is unavailable, not a measured RF signal of zero. Failed
+UI status requests clear the cards to Unavailable instead of retaining stale
+values. Strength labels use >= -60 Strong, >= -70 Good, >= -80 Fair,
+otherwise Weak; labels are a heuristic, not a throughput measurement.
+
+Local mock data is configurable with MOCK_MONITOR_RSSI, MOCK_DISPLAY_RSSI,
+MOCK_MONITOR_CONNECTED and MOCK_DISPLAY_CONNECTED. The approved prototype
+was visually checked in Chrome with weak/strong and offline states. Both
+firmware builds pass. `python3 tools/test_wifi_status.py` compiles the actual
+freshness and session-close functions to verify expiry, close and descriptor
+reuse invalidate old RSSI.
+
+Hardware updated on 2026-10-08: monitor over OTA, display over confirmed USB
+84:0d:8e:d2:a6:ec after its OTA request redirected to the setup portal.
+Live API and Chrome showed both connected, roughly monitor -81/display -69
+dBm. Saved settings matched the pre-flash snapshot and display acknowledgement
+was true. Chrome also confirmed a logging-heartbeat-only save immediately
+succeeded with the mock display acknowledgement disabled.

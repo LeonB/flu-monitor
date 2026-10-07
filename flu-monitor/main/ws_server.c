@@ -7,6 +7,7 @@
 #include "cJSON.h"
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_timer.h"
 #include "lwip/sockets.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -25,6 +26,9 @@ static int s_client_count = 0;
 static SemaphoreHandle_t s_clients_mutex;
 static uint32_t s_settings_revision;
 static uint32_t s_applied_revision;
+static int s_display_wifi_fd = -1;
+static int s_display_wifi_rssi;
+static int64_t s_display_wifi_us;
 
 static void clients_add(int fd) {
   xSemaphoreTake(s_clients_mutex, portMAX_DELAY);
@@ -62,6 +66,7 @@ void ws_server_session_close(httpd_handle_t server, int fd) {
   (void) server;
   if (s_clients_mutex) {
     xSemaphoreTake(s_clients_mutex, portMAX_DELAY);
+    if (s_display_wifi_fd == fd) s_display_wifi_fd = -1;
     for (int i = 0; i < s_client_count; i++) {
       if (s_client_fds[i] == fd) {
         s_client_fds[i] = s_client_fds[--s_client_count];
@@ -88,6 +93,15 @@ bool ws_server_settings_applied(uint32_t revision) {
   bool applied = revision == s_applied_revision;
   xSemaphoreGive(s_clients_mutex);
   return applied;
+}
+
+bool ws_server_display_wifi(int *rssi) {
+  if (!s_clients_mutex) return false; // HTTP starts just before WS initialization.
+  xSemaphoreTake(s_clients_mutex, portMAX_DELAY);
+  bool fresh = s_display_wifi_fd >= 0 && esp_timer_get_time() - s_display_wifi_us < 35000000;
+  if (fresh) *rssi = s_display_wifi_rssi;
+  xSemaphoreGive(s_clients_mutex);
+  return fresh;
 }
 
 // Request httpd teardown; its close callback removes bookkeeping and closes the socket.
@@ -228,6 +242,16 @@ static esp_err_t ws_handler(httpd_req_t *req) {
       cJSON *root = cJSON_Parse((char *) buf);
       cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
       cJSON *revision = cJSON_GetObjectItemCaseSensitive(root, "revision");
+      cJSON *rssi = cJSON_GetObjectItemCaseSensitive(root, "rssi");
+      if (cJSON_IsString(type) && strcmp(type->valuestring, "wifi_status") == 0 &&
+          cJSON_IsNumber(rssi) && rssi->valuedouble >= -127 && rssi->valuedouble <= 0 &&
+          rssi->valuedouble == (int)rssi->valuedouble) {
+        xSemaphoreTake(s_clients_mutex, portMAX_DELAY);
+        s_display_wifi_fd = httpd_req_to_sockfd(req);
+        s_display_wifi_rssi = (int)rssi->valuedouble;
+        s_display_wifi_us = esp_timer_get_time();
+        xSemaphoreGive(s_clients_mutex);
+      }
       if (cJSON_IsString(type) && strcmp(type->valuestring, "settings_applied") == 0 &&
           cJSON_IsNumber(revision) && revision->valuedouble >= 1 && revision->valuedouble <= UINT32_MAX) {
         xSemaphoreTake(s_clients_mutex, portMAX_DELAY);

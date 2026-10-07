@@ -11,6 +11,7 @@
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_websocket_client.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -410,6 +411,21 @@ static void ws_event_handler(void *handler_arg, esp_event_base_t base, int32_t e
 // its initial settings, connects the WebSocket client, then just waits for
 // "settings changed" broadcasts to re-fetch. Runs for the lifetime of the
 // device; everything after the first connect is event-driven.
+// Independent of settings fetches: report current AP signal without new sockets.
+static void wifi_status_task(void *arg) {
+  (void)arg;
+  while (true) {
+    wifi_ap_record_t info;
+    if (s_ws_client && esp_websocket_client_is_connected(s_ws_client) &&
+        esp_wifi_sta_get_ap_info(&info) == ESP_OK) {
+      char message[64];
+      int length = snprintf(message, sizeof(message), "{\"type\":\"wifi_status\",\"rssi\":%d}", info.rssi);
+      esp_websocket_client_send_text(s_ws_client, message, length, pdMS_TO_TICKS(1000));
+    }
+    vTaskDelay(pdMS_TO_TICKS(10000));
+  }
+}
+
 static void log_socket_usage(void) {
   unsigned count = 0;
   for (int fd = LWIP_SOCKET_OFFSET; fd < LWIP_SOCKET_OFFSET + CONFIG_LWIP_MAX_SOCKETS; fd++) {
@@ -461,6 +477,7 @@ static void settings_task(void *arg) {
   s_ws_client = esp_websocket_client_init(&ws_config);
   esp_websocket_register_events(s_ws_client, WEBSOCKET_EVENT_ANY, ws_event_handler, NULL);
   esp_websocket_client_start(s_ws_client);
+  xTaskCreate(wifi_status_task, "display_wifi", 3072, NULL, tskIDLE_PRIORITY + 1, NULL);
 
   bool synced = false;
   int64_t last_socket_log_us = 0;

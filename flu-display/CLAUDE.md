@@ -535,3 +535,20 @@ capture produced no lines, so no settled production-wide socket count was
 established in that final capture; the fault server directly verified the
 fixed redirect connections were released. Physical colour appearance remains
 for the user to judge.
+
+
+## WiFi signal telemetry
+
+A dedicated lightweight task samples `esp_wifi_sta_get_ap_info()` and sends
+`{"type":"wifi_status","rssi":...}` every ten seconds when WS is connected.
+It starts after WS initialization and is independent of blocking settings
+fetches. No additional network sockets are opened. The monitor displays
+these reports only while the reporting connection is open and the report
+is less than 35 seconds old. The normal build leaves the diagnostic URI
+override empty. Both firmware builds pass; hardware verification follows
+through the monitor's `/api/devices/wifi` endpoint.
+
+Installed on 2026-10-08 over confirmed USB after the OTA endpoint redirected
+to setup. The monitor received real RSSI (about -69 dBm), Chrome displayed
+both indicators and the display acknowledged current settings. The
+production diagnostic URI override remained empty.

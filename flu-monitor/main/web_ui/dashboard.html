@@ -35,6 +35,16 @@
   .topbar h2 { margin: 0; }
   .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent-2); display: inline-block; margin-right: 6px; }
   .stale .live-dot { background: var(--color-neutral-500); }
+  .connection-strip { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 14px 16px 0; }
+  .connection-card { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border-radius: 18px; background: var(--color-surface); }
+  .connection-name { font-size: 13px; font-weight: 700; }
+  .connection-detail { display: flex; flex-wrap: wrap; gap: 3px 6px; margin-top: 2px; font-size: 12px; color: var(--color-neutral-700); }
+  .signal-bars { display: flex; align-items: flex-end; gap: 3px; width: 25px; height: 22px; flex-shrink: 0; color: var(--color-neutral-500); }
+  .signal-bars.good { color: #427656; }
+  .signal-bars.weak { color: #a06022; }
+  .signal-bars i { width: 4px; border-radius: 2px; background: currentColor; opacity: .18; }
+  .signal-bars i.lit { opacity: 1; }
+  .connection-detail .signal-label { font-weight: 600; }
   .glow-wrap { flex: 1; display: grid; place-items: center; padding: 12px 24px; min-height: 220px; }
   /* No CSS transition here, deliberately: dashboard.js's runGlowFrame()
      already animates box-shadow/background-color smoothly itself, every
@@ -113,6 +123,25 @@
         <button class="btn btn-secondary btn-icon" aria-label="Settings" @click="openSettings()">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"></path></svg>
         </button>
+      </div>
+
+      <div class="connection-strip" role="group" aria-label="Device WiFi signal strength">
+        <template x-for="device in WIFI_DEVICES" :key="device.key">
+          <div class="connection-card" :aria-label="device.label + ' WiFi: ' + wifiSignal(device.key).label + ', ' + wifiSignal(device.key).value">
+            <span class="signal-bars" :class="wifiSignal(device.key).tone" aria-hidden="true">
+              <template x-for="bar in [1, 2, 3, 4]" :key="bar">
+                <i :class="{ lit: bar <= wifiSignal(device.key).bars }" :style="'height:' + (bar * 5) + 'px'"></i>
+              </template>
+            </span>
+            <div>
+              <div class="connection-name" x-text="device.label"></div>
+              <div class="connection-detail">
+                <span class="signal-label" x-text="wifiSignal(device.key).label"></span>
+                <span x-text="wifiSignal(device.key).value"></span>
+              </div>
+            </div>
+          </div>
+        </template>
       </div>
 
       <div class="glow-wrap">
