@@ -185,6 +185,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         static = {
             "/": (WEB_UI_DIR, "dashboard.html", "text/html"),
+            "/burn-graph.js": (WEB_UI_DIR, "burn-graph.js", "application/javascript"),
+            "/vendor/uplot.min.js": (WEB_UI_DIR, "vendor/uplot.min.js", "application/javascript"),
+            "/vendor/uplot.min.css": (WEB_UI_DIR, "vendor/uplot.min.css", "text/css"),
             "/dashboard.js": (WEB_UI_DIR, "dashboard.js", "application/javascript"),
             "/dashboard.css": (WEB_UI_DIR, "dashboard.css", "text/css"),
             "/alpinejs.min.js": (CAPTIVE_PORTAL_DIR, "alpine.min.js", "application/javascript"),

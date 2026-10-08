@@ -9,6 +9,9 @@ assets = {
     "html": root / "main/web_ui/dashboard.html",
     "js": root / "main/web_ui/dashboard.js",
     "css": root / "main/web_ui/dashboard.css",
+    "burn_graph_js": root / "main/web_ui/burn-graph.js",
+    "uplot_js": root / "main/web_ui/vendor/uplot.min.js",
+    "uplot_css": root / "main/web_ui/vendor/uplot.min.css",
     "alpine_js": root.parent / "components/captive_portal/alpine.min.js",
     **{name.replace("-", "_"): root / f"main/web_ui/fonts/{name}.woff2"
        for name in ("caprasimo-400", "figtree-400", "figtree-600", "figtree-700")},

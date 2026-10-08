@@ -64,14 +64,6 @@ function peakZoneColor(zoneName, rate, settings) {
   if (rate < 0) return zoneColor(ZONE_ORDER[Math.max(0, i - 1)], settings);
   return zoneColor(zoneName, settings);
 }
-// History graph range picker (see the graph screen's .range-picker) -- all
-// four just slice the same 24h/4min-cadence ring buffer GET /api/history
-// already returns in full (SENSORS_HISTORY_CAPACITY in sensors.h), so this
-// is a pure client-side view filter, no separate backend request per range.
-const HISTORY_RANGE_KEYS = ['1h', '3h', '6h', '24h'];
-const HISTORY_RANGES_S = { '1h': 3600, '3h': 3 * 3600, '6h': 6 * 3600, '24h': 24 * 3600 };
-const HISTORY_RANGE_LABELS = { '1h': 'hour', '3h': '3 hours', '6h': '6 hours', '24h': '24 hours' };
-
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function lerp(a, b, t) { return a + (b - a) * t; }
 function lerpRgb(a, b, t) { return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]; }
@@ -92,6 +84,7 @@ function ratePulsePeriodMs(rateCPerMin, fastRiseCPerMin, idlePeriodMs, fastPerio
 }
 
 function app() {
+  let historyRequest = null;
   return {
     view: 'dashboard',
     WIFI_DEVICES: [{ key: 'monitor', label: 'Monitor' }, { key: 'display', label: 'Display' }],
@@ -110,8 +103,8 @@ function app() {
     events: [],
     history: { now_s: 0, samples: [], events: [] },
     historyLoaded: false,
-    historyRange: '24h',
-    HISTORY_RANGE_KEYS,
+    historyReceivedMs: 0,
+    historyError: '',
     saving: false,
     savingDisplaySettings: false,
     displaySyncError: '',
@@ -142,10 +135,11 @@ function app() {
     },
 
     async init() {
-      await Promise.all([this.fetchReading(), this.fetchSettings(), this.fetchEvents(), this.fetchDeviceWifi()]);
       setInterval(() => this.fetchReading(), 5000);
       setInterval(() => this.fetchDeviceWifi(), 10000);
       requestAnimationFrame((t) => this.runGlowFrame(t));
+      await Promise.all([this.fetchReading(), this.fetchSettings(), this.fetchEvents(), this.fetchDeviceWifi()]);
+      this.fetchHistory(); // Warm the graph while the dashboard is visible.
     },
 
     async fetchDeviceWifi() {
@@ -194,14 +188,25 @@ function app() {
     },
 
     async fetchHistory() {
-      this.historyLoaded = false;
-      try {
-        const res = await fetch('/api/history');
-        this.history = await res.json();
-      } catch (e) {
-        this.history = { now_s: 0, samples: [], events: [] };
-      }
-      this.historyLoaded = true;
+      if (historyRequest) return historyRequest;
+      if (this.historyReceivedMs && Date.now()-this.historyReceivedMs<30000) return;
+      historyRequest = (async () => {
+        try {
+          const res = await fetch('/api/history', { signal: AbortSignal.timeout(10000) });
+          if (!res.ok) throw new Error('unavailable');
+          const history = await res.json();
+          this.historyReceivedMs = Date.now();
+          this.history = history;
+          this.historyError = '';
+        } catch (e) {
+          this.historyError = this.history.samples.length ? '' : "Couldn't load history. Reopen the graph to retry.";
+          // Preserve previously loaded data while the monitor is unavailable.
+        } finally {
+          this.historyLoaded = true;
+          historyRequest = null;
+        }
+      })();
+      return historyRequest;
     },
 
     openSheet() { this.sheetOpen = true; },
@@ -227,6 +232,7 @@ function app() {
         // duplicate local annotation for the same tap, since the tap itself
         // already succeeded (see REVIEW.md finding #5/C5/D3).
         const data = await res.json().catch(() => ({}));
+        this.historyReceivedMs = 0; // A new event invalidates prefetched history.
         this.showToast(data.sheets_queued === false ? 'Logged: ' + ev.label + ' (not sent to Sheets)' : 'Logged: ' + ev.label);
       } catch (e) {
         this.showToast("Couldn't log " + ev.label + ' -- check the connection');
@@ -239,13 +245,8 @@ function app() {
       this.toastTimer = setTimeout(() => { this.toast = ''; }, 4000);
     },
 
-    get historyRangeLabel() {
-      return HISTORY_RANGE_LABELS[this.historyRange] || HISTORY_RANGE_LABELS['24h'];
-    },
-
     openGraph() {
       this.view = 'graph';
-      this.historyRange = '24h';
       this.fetchHistory();
     },
 
@@ -400,100 +401,5 @@ function app() {
       requestAnimationFrame((t) => this.runGlowFrame(t));
     },
 
-    // --- History graph SVG (range-filtered, see HISTORY_RANGES_S above) ---
-    get graphHeight() { return 320; },
-
-    get graphSvg() {
-      const samples = this.history.samples || [];
-      if (samples.length === 0) return '';
-
-      // Samples are ordered oldest-first (largest age_s first), so this
-      // keeps the most-recent contiguous slice matching the picked range --
-      // a pure view filter over the same full 24h buffer GET /api/history
-      // already returned (see HISTORY_RANGES_S's own comment above).
-      const maxAgeS = HISTORY_RANGES_S[this.historyRange] || HISTORY_RANGES_S['24h'];
-      const rangedSamples = samples.filter((s) => s[0] <= maxAgeS);
-
-      // Historical samples land every ~4min (see sensors.c's
-      // HISTORY_PUSH_EVERY_N), so the last one can be several minutes
-      // stale by the time this renders -- appending the live /api/reading
-      // value as an age-0 point extends the curve all the way to "now"
-      // instead of stopping short of it. Without this, a very recently
-      // logged event (also timestamped with second-level precision, unlike
-      // the coarse samples) could end up plotted to the right of the
-      // curve's last point -- visually reading as "in the future" even
-      // though its own age is never actually negative.
-      const plotSamples = this.reading.thermocouple_ok ? [...rangedSamples, [0, this.reading.thermocouple_c]] : rangedSamples;
-      if (plotSamples.length === 0) return '';
-
-      const W = 342, H = this.graphHeight;
-      const temps = plotSamples.map((s) => s[1]);
-      const coldMax = this.settings.zone_cold_max_c || 150;
-      const optimalMax = this.settings.zone_optimal_max_c || 280;
-      const dataMin = Math.min(...temps, coldMax);
-      const dataMax = Math.max(...temps, optimalMax);
-      const padBottom = Math.max(10, (dataMax - dataMin) * 0.1);
-      // The "hot" band's top edge is just whatever headroom the plotted
-      // data happens to leave above optimalMax -- a symmetric 10% pad made
-      // it a barely-visible sliver whenever the burn stayed under the hot
-      // threshold (the common case, since there's no real overfire data --
-      // see the repo root CLAUDE.md's "Current phase is data-gathering"
-      // section). A larger, fixed-minimum top pad keeps the red band
-      // visually present instead of flattening away.
-      const padTop = Math.max(30, (dataMax - dataMin) * 0.15);
-      const yMin = dataMin - padBottom, yMax = dataMax + padTop;
-      const yOf = (t) => H - ((t - yMin) / (yMax - yMin)) * H;
-      const xOf = (ageS) => W - (clamp(ageS, 0, maxAgeS) / maxAgeS) * W;
-
-      const ZONE_NAME = { 1: 'cold', 2: 'optimal', 3: 'hot' };
-      const ZONE_FILL = Object.fromEntries([1, 2, 3].map((n) => [n, rgbCss(lerpRgb(zoneColor(ZONE_NAME[n], this.settings).bg, [255, 255, 255], 0.85))]));
-      let svg = '';
-      // Zone bands, cold at the bottom
-      const bandTop = [yOf(yMax), yOf(optimalMax), yOf(coldMax)];
-      const bandBottom = [yOf(optimalMax), yOf(coldMax), yOf(yMin)];
-      const bandZone = [3, 2, 1];
-      const bandLabel = {
-        3: `Hot above ${Math.round(optimalMax)}°C`,
-        2: `Optimal ${Math.round(coldMax)}–${Math.round(optimalMax)}°C`,
-        1: `Cold below ${Math.round(coldMax)}°C`,
-      };
-      for (let i = 0; i < 3; i++) {
-        const top = Math.min(bandTop[i], bandBottom[i]);
-        const h = Math.abs(bandBottom[i] - bandTop[i]);
-        if (h <= 0) continue;
-        svg += `<rect x="0" y="${top.toFixed(1)}" width="${W}" height="${h.toFixed(1)}" fill="${ZONE_FILL[bandZone[i]]}"></rect>`;
-        // Skip the label if the band's too thin to hold it legibly.
-        if (h >= 16) {
-          svg += `<text x="8" y="${(top + 13).toFixed(1)}" font-size="10" font-weight="600" fill="var(--color-neutral-700)" font-family="Figtree">${escapeXml(bandLabel[bandZone[i]])}</text>`;
-        }
-      }
-
-      const points = plotSamples.map((s) => `${xOf(s[0]).toFixed(1)},${yOf(s[1]).toFixed(1)}`).join(' ');
-      svg += `<polyline points="${points}" fill="none" stroke="var(--color-text)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>`;
-
-      const last = plotSamples[plotSamples.length - 1];
-      const lastZoneName = this.reading.thermocouple_ok ? this.reading.thermocouple_zone : ZONE_NAME[last[3]];
-      const lastColor = rgbCss(zoneColor(lastZoneName, this.settings).bg);
-      svg += `<circle cx="${xOf(last[0]).toFixed(1)}" cy="${yOf(last[1]).toFixed(1)}" r="6" fill="${lastColor}" stroke="var(--color-bg)" stroke-width="2.5"></circle>`;
-
-      for (const ev of (this.history.events || [])) {
-        if (ev[0] > maxAgeS) continue;
-        const x = xOf(ev[0]);
-        // Nearest sample's temperature, so the marker sits on the curve.
-        let nearest = plotSamples[0];
-        for (const s of plotSamples) { if (Math.abs(s[0] - ev[0]) < Math.abs(nearest[0] - ev[0])) nearest = s; }
-        const y = yOf(nearest[1]);
-        svg += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="6" fill="var(--color-bg)" stroke="var(--color-text)" stroke-width="2.5"></circle>`;
-        svg += `<text x="${x.toFixed(1)}" y="${(y - 12).toFixed(1)}" font-size="10" font-weight="600" fill="var(--color-text)" font-family="Figtree" text-anchor="middle">${escapeXml(ev[1])}</text>`;
-      }
-
-      svg += `<text x="4" y="${H - 6}" font-size="10" fill="var(--color-neutral-700)" font-family="Figtree">${Math.round(maxAgeS / 3600)}h ago</text>`;
-      svg += `<text x="${W - 4}" y="${H - 6}" font-size="10" fill="var(--color-neutral-700)" font-family="Figtree" text-anchor="end">now</text>`;
-      return svg;
-    },
   };
-}
-
-function escapeXml(s) {
-  return String(s).replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
 }

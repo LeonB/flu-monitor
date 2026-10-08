@@ -21,6 +21,9 @@ assets = {
     "/": root / "main/web_ui/dashboard.html",
     "/dashboard.js": root / "main/web_ui/dashboard.js",
     "/dashboard.css": root / "main/web_ui/dashboard.css",
+    "/burn-graph.js": root / "main/web_ui/burn-graph.js",
+    "/vendor/uplot.min.js": root / "main/web_ui/vendor/uplot.min.js",
+    "/vendor/uplot.min.css": root / "main/web_ui/vendor/uplot.min.css",
     "/alpinejs.min.js": root.parent / "components/captive_portal/alpine.min.js",
     **{f"/fonts/{p.name}": p for p in (root / "main/web_ui/fonts").glob("*.woff2")},
 }

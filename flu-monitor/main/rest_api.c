@@ -28,6 +28,12 @@ extern const char web_ui_js_start[] asm("_binary_dashboard_js_start");
 extern const char web_ui_js_end[] asm("_binary_dashboard_js_end");
 extern const char web_ui_css_start[] asm("_binary_dashboard_css_start");
 extern const char web_ui_css_end[] asm("_binary_dashboard_css_end");
+extern const char web_ui_burn_graph_js_start[] asm("_binary_burn_graph_js_start");
+extern const char web_ui_burn_graph_js_end[] asm("_binary_burn_graph_js_end");
+extern const char web_ui_uplot_js_start[] asm("_binary_uplot_min_js_start");
+extern const char web_ui_uplot_js_end[] asm("_binary_uplot_min_js_end");
+extern const char web_ui_uplot_css_start[] asm("_binary_uplot_min_css_start");
+extern const char web_ui_uplot_css_end[] asm("_binary_uplot_min_css_end");
 // alpine.min.js is NOT embedded here a second time -- it's byte-identical to
 // captive_portal's own copy, so this just reuses captive_portal's already-
 // embedded symbol (captive_portal is a PRIV_REQUIRES dependency, so its
@@ -85,6 +91,24 @@ static esp_err_t serve_asset(httpd_req_t *req, const char *type,
   }
   return httpd_resp_send(req, compressed ? (const char *)gzip : raw, compressed ? gzip_len : raw_len);
 }
+
+static esp_err_t web_ui_burn_graph_js_get_handler(httpd_req_t *req) {
+  return serve_asset(req, "application/javascript", web_ui_burn_graph_js_start, web_ui_burn_graph_js_end - web_ui_burn_graph_js_start,
+                     ASSET_burn_graph_js_ETAG, asset_burn_graph_js_gzip, sizeof(asset_burn_graph_js_gzip), ASSET_burn_graph_js_GZIP_ETAG);
+}
+static const httpd_uri_t web_ui_burn_graph_js_uri = {.uri = "/burn-graph.js", .method = HTTP_GET, .handler = web_ui_burn_graph_js_get_handler};
+
+static esp_err_t web_ui_uplot_js_get_handler(httpd_req_t *req) {
+  return serve_asset(req, "application/javascript", web_ui_uplot_js_start, web_ui_uplot_js_end - web_ui_uplot_js_start,
+                     ASSET_uplot_js_ETAG, asset_uplot_js_gzip, sizeof(asset_uplot_js_gzip), ASSET_uplot_js_GZIP_ETAG);
+}
+static const httpd_uri_t web_ui_uplot_js_uri = {.uri = "/vendor/uplot.min.js", .method = HTTP_GET, .handler = web_ui_uplot_js_get_handler};
+
+static esp_err_t web_ui_uplot_css_get_handler(httpd_req_t *req) {
+  return serve_asset(req, "text/css", web_ui_uplot_css_start, web_ui_uplot_css_end - web_ui_uplot_css_start,
+                     ASSET_uplot_css_ETAG, asset_uplot_css_gzip, sizeof(asset_uplot_css_gzip), ASSET_uplot_css_GZIP_ETAG);
+}
+static const httpd_uri_t web_ui_uplot_css_uri = {.uri = "/vendor/uplot.min.css", .method = HTTP_GET, .handler = web_ui_uplot_css_get_handler};
 
 static esp_err_t web_ui_html_get_handler(httpd_req_t *req) {
   return serve_asset(req, "text/html", web_ui_html_start, web_ui_html_end - web_ui_html_start,
@@ -685,6 +709,9 @@ httpd_handle_t rest_api_start(void) {
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &events_get_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &event_post_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &history_get_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_burn_graph_js_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_uplot_js_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_uplot_css_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_html_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_js_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &web_ui_css_uri));

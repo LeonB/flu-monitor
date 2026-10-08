@@ -949,3 +949,40 @@ Live API and Chrome showed both connected, roughly monitor -81/display -69
 dBm. Saved settings matched the pre-flash snapshot and display acknowledgement
 was true. Chrome also confirmed a logging-heartbeat-only save immediately
 succeeded with the mock display acknowledgement disabled.
+
+
+## uPlot burn graph local preview
+
+The SVG history renderer is replaced by vendored uPlot 1.6.32 (MIT license
+in main/web_ui/vendor). burn-graph.js owns an unproxied chart in a child
+Alpine component; it destroys the chart and ResizeObserver when leaving
+the graph. It preserves zone bands/threshold labels and event markers, adds
+time/temperature axes, drag/wheel zoom and touch pinch/pan. Event captions
+are drawn beside their markers with collision spacing and leader lines;
+overcrowded captions reappear when zoomed. Double-click restores the full
+24h window. Preset/zoom/reset buttons, custom date inputs and event chips
+were removed after local review.
+Browser wall-clock time anchors the device's monotonic ages when history
+is fetched; clock labels are approximate and history remains four-minute
+samples for 24 hours. Zoom does not create finer sensor history.
+
+Local live preview: `python3 tools/ui_proxy.py http://192.168.1.137 8773`.
+The proxy serves local assets and forwards only GET /api requests; POSTs
+are rejected so preview settings/event actions cannot change the monitor.
+Synthetic burn preview: `python3 tools/mock_server.py 8774`. Both bind only
+to localhost. New graph assets are embedded/compressed with ETags for a
+future flash, but neither device was flashed for this preview.
+
+Preview verification: Chrome checked live history, sample-burn rendering,
+clustered inline event captions, removal of graph controls, gesture zoom,
+double-click reset and leaving/reopening the graph without a loading blank;
+no console errors. Host checks cover shared in-flight history requests,
+30s cache reuse, retained data on refresh failure and initial load failure. Touch
+gestures are implemented but have not been verified on a physical phone.
+The firmware builds with about 4% app-partition headroom; revisit asset
+storage/partition sizing before adding further substantial dependencies.
+
+History preloads after the initial dashboard requests and is reused for 30s.
+Overlapping loads share one request. Background refreshes preserve the old
+curve; failed refreshes retain it too. The history receipt time anchors its
+monotonic ages, so opening prefetched history later does not shift events.
