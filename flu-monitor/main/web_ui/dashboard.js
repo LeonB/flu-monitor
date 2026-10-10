@@ -87,6 +87,7 @@ function app() {
   let historyRequest = null;
   return {
     view: 'dashboard',
+    graphState: { range: null },
     WIFI_DEVICES: [{ key: 'monitor', label: 'Monitor' }, { key: 'display', label: 'Display' }],
     deviceWifi: {},
     sheetOpen: false,

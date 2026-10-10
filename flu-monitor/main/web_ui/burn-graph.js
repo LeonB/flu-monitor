@@ -1,5 +1,5 @@
 // uPlot 1.6.32; keep the chart outside Alpine's reactive proxy.
-function burnGraph() {
+function burnGraph(state = { range: null }) {
   let plot, observer, anchor, samples = [], events = [], palette, bounds;
   let chartHost, tooltip, lastHistory;
   const rangeClock = (s) => new Date(s * 1000).toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
@@ -128,13 +128,18 @@ function burnGraph() {
               const nearby = events.filter(e => Math.abs(e[0]-time) <= 120).map(e => e[1]);
               tooltip.textContent = `${clock(time)} · ${temp.toFixed(1)} °C${nearby.length ? ' · '+nearby.join(', ') : ''}`;
             }],
-            setScale: [u => {
+            setScale: [(u, key) => {
+              if (key !== 'x') return;
               if (!u.scales.x.min || !u.scales.x.max) return;
+              // Constructor hooks run before plot is assigned: preserve the saved range.
+              if (plot) state.range = u.scales.x.max - u.scales.x.min >= 86400 - .01
+                ? null : { min: u.scales.x.min, max: u.scales.x.max };
               this.visibleRange = `${rangeClock(u.scales.x.min)} – ${rangeClock(u.scales.x.max)}`;
             }]
           }
         }, data, chartHost);
-        this.resetRange();
+        if (state.range) plot.setScale('x', { ...state.range });
+        else this.resetRange();
         plot.over.addEventListener('dblclick', () => this.resetRange());
         const zoom = (factor, centre) => {
           const lo=plot.scales.x.min, hi=plot.scales.x.max;

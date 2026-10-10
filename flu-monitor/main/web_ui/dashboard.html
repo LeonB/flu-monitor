@@ -106,7 +106,7 @@
   .stepper .stepper-value { min-width: 68px; text-align: center; font-weight: 700; font-size: 14px; }
   .text-field { padding: 10px 16px 14px; }
   .text-field label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
-  .save-bar { position: fixed; left: 16px; right: 16px; bottom: 16px; max-width: 428px; margin: 0 auto; padding: 8px 8px 8px 20px; border-radius: 999px; background: var(--color-text); color: var(--color-bg); display: flex; align-items: center; gap: 10px; box-shadow: var(--shadow-lg); }
+  .save-bar { position: fixed; left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 15; max-width: 428px; margin: 0 auto; padding: 8px 8px 8px 20px; border-radius: 999px; background: var(--color-text); color: var(--color-bg); display: flex; align-items: center; gap: 10px; box-shadow: var(--shadow-lg); }
   .save-bar span { flex: 1; font-size: 14px; font-weight: 600; }
   .save-bar button { height: 44px; border-radius: 999px; border: none; font: inherit; font-weight: 600; cursor: pointer; padding: 0 18px; }
   .btn-revert { background: none; color: var(--color-bg); }
@@ -202,7 +202,7 @@
 
   <!-- ============ History graph ============ -->
   <template x-if="view === 'graph'">
-    <div class="graph-screen" x-data="burnGraph()" x-effect="update(history, reading, settings, historyLoaded, events, historyReceivedMs)">
+    <div class="graph-screen" x-data="burnGraph(graphState)" x-effect="update(history, reading, settings, historyLoaded, events, historyReceivedMs)">
       <div class="topbar" style="padding:0">
         <button class="btn btn-secondary" style="height:44px;gap:4px;padding:0 16px 0 10px" @click="view = 'dashboard'">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg>
@@ -411,15 +411,17 @@
         <span x-text="displaySyncError"></span>
         <button type="button" @click="displaySyncError = ''" style="display:block;margin-top:8px;background:transparent;border:0;text-decoration:underline;font:inherit;cursor:pointer" aria-label="Dismiss display delivery warning">Dismiss</button>
       </div>
-      <template x-if="changeCount > 0 || saving">
-        <div class="save-bar">
-          <span x-text="saving ? (savingDisplaySettings ? 'Saving and checking display…' : 'Saving…') : changeCount + (changeCount === 1 ? ' change' : ' changes')"></span>
-          <button class="btn-revert" @click="revertDraft()">Undo</button>
-          <button class="btn-save" :disabled="saving" @click="saveSettings()" x-text="saving ? 'Saving…' : 'Save'"></button>
-        </div>
-      </template>
+
     </div>
   </template>
+
+  <!-- Keep the fixed save bar mounted across dirty/clean transitions on iOS. -->
+  <div class="save-bar" style="display:none" x-show="view === 'settings' && (changeCount > 0 || saving)">
+    <span x-text="saving ? (savingDisplaySettings ? 'Saving and checking display…' : 'Saving…') : changeCount + (changeCount === 1 ? ' change' : ' changes')"></span>
+    <button class="btn-revert" @click="revertDraft()">Undo</button>
+    <button class="btn-save" :disabled="saving" @click="saveSettings()" x-text="saving ? 'Saving…' : 'Save'"></button>
+  </div>
+
 
 <!-- dashboard.js must load (and define app() on window) before alpinejs.min.js
      runs: Alpine auto-starts synchronously at the end of its own script
