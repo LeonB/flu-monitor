@@ -30,6 +30,7 @@
 #include "config.h"
 #include "ota_server.h"
 #include "rest_api.h"
+#include "pagekite_tunnel.h"
 #include "secrets.h"
 #include "sensors.h"
 #include "settings.h"
@@ -181,6 +182,7 @@ void app_main(void) {
     ota_server_register(server, OTA_SECRET);
     ws_server_register(server);
     sheets_logger_init();
+    pagekite_tunnel_start();
 
     while (true) {
       vTaskDelay(pdMS_TO_TICKS(10000));

@@ -1012,3 +1012,76 @@ disconnect handling and invalid headers. The existing
 `tools/test_web_assets.py` remains the on-device gzip/identity/cache check.
 These asset changes have not yet been flashed; ROM/runtime verification and
 captive portal browser verification remain for hardware deployment.
+
+
+## Experimental on-device PageKite dashboard
+
+The monitor runs PageKite directly (`main/pagekite_tunnel.c`) with verified
+ESP-TLS relay identity `frontends.b5p.us`, the existing CA bundle and an SNTP
+wait before certificate validation. It starts after the REST API when enabled
+in NVS settings. Settings → PageKite edits enabled/domain/relay/shared secret;
+no build-time credentials or private include directory remain. First enable
+creates the tunnel task; after disable it waits without open relay/backend
+sockets. Settings changes allow one second for the save response, then clean
+up all sockets and reconnect with a fresh settings snapshot. Notifications
+interrupt backoff/disabled waits. Current relay defaults to 176.58.121.52;
+its existing kite routing was configured by the desktop prototype. Changing
+the relay here does not update PageKite DNS routing.
+
+Public `https://flumonitor-vanutsteen.pagekite.me/` supports the dashboard,
+settings edits and event logging. GET/POST /api/settings map to
+/api/tunnel/settings. GET strips Sheets secret/webhook URL and adds
+credentials_redacted; POST preserves omitted credentials and accepts explicit
+replacements. Placeholder text explains that unchanged fields retain saved
+values. GET /api/settings/status exposes the normal display acknowledgement
+flow. The user explicitly requested full editing before authentication;
+authentication is deferred. OTA, WiFi setup and WebSocket upgrades are outside
+the dashboard routing. The display retains its existing LAN WebSocket.
+
+Eight streams, two local backend sockets and a 4 KiB receive buffer bound
+memory. Combined request/header buffers grow in 512-byte increments to at
+most 4 KiB only while collecting/queueing, and are freed after forwarding.
+POST bodies must be application/json with one explicit Content-Length below
+2048 bytes (the settings handler allocates its body on the heap). Fragmented bodies are collected before local
+forwarding; upgrades, duplicate lengths, pipelined and truncated requests are
+rejected. Each socket is half-closed for writing after its complete request:
+ESP-IDF HTTPD does not close just because Connection: close was requested.
+TLS failures close all backend sockets before 2–60 second reconnect retries.
+HTTP server max_uri_handlers is now 32, leaving room beyond the new POST route.
+
+2026-10-10 hardware: editable dashboard API, six-client concurrency and all
+eleven public asset gzip/identity/ETag checks passed. Public monitor-only and
+display-setting saves/restoration passed; stored credentials retained and the
+display acknowledged matching revisions. Event POST transport was tested with
+an invalid slug to avoid inserting fake burn data. Image 0x1395b0 leaves 16%
+app-slot space. A 9260-byte mixed-traffic heap minimum led to temporary request
+buffer allocation; final hardware checks were repeated after that improvement.
+Long-term soak, forced WiFi loss, automatic relay selection/DDNS and visitor
+authentication remain unfinished. See tools/pagekite-prototype/README.md,
+tools/test_pagekite.py and tools/test_pagekite_dashboard.py. Temporary tunnel
+credentials are removed after tests; rebuilding no longer requires a secret.
+
+PageKite configuration is an appended settings_t tail. The preceding NVS
+blob size migrates using offsetof(settings_t, pagekite), preserving existing
+values and seeding the tunnel disabled with the relay default. Both LAN and
+public GETs expose only pagekite_secret_set; POST preserves blank/omitted
+secrets and omitted PageKite fields. Strict type/length and host validation
+reject protocol injection. Successful UI saves discard the submitted secret
+while retaining any newer edit. PageKite keys are monitor-only. Tests:
+`tools/test_pagekite_settings.py` executes actual settings/REST code with NVS
+shims and cJSON under ASan/UBSan; `tools/test_pagekite_configuration.py`
+reversibly verifies live configure/disable/re-enable/secret replacement.
+
+Final editable-firmware check: free heap 106548 bytes; minimum 28232 bytes; reconnects 0. Temporary settings changes were restored and both device links remained healthy.
+
+2026-10-10 configurable tunnel: first OTA image 0x139d70 passed hardware NVS
+migration (every preceding field retained), configure/blank-secret saves,
+remote disable acknowledgement, LAN re-enable and secret replacement/restore.
+Chrome mock settings save cleared the password field and dirty bar. A later
+probe unexpectedly showed uptime 16 seconds, followed by network loss at
+192.168.1.137; no USB serial port was available to determine reset cause.
+Compiler stack frames show Sheets task snapshot 816 bytes plus log_to_sheets
+784 bytes before HTTP/TLS calls. Prepared extra logging-task stack headroom
+(4096 → 6144) and a reset_reason in /probe; image 0x139f80 leaves 16% free.
+This additional image and reboot/persistence verification still need deployment
+once the monitor is reachable. Do not claim the low-uptime restart diagnosed.

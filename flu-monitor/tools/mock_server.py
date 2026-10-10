@@ -50,6 +50,10 @@ EVENT_LABEL = {e["slug"]: e["label"] for e in EVENTS}
 
 settings = {
     "settings_revision": 1,
+    "pagekite_enabled": False,
+    "pagekite_domain": "",
+    "pagekite_relay": "176.58.121.52",
+    "pagekite_secret_set": False,
     "log_heartbeat_min": 15,
     "zone_cold_max_c": 150,
     "zone_optimal_max_c": 280,
@@ -243,11 +247,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         if path == "/api/settings":
+            if data.get("pagekite_secret"):
+                settings["pagekite_secret_set"] = True
             for k in settings:
-                if k in data and k != "settings_revision":
+                if k in data and k not in ("settings_revision", "pagekite_secret_set"):
                     settings[k] = data[k]
             settings["settings_revision"] += 1
-            self._json({"success": True, "settings_revision": settings["settings_revision"]})
+            self._json({"success": True, "settings_revision": settings["settings_revision"], "pagekite_secret_set": settings["pagekite_secret_set"]})
             return
 
         if path == "/api/event":

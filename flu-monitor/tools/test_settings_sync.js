@@ -23,7 +23,7 @@ async function saveCase(confirmation) {
 (async () => {
   await saveCase(true);
   await saveCase(false);
-  for (const key of ['log_heartbeat_min', 'thermocouple_deadband_c', 'google_sheets_webhook_url', 'google_sheets_secret']) {
+  for (const key of ['log_heartbeat_min', 'thermocouple_deadband_c', 'google_sheets_webhook_url', 'google_sheets_secret', 'pagekite_enabled', 'pagekite_domain', 'pagekite_relay']) {
     const logging = context.app();
     logging.settings = { [key]: 'before', maximum_brightness: 100 };
     logging.draft = { [key]: 'after', maximum_brightness: 100 };
@@ -37,6 +37,36 @@ async function saveCase(confirmation) {
     assert.equal(logging.displaySyncError, '');
     assert.equal(logging.settings[key], 'after');
   }
+  const tunnel = context.app();
+  tunnel.settings = { pagekite_secret: '', pagekite_secret_set: true };
+  tunnel.draft = { ...tunnel.settings, pagekite_secret: 'replacement-secret' };
+  tunnel.showToast = () => {};
+  tunnel.waitForDisplaySettings = () => { throw new Error('Tunnel save contacted display'); };
+  context.fetch = async (url, options) => {
+    assert.equal(JSON.parse(options.body).pagekite_secret, 'replacement-secret');
+    return { ok: true, json: async () => ({ settings_revision: 2, pagekite_secret_set: true }) };
+  };
+  await tunnel.saveSettings();
+  assert.equal(tunnel.settings.pagekite_secret, '');
+  assert.equal(tunnel.draft.pagekite_secret, '');
+  assert.equal(tunnel.changeCount, 0);
+  // A newer secret typed while the previous request is pending stays unsaved.
+  tunnel.draft.pagekite_secret = 'first-secret';
+  let secretFinish;
+  context.fetch = async () => new Promise(resolve => { secretFinish = resolve; });
+  const secretPending = tunnel.saveSettings();
+  tunnel.draft.pagekite_secret = 'newer-secret';
+  secretFinish({ ok: true, json: async () => ({ settings_revision: 3, pagekite_secret_set: true }) });
+  await secretPending;
+  assert.equal(tunnel.settings.pagekite_secret, '');
+  assert.equal(tunnel.draft.pagekite_secret, 'newer-secret');
+  assert.equal(tunnel.changeCount, 1);
+  context.fetch = async () => ({ ok: false });
+  await tunnel.saveSettings();
+  assert.equal(tunnel.draft.pagekite_secret, 'newer-secret');
+  tunnel.revertDraft();
+  assert.equal(tunnel.draft.pagekite_secret, '');
+  assert.equal(tunnel.changeCount, 0);
   const mixed = context.app();
   mixed.settings = { log_heartbeat_min: 15, zone_cold_color: '#003cff' };
   mixed.draft = { log_heartbeat_min: 20, zone_cold_color: '#f29900' };

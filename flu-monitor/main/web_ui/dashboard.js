@@ -174,7 +174,7 @@ function app() {
     async fetchSettings() {
       try {
         const res = await fetch('/api/settings');
-        this.settings = { minimum_brightness: 20, maximum_brightness: 255, breathing_exponent: DEFAULT_BREATHING_EXPONENT, ...Object.fromEntries(ZONE_ORDER.map((zone) => [`zone_${zone}_color`, DEFAULT_ZONE_COLORS[zone]])), ...await res.json() };
+        this.settings = { pagekite_secret: '', minimum_brightness: 20, maximum_brightness: 255, breathing_exponent: DEFAULT_BREATHING_EXPONENT, ...Object.fromEntries(ZONE_ORDER.map((zone) => [`zone_${zone}_color`, DEFAULT_ZONE_COLORS[zone]])), ...await res.json() };
         this.draft = { ...this.settings };
       } catch (e) { /* keeps whatever was loaded before, if anything */ }
     },
@@ -322,6 +322,15 @@ function app() {
         if (!res.ok) throw new Error('rejected');
         saved = true;
         const result = await res.json();
+        // Forget a submitted tunnel secret after success; retain any newer edit.
+        if ('pagekite_secret' in submitted) {
+          if (this.draft.pagekite_secret === submitted.pagekite_secret) this.draft.pagekite_secret = '';
+          submitted.pagekite_secret = '';
+        }
+        if (typeof result.pagekite_secret_set === 'boolean') {
+          submitted.pagekite_secret_set = result.pagekite_secret_set;
+          this.draft.pagekite_secret_set = result.pagekite_secret_set;
+        }
         submitted.settings_revision = result.settings_revision;
         this.draft.settings_revision = result.settings_revision;
         this.settings = submitted;

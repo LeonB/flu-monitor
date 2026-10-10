@@ -392,17 +392,42 @@
       </div>
 
       <div class="field-group">
+        <h6>PageKite</h6>
+        <div class="field-list">
+          <div class="field-row">
+            <label class="field-label" for="pagekite-enabled">Remote access<small id="pagekite-enabled-help" class="field-help">Enable the tunnel to access this dashboard at your PageKite address. Changes reconnect the tunnel; disabling it keeps your configuration.</small></label>
+            <input id="pagekite-enabled" type="checkbox" aria-describedby="pagekite-enabled-help" x-model="draft.pagekite_enabled" :class="{ changed: changed('pagekite_enabled') }" style="width:24px;height:24px;accent-color:var(--color-accent)">
+          </div>
+          <div class="text-field">
+            <label for="pagekite-domain">Kite domain</label>
+            <small id="pagekite-domain-help" class="field-help" style="margin-bottom:8px">Your registered PageKite hostname, without https:// or a path.</small>
+            <input id="pagekite-domain" aria-describedby="pagekite-domain-help" class="input" x-model="draft.pagekite_domain" maxlength="127" autocapitalize="none" spellcheck="false" placeholder="your-kite.pagekite.me">
+          </div>
+          <div class="text-field" style="padding-top:0">
+            <label for="pagekite-secret">Shared secret</label>
+            <small id="pagekite-secret-help" class="field-help" style="margin-bottom:8px">The kite's shared secret from your PageKite account, rather than your account password. Stored on the monitor; leave blank to keep it.</small>
+            <input id="pagekite-secret" aria-describedby="pagekite-secret-help" class="input" type="password" x-model="draft.pagekite_secret" maxlength="127" autocomplete="new-password" :placeholder="settings.pagekite_secret_set ? 'Saved — enter a replacement to change it' : 'Enter your kite shared secret'">
+          </div>
+          <div class="text-field" style="padding-top:0">
+            <label for="pagekite-relay">Relay address</label>
+            <small id="pagekite-relay-help" class="field-help" style="margin-bottom:8px">PageKite frontend IP or hostname. Your kite's DNS routing must point to this relay; changing it here does not update that routing.</small>
+            <input id="pagekite-relay" aria-describedby="pagekite-relay-help" class="input" x-model="draft.pagekite_relay" maxlength="127" autocapitalize="none" spellcheck="false" placeholder="176.58.121.52">
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
         <h6>Google Sheets</h6>
         <div class="field-list">
           <div class="text-field">
             <label for="sheets-webhook">Webhook URL</label>
             <small id="sheets-webhook-help" class="field-help" style="margin-bottom:8px">Google Apps Script endpoint that writes logs to your sheet. Leave blank to disable Sheets logging.</small>
-            <input id="sheets-webhook" aria-describedby="sheets-webhook-help" class="input" x-model="draft.google_sheets_webhook_url" placeholder="https://script.google.com/macros/s/.../exec">
+            <input id="sheets-webhook" aria-describedby="sheets-webhook-help" class="input" x-model="draft.google_sheets_webhook_url" :placeholder="settings.credentials_redacted ? 'Leave unchanged to keep the saved URL' : 'https://script.google.com/macros/s/.../exec'">
           </div>
           <div class="text-field" style="padding-top:0">
             <label for="sheets-secret">Secret</label>
             <small id="sheets-secret-help" class="field-help" style="margin-bottom:8px">Must match the shared secret configured in your Apps Script so it accepts log entries.</small>
-            <input id="sheets-secret" aria-describedby="sheets-secret-help" class="input" x-model="draft.google_sheets_secret" placeholder="shared secret">
+            <input id="sheets-secret" aria-describedby="sheets-secret-help" class="input" x-model="draft.google_sheets_secret" :placeholder="settings.credentials_redacted ? 'Leave unchanged to keep the saved secret' : 'shared secret'">
           </div>
         </div>
       </div>

@@ -1,6 +1,7 @@
 #include "rest_api.h"
 
 #include <math.h>
+#include <ctype.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,7 @@
 
 #include "sensors.h"
 #include "settings.h"
+#include "pagekite_tunnel.h"
 #include "sheets_logger.h"
 #include "ws_server.h"
 #include "web_assets_generated.h"
@@ -233,6 +235,10 @@ static const httpd_uri_t devices_wifi_get_uri = {
 };
 
 static void settings_to_json(const settings_t *s, cJSON *root) {
+  cJSON_AddBoolToObject(root, "pagekite_enabled", s->pagekite.enabled);
+  cJSON_AddStringToObject(root, "pagekite_domain", s->pagekite.domain);
+  cJSON_AddStringToObject(root, "pagekite_relay", s->pagekite.relay);
+  cJSON_AddBoolToObject(root, "pagekite_secret_set", *s->pagekite.secret != 0);
   cJSON_AddNumberToObject(root, "settings_revision", ws_server_settings_revision(false));
   cJSON_AddNumberToObject(root, "log_heartbeat_min", s->log_heartbeat_min);
   cJSON_AddNumberToObject(root, "zone_cold_max_c", round_to(s->zone_cold_max_c, 0.1));
@@ -259,6 +265,11 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
 
   cJSON *root = cJSON_CreateObject();
   settings_to_json(&s, root);
+  if (req->user_ctx) {
+    cJSON_DeleteItemFromObject(root, "google_sheets_secret");
+    cJSON_DeleteItemFromObject(root, "google_sheets_webhook_url");
+    cJSON_AddBoolToObject(root, "credentials_redacted", true);
+  }
 
   char *json = cJSON_PrintUnformatted(root);
   cJSON_Delete(root);
@@ -274,6 +285,13 @@ static const httpd_uri_t settings_get_uri = {
     .handler = settings_get_handler,
 };
 
+// Credential-free settings for the tunnel; omitted credentials on tunnel
+// POSTs retain their stored values. Normal LAN full-replace behavior remains.
+static const httpd_uri_t tunnel_settings_get_uri = {
+    .uri = "/api/tunnel/settings", .method = HTTP_GET,
+    .handler = settings_get_handler, .user_ctx = (void *)1,
+};
+
 // Full-replace semantics, matching the planned web UI's single sticky Save
 // bar (no per-field PATCH to preserve) -- a field missing from the request
 // body becomes that field's zero value (numeric) or empty string, not
@@ -281,12 +299,16 @@ static const httpd_uri_t settings_get_uri = {
 // older clients may omit them, retaining the saved palette. Breathing shape
 // likewise retains its saved value when omitted.
 static esp_err_t settings_post_handler(httpd_req_t *req) {
-  if (req->content_len <= 0 || req->content_len >= 1024) {
+  if (req->content_len <= 0 || req->content_len >= 2048) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Request body too large");
     return ESP_FAIL;
   }
 
-  char body[1024] = {0};
+  char *body = calloc(req->content_len + 1, 1);
+  if (!body) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Insufficient memory");
+    return ESP_FAIL;
+  }
   int received = 0;
   while (received < req->content_len) {
     int ret = httpd_req_recv(req, body + received, req->content_len - received);
@@ -294,6 +316,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
       if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
         continue;
       }
+      free(body);
       httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to read request body");
       return ESP_FAIL;
     }
@@ -302,12 +325,19 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
   body[received] = '\0';
 
   cJSON *root = cJSON_Parse(body);
+  free(body);
   if (root == NULL) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
     return ESP_FAIL;
   }
 
   settings_t s = {0};
+  if (req->user_ctx) {
+    settings_t current;
+    settings_get(&current);
+    memcpy(s.google_sheets_webhook_url, current.google_sheets_webhook_url, sizeof s.google_sheets_webhook_url);
+    memcpy(s.google_sheets_secret, current.google_sheets_secret, sizeof s.google_sheets_secret);
+  }
   cJSON *item;
 
   item = cJSON_GetObjectItem(root, "log_heartbeat_min");
@@ -351,6 +381,21 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
   // values must be exactly #RRGGBB; never truncate invalid input into validity.
   settings_t current;
   settings_get(&current);
+  s.pagekite = current.pagekite;
+  item = cJSON_GetObjectItemCaseSensitive(root, "pagekite_enabled");
+  if (item && !cJSON_IsBool(item)) goto invalid_pagekite;
+  if (item) s.pagekite.enabled = cJSON_IsTrue(item);
+  const char *pk_keys[] = {"pagekite_domain", "pagekite_relay", "pagekite_secret"};
+  char *pk_values[] = {s.pagekite.domain, s.pagekite.relay, s.pagekite.secret};
+  for (int i = 0; i < 3; i++) {
+    item = cJSON_GetObjectItemCaseSensitive(root, pk_keys[i]);
+    if (!item) continue;
+    if (!cJSON_IsString(item) || strlen(item->valuestring) >= SETTINGS_PAGEKITE_TEXT_MAX_LEN) goto invalid_pagekite;
+    // Empty/omitted secret retains the stored value, including on LAN saves.
+    if (i == 2 && !*item->valuestring) continue;
+    strcpy(pk_values[i], item->valuestring);
+    if (i < 2) for (char *c = pk_values[i]; *c; c++) *c = tolower((unsigned char)*c);
+  }
   item = cJSON_GetObjectItemCaseSensitive(root, "minimum_brightness");
   if (item != NULL && (!cJSON_IsNumber(item) || !isfinite(item->valuedouble) ||
       item->valuedouble < 0 || item->valuedouble > 255 || floor(item->valuedouble) != item->valuedouble)) {
@@ -400,16 +445,28 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
   ws_server_broadcast_settings_changed();
 
   httpd_resp_set_type(req, "application/json");
-  char response[96];
-  snprintf(response, sizeof(response), "{\"success\":true,\"settings_revision\":%lu}", (unsigned long) revision);
+  char response[128];
+  snprintf(response, sizeof(response), "{\"success\":true,\"settings_revision\":%lu,\"pagekite_secret_set\":%s}",
+           (unsigned long) revision, *s.pagekite.secret ? "true" : "false");
   httpd_resp_sendstr(req, response);
+  if (memcmp(&current.pagekite, &s.pagekite, sizeof s.pagekite)) pagekite_tunnel_start();
   return ESP_OK;
+
+invalid_pagekite:
+  cJSON_Delete(root);
+  httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid PageKite setting type or length");
+  return ESP_FAIL;
 }
 
 static const httpd_uri_t settings_post_uri = {
     .uri = "/api/settings",
     .method = HTTP_POST,
     .handler = settings_post_handler,
+};
+
+static const httpd_uri_t tunnel_settings_post_uri = {
+    .uri = "/api/tunnel/settings", .method = HTTP_POST,
+    .handler = settings_post_handler, .user_ctx = (void *)1,
 };
 
 // The fixed woodstove-event taxonomy, ported verbatim from the original
@@ -652,7 +709,7 @@ httpd_handle_t rest_api_start(void) {
   // must cover every endpoint on this server" section for how this was
   // caught: ws_server_register(), always the last one registered, is the
   // one that fails once the ceiling is hit).
-  config.max_uri_handlers = 24;
+  config.max_uri_handlers = 32;
   config.max_open_sockets = REST_API_MAX_OPEN_SOCKETS;
   config.lru_purge_enable = true;
   config.keep_alive_enable = true;
@@ -668,8 +725,10 @@ httpd_handle_t rest_api_start(void) {
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &wifi_get_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &devices_wifi_get_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &settings_get_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &tunnel_settings_get_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &settings_status_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &settings_post_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &tunnel_settings_post_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &events_get_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &event_post_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &history_get_uri));

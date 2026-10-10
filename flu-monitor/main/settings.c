@@ -39,6 +39,7 @@ static void set_defaults(settings_t *s) {
   s->breathing_exponent = DEFAULT_BREATHING_EXPONENT;
   s->minimum_brightness = DEFAULT_MINIMUM_BRIGHTNESS;
   s->maximum_brightness = DEFAULT_MAXIMUM_BRIGHTNESS;
+  strcpy(s->pagekite.relay, "176.58.121.52");
 }
 
 static bool valid_color(const char color[8]) {
@@ -50,7 +51,34 @@ static bool valid_color(const char color[8]) {
   return true;
 }
 
+// Bare DNS names or IPv4 addresses only: prevent protocol/header injection.
+static bool valid_host(const char *host) {
+  size_t n = strnlen(host, SETTINGS_PAGEKITE_TEXT_MAX_LEN);
+  if (!n || n >= SETTINGS_PAGEKITE_TEXT_MAX_LEN) return false;
+  size_t label = 0;
+  for (size_t i = 0; i < n; i++) {
+    char c = host[i];
+    if (c == '.') {
+      if (!label || host[i - 1] == '-') return false;
+      label = 0;
+    } else {
+      if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) return false;
+      if ((!label && c == '-') || ++label > 63) return false;
+    }
+  }
+  return label && host[n - 1] != '-';
+}
+static bool valid_pagekite(const pagekite_settings_t *p) {
+  if (p->enabled > 1) return false;
+  if ((*p->domain && !valid_host(p->domain)) || (*p->relay && !valid_host(p->relay))) return false;
+  size_t n = strnlen(p->secret, sizeof p->secret);
+  if (n >= sizeof p->secret) return false;
+  for (size_t i = 0; i < n; i++) if ((unsigned char)p->secret[i] < 33 || (unsigned char)p->secret[i] > 126) return false;
+  return !p->enabled || (*p->domain && *p->relay && n >= 8);
+}
+
 static bool validate(const settings_t *s) {
+  if (!valid_pagekite(&s->pagekite)) return false;
   if (s->maximum_brightness > 255 || s->minimum_brightness > s->maximum_brightness) return false;
   if (!isfinite(s->breathing_exponent) || s->breathing_exponent < 0.3f || s->breathing_exponent > 3.0f) return false;
   if (!valid_color(s->zone_cold_color) || !valid_color(s->zone_optimal_color) || !valid_color(s->zone_hot_color)) return false;
@@ -93,7 +121,8 @@ void settings_init(void) {
     if (nvs_get_blob(handle, NVS_KEY_BLOB, &from_nvs, &len) == ESP_OK &&
         (len == sizeof(from_nvs) || len == offsetof(settings_t, zone_cold_color) ||
          len == offsetof(settings_t, breathing_exponent) ||
-         len == offsetof(settings_t, maximum_brightness)) &&
+         len == offsetof(settings_t, maximum_brightness) ||
+         len == offsetof(settings_t, pagekite)) &&
         validate(&from_nvs)) {
       loaded = from_nvs;
       ESP_LOGI(TAG, "Loaded settings from NVS");
@@ -111,6 +140,12 @@ void settings_init(void) {
 void settings_get(settings_t *out) {
   xSemaphoreTake(s_mutex, portMAX_DELAY);
   *out = s_settings;
+  xSemaphoreGive(s_mutex);
+}
+
+void settings_get_pagekite(pagekite_settings_t *out) {
+  xSemaphoreTake(s_mutex, portMAX_DELAY);
+  *out = s_settings.pagekite;
   xSemaphoreGive(s_mutex);
 }
 

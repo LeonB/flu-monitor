@@ -105,6 +105,30 @@ settings untouched. On success, it also broadcasts `{"type":"settings_changed"}`
 over `/ws` (see below). The three `zone_*_color` fields accept exactly
 `#RRGGBB`; older clients can omit them to preserve the saved colours.
 
+## PageKite remote access
+
+In **Settings → PageKite**, enter your registered kite domain and its shared
+secret, then enable Remote access and Save. Use the kite's shared secret,
+not your PageKite account password. The relay defaults to `176.58.121.52`;
+your kite's DNS routing must point to the chosen relay. Firmware does not
+update PageKite DNS routing automatically. Relay TLS certificates are always
+verified against PageKite's `frontends.b5p.us` identity.
+
+Configuration persists in device NVS across reboot and firmware updates.
+Changing tunnel settings reconnects it without rebuilding or restarting the
+monitor. Disabling Remote access closes the tunnel and retains the saved
+configuration. The shared secret is masked, never returned by settings APIs,
+and cleared from the form after a successful save. Leaving it blank keeps
+the stored value. Remote settings and event logging remain editable;
+visitor authentication is a separate follow-up.
+
+API fields: `pagekite_enabled` (boolean), `pagekite_domain`, `pagekite_relay`,
+and write-only `pagekite_secret` (strings, at most 127 characters).
+`pagekite_secret_set` reports whether a secret is saved. Omitted PageKite
+fields retain their previous values, so older settings clients keep working.
+Enabling requires a domain, relay and shared secret of at least 8 characters.
+These fields apply only to the monitor and do not wait for display acknowledgement.
+
 ## Woodstove event logging (once connected to WiFi)
 
 ```sh

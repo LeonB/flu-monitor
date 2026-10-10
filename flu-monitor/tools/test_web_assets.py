@@ -8,10 +8,11 @@ from urllib.request import build_opener, ProxyHandler, Request
 root = Path(__file__).resolve().parents[1]
 opener = build_opener(ProxyHandler({}))
 host = sys.argv[1]
+base_url = host.rstrip("/") if host.startswith(("http://", "https://")) else f"http://{host}"
 
 def get(path, headers):
     try:
-        response = opener.open(Request(f"http://{host}{path}", headers=headers), timeout=20)
+        response = opener.open(Request(f"{base_url}{path}", headers=headers), timeout=20)
     except HTTPError as error:
         response = error
     with response:

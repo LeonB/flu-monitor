@@ -289,5 +289,6 @@ static void sheets_logger_task(void *arg) {
 
 void sheets_logger_init(void) {
   s_event_queue = xQueueCreate(4, sizeof(queued_event_t));
-  xTaskCreate(sheets_logger_task, "sheets_logger", 4096, NULL, tskIDLE_PRIORITY + 1, NULL);
+  // The expanded NVS settings snapshot adds stack usage alongside HTTPS/TLS.
+  xTaskCreate(sheets_logger_task, "sheets_logger", 6144, NULL, tskIDLE_PRIORITY + 1, NULL);
 }

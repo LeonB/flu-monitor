@@ -11,6 +11,15 @@ extern "C" {
 #define SETTINGS_SHEETS_URL_MAX_LEN     128
 #define SETTINGS_SHEETS_SECRET_MAX_LEN  64
 
+#define SETTINGS_PAGEKITE_TEXT_MAX_LEN 128
+// Stored in device NVS; shared secret is never returned by the API.
+typedef struct {
+  uint32_t enabled;
+  char domain[SETTINGS_PAGEKITE_TEXT_MAX_LEN];
+  char relay[SETTINGS_PAGEKITE_TEXT_MAX_LEN];
+  char secret[SETTINGS_PAGEKITE_TEXT_MAX_LEN];
+} pagekite_settings_t;
+
 // Runtime-editable tunables -- replaces the ESPHome sidecar's YAML
 // `substitutions:` block. NVS-backed (see settings.c), with config.h's
 // DEFAULT_* macros used only as first-boot seed values.
@@ -38,6 +47,7 @@ typedef struct {
   float breathing_exponent;  // 0.3..3.0; 1.0 preserves the original envelope
   uint32_t maximum_brightness; // 0..255, must be >= minimum
   uint32_t minimum_brightness; // 0..255, LED channel floor
+  pagekite_settings_t pagekite; // append only, migrates the previous NVS layout
 } settings_t;
 
 // Loads settings from NVS, seeding config.h's compile-time defaults if NVS
@@ -50,6 +60,7 @@ void settings_init(void);
 // Copies the current settings into *out. Safe to call from any task --
 // internally mutex-guarded against a concurrent settings_set().
 void settings_get(settings_t *out);
+void settings_get_pagekite(pagekite_settings_t *out);
 
 // Validates and persists new settings, replacing the current ones entirely
 // (matches the REST API's POST /api/settings, which always sends the whole
