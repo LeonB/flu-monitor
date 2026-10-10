@@ -890,8 +890,9 @@ its configured deadband/heartbeat, not one log per sensor tick. Earlier
 `tools/generate_web_assets.py` generates deterministic gzip payloads for
 HTML/CSS/JS and content-hash ETags for all static assets, including fonts.
 The main component's custom build dependency regenerates the header whenever
-an asset changes. Original embedded assets remain available for clients that
-do not accept gzip (including `gzip;q=0`). WOFF2 fonts are already compressed
+an asset changes. Text assets are stored only as gzip. Clients that do not accept gzip
+(including `gzip;q=0`) receive a chunked identity response decoded using the
+ESP32 ROM inflater with a temporary 32 KiB dictionary plus inflater state. WOFF2 fonts are already compressed
 and are served unchanged. Compression takes place on the build machine.
 
 Static responses use `Cache-Control: no-cache`, which permits storage but
@@ -986,3 +987,28 @@ History preloads after the initial dashboard requests and is reused for 30s.
 Overlapping loads share one request. Background refreshes preserve the old
 curve; failed refreshes retain it too. The history receipt time anchors its
 monotonic ages, so opening prefetched history later does not shift events.
+
+
+## Single-copy compressed assets
+
+Dashboard text files and captive-portal HTML/CSS/Alpine are now embedded only
+as gzip. The monitor reuses the shared portal's compressed CSS and Alpine;
+`generate_web_assets.py` asserts the dashboard CSS is byte-identical to the
+portal stylesheet. Fonts remain single-copy WOFF2. The shared
+`compressed_assets.c` uses ESP32 ROM miniz for streaming identity responses;
+normal gzip browser responses allocate no decompression buffer. Identity
+fallback allocates a 32 KiB dictionary plus inflater state on the heap,
+frees both after completion or send failure, and returns 503 on allocation
+failure. Representation-specific ETags, no-cache validation, and gzip refusal
+continue to work through the existing monitor response handler.
+
+2026-10-10 build: monitor image shrank from 0x1671b0 to 0x1375c0, saving
+195568 bytes (191 KiB); free OTA-slot space grew from 4% to 17%. Both monitor
+and display builds pass. `python3 tools/test_compressed_assets.py` checks
+build-generated payloads, tags, and sharing. Passing an upstream miniz v114
+source path also compiles the actual C fallback against its reference tinfl
+implementation and checks byte-exact multi-chunk decoding, gzip negotiation,
+disconnect handling and invalid headers. The existing
+`tools/test_web_assets.py` remains the on-device gzip/identity/cache check.
+These asset changes have not yet been flashed; ROM/runtime verification and
+captive portal browser verification remain for hardware deployment.

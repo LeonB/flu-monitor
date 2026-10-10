@@ -1,4 +1,5 @@
 #include "captive_portal.h"
+#include "compressed_assets.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -21,13 +22,6 @@ static const char *TAG = "captive_portal";
 
 // Set once by captive_portal_start(), read by save_post_handler().
 static uint32_t s_sta_test_timeout_ms;
-
-extern const char root_start[] asm("_binary_root_html_start");
-extern const char root_end[] asm("_binary_root_html_end");
-extern const char styles_css_start[] asm("_binary_styles_css_start");
-extern const char styles_css_end[] asm("_binary_styles_css_end");
-extern const char alpine_min_js_start[] asm("_binary_alpine_min_js_start");
-extern const char alpine_min_js_end[] asm("_binary_alpine_min_js_end");
 
 // Decodes application/x-www-form-urlencoded text in place: '+' -> space,
 // '%XX' -> the byte XX. httpd_query_key_value() (used below) explicitly does
@@ -86,9 +80,14 @@ static void wifi_init_softap(const char *ap_ssid, const char *ap_password, int m
 }
 
 static esp_err_t root_get_handler(httpd_req_t *req) {
+  const compressed_asset_t *asset = portal_root_asset();
   httpd_resp_set_type(req, "text/html");
-  httpd_resp_send(req, root_start, root_end - root_start);
-  return ESP_OK;
+  httpd_resp_set_hdr(req, "Vary", "Accept-Encoding");
+  if (compressed_asset_accepts_gzip(req)) {
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    return httpd_resp_send(req, (const char *)asset->data, asset->size);
+  }
+  return compressed_asset_send_identity(req, asset->data, asset->size, asset->raw_size);
 }
 
 static const httpd_uri_t root_uri = {
@@ -98,16 +97,26 @@ static const httpd_uri_t root_uri = {
 };
 
 static esp_err_t styles_css_get_handler(httpd_req_t *req) {
+  const compressed_asset_t *asset = portal_styles_asset();
   httpd_resp_set_type(req, "text/css");
-  httpd_resp_send(req, styles_css_start, styles_css_end - styles_css_start);
-  return ESP_OK;
+  httpd_resp_set_hdr(req, "Vary", "Accept-Encoding");
+  if (compressed_asset_accepts_gzip(req)) {
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    return httpd_resp_send(req, (const char *)asset->data, asset->size);
+  }
+  return compressed_asset_send_identity(req, asset->data, asset->size, asset->raw_size);
 }
 static const httpd_uri_t styles_css_uri = {.uri = "/styles.css", .method = HTTP_GET, .handler = styles_css_get_handler};
 
 static esp_err_t alpine_js_get_handler(httpd_req_t *req) {
+  const compressed_asset_t *asset = portal_alpine_asset();
   httpd_resp_set_type(req, "application/javascript");
-  httpd_resp_send(req, alpine_min_js_start, alpine_min_js_end - alpine_min_js_start);
-  return ESP_OK;
+  httpd_resp_set_hdr(req, "Vary", "Accept-Encoding");
+  if (compressed_asset_accepts_gzip(req)) {
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    return httpd_resp_send(req, (const char *)asset->data, asset->size);
+  }
+  return compressed_asset_send_identity(req, asset->data, asset->size, asset->raw_size);
 }
 static const httpd_uri_t alpine_js_uri = {.uri = "/alpine.min.js", .method = HTTP_GET, .handler = alpine_js_get_handler};
 

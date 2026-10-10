@@ -16,31 +16,11 @@
 #include "sheets_logger.h"
 #include "ws_server.h"
 #include "web_assets_generated.h"
+#include "compressed_assets.h"
 
 static const char *TAG = "rest_api";
 
-// Embedded web UI assets (EMBED_FILES in CMakeLists.txt) -- served below by
-// web_ui_*_handler, same extern-symbol pattern as captive_portal.c's own
-// embedded root.html/styles.css/alpine.min.js.
-extern const char web_ui_html_start[] asm("_binary_dashboard_html_start");
-extern const char web_ui_html_end[] asm("_binary_dashboard_html_end");
-extern const char web_ui_js_start[] asm("_binary_dashboard_js_start");
-extern const char web_ui_js_end[] asm("_binary_dashboard_js_end");
-extern const char web_ui_css_start[] asm("_binary_dashboard_css_start");
-extern const char web_ui_css_end[] asm("_binary_dashboard_css_end");
-extern const char web_ui_burn_graph_js_start[] asm("_binary_burn_graph_js_start");
-extern const char web_ui_burn_graph_js_end[] asm("_binary_burn_graph_js_end");
-extern const char web_ui_uplot_js_start[] asm("_binary_uplot_min_js_start");
-extern const char web_ui_uplot_js_end[] asm("_binary_uplot_min_js_end");
-extern const char web_ui_uplot_css_start[] asm("_binary_uplot_min_css_start");
-extern const char web_ui_uplot_css_end[] asm("_binary_uplot_min_css_end");
-// alpine.min.js is NOT embedded here a second time -- it's byte-identical to
-// captive_portal's own copy, so this just reuses captive_portal's already-
-// embedded symbol (captive_portal is a PRIV_REQUIRES dependency, so its
-// object is always linked in) instead of doubling the binary's size with a
-// second copy under a different EMBED_FILES basename.
-extern const char web_ui_alpine_js_start[] asm("_binary_alpine_min_js_start");
-extern const char web_ui_alpine_js_end[] asm("_binary_alpine_min_js_end");
+// Text assets are stored only as gzip; WOFF2 files are already compressed.
 extern const char web_ui_font_caprasimo_400_start[] asm("_binary_caprasimo_400_woff2_start");
 extern const char web_ui_font_caprasimo_400_end[] asm("_binary_caprasimo_400_woff2_end");
 extern const char web_ui_font_figtree_400_start[] asm("_binary_figtree_400_woff2_start");
@@ -51,31 +31,12 @@ extern const char web_ui_font_figtree_700_start[] asm("_binary_figtree_700_woff2
 extern const char web_ui_font_figtree_700_end[] asm("_binary_figtree_700_woff2_end");
 
 // Cache across visits, but revalidate on every use so an OTA cannot leave stale UI.
-// Payloads are compressed at build time; no compression work or buffers on ESP32.
-static bool accepts_gzip(httpd_req_t *req) {
-  char encodings[160];
-  if (httpd_req_get_hdr_value_str(req, "Accept-Encoding", encodings, sizeof(encodings)) != ESP_OK) return false;
-  char *save = NULL;
-  for (char *token = strtok_r(encodings, ",", &save); token; token = strtok_r(NULL, ",", &save)) {
-    while (*token == ' ' || *token == '\t') token++;
-    char *params = strchr(token, ';');
-    if (params) *params++ = 0;
-    char *end = token + strlen(token);
-    while (end > token && (end[-1] == ' ' || end[-1] == '\t')) *--end = 0;
-    if (strcasecmp(token, "gzip") != 0) continue;
-    if (params) {
-      while (*params == ' ' || *params == '\t') params++;
-      if (strncasecmp(params, "q=", 2) == 0 && strtod(params + 2, NULL) <= 0) return false;
-    }
-    return true;
-  }
-  return false;
-}
+// Gzip clients use flash directly; identity clients stream through the ROM inflater.
 
 static esp_err_t serve_asset(httpd_req_t *req, const char *type,
                              const char *raw, size_t raw_len, const char *raw_etag,
                              const unsigned char *gzip, size_t gzip_len, const char *gzip_etag) {
-  bool compressed = gzip && accepts_gzip(req);
+  bool compressed = gzip && compressed_asset_accepts_gzip(req);
   const char *etag = compressed ? gzip_etag : raw_etag;
   char condition[256];
   bool unchanged = httpd_req_get_hdr_value_str(req, "If-None-Match", condition, sizeof(condition)) == ESP_OK
@@ -89,48 +50,51 @@ static esp_err_t serve_asset(httpd_req_t *req, const char *type,
     httpd_resp_set_status(req, "304 Not Modified");
     return httpd_resp_send(req, NULL, 0);
   }
+  if (!compressed && !raw) return compressed_asset_send_identity(req, gzip, gzip_len, raw_len);
   return httpd_resp_send(req, compressed ? (const char *)gzip : raw, compressed ? gzip_len : raw_len);
 }
 
 static esp_err_t web_ui_burn_graph_js_get_handler(httpd_req_t *req) {
-  return serve_asset(req, "application/javascript", web_ui_burn_graph_js_start, web_ui_burn_graph_js_end - web_ui_burn_graph_js_start,
+  return serve_asset(req, "application/javascript", NULL, ASSET_burn_graph_js_RAW_SIZE,
                      ASSET_burn_graph_js_ETAG, asset_burn_graph_js_gzip, sizeof(asset_burn_graph_js_gzip), ASSET_burn_graph_js_GZIP_ETAG);
 }
 static const httpd_uri_t web_ui_burn_graph_js_uri = {.uri = "/burn-graph.js", .method = HTTP_GET, .handler = web_ui_burn_graph_js_get_handler};
 
 static esp_err_t web_ui_uplot_js_get_handler(httpd_req_t *req) {
-  return serve_asset(req, "application/javascript", web_ui_uplot_js_start, web_ui_uplot_js_end - web_ui_uplot_js_start,
+  return serve_asset(req, "application/javascript", NULL, ASSET_uplot_js_RAW_SIZE,
                      ASSET_uplot_js_ETAG, asset_uplot_js_gzip, sizeof(asset_uplot_js_gzip), ASSET_uplot_js_GZIP_ETAG);
 }
 static const httpd_uri_t web_ui_uplot_js_uri = {.uri = "/vendor/uplot.min.js", .method = HTTP_GET, .handler = web_ui_uplot_js_get_handler};
 
 static esp_err_t web_ui_uplot_css_get_handler(httpd_req_t *req) {
-  return serve_asset(req, "text/css", web_ui_uplot_css_start, web_ui_uplot_css_end - web_ui_uplot_css_start,
+  return serve_asset(req, "text/css", NULL, ASSET_uplot_css_RAW_SIZE,
                      ASSET_uplot_css_ETAG, asset_uplot_css_gzip, sizeof(asset_uplot_css_gzip), ASSET_uplot_css_GZIP_ETAG);
 }
 static const httpd_uri_t web_ui_uplot_css_uri = {.uri = "/vendor/uplot.min.css", .method = HTTP_GET, .handler = web_ui_uplot_css_get_handler};
 
 static esp_err_t web_ui_html_get_handler(httpd_req_t *req) {
-  return serve_asset(req, "text/html", web_ui_html_start, web_ui_html_end - web_ui_html_start,
+  return serve_asset(req, "text/html", NULL, ASSET_html_RAW_SIZE,
                      ASSET_html_ETAG, asset_html_gzip, sizeof(asset_html_gzip), ASSET_html_GZIP_ETAG);
 }
 static const httpd_uri_t web_ui_html_uri = {.uri = "/", .method = HTTP_GET, .handler = web_ui_html_get_handler};
 
 static esp_err_t web_ui_js_get_handler(httpd_req_t *req) {
-  return serve_asset(req, "application/javascript", web_ui_js_start, web_ui_js_end - web_ui_js_start,
+  return serve_asset(req, "application/javascript", NULL, ASSET_js_RAW_SIZE,
                      ASSET_js_ETAG, asset_js_gzip, sizeof(asset_js_gzip), ASSET_js_GZIP_ETAG);
 }
 static const httpd_uri_t web_ui_js_uri = {.uri = "/dashboard.js", .method = HTTP_GET, .handler = web_ui_js_get_handler};
 
 static esp_err_t web_ui_css_get_handler(httpd_req_t *req) {
-  return serve_asset(req, "text/css", web_ui_css_start, web_ui_css_end - web_ui_css_start,
-                     ASSET_css_ETAG, asset_css_gzip, sizeof(asset_css_gzip), ASSET_css_GZIP_ETAG);
+  const compressed_asset_t *asset = portal_styles_asset();
+  return serve_asset(req, "text/css", NULL, asset->raw_size, asset->etag,
+                     asset->data, asset->size, asset->gzip_etag);
 }
 static const httpd_uri_t web_ui_css_uri = {.uri = "/dashboard.css", .method = HTTP_GET, .handler = web_ui_css_get_handler};
 
 static esp_err_t web_ui_alpine_js_get_handler(httpd_req_t *req) {
-  return serve_asset(req, "application/javascript", web_ui_alpine_js_start, web_ui_alpine_js_end - web_ui_alpine_js_start,
-                     ASSET_alpine_js_ETAG, asset_alpine_js_gzip, sizeof(asset_alpine_js_gzip), ASSET_alpine_js_GZIP_ETAG);
+  const compressed_asset_t *asset = portal_alpine_asset();
+  return serve_asset(req, "application/javascript", NULL, asset->raw_size, asset->etag,
+                     asset->data, asset->size, asset->gzip_etag);
 }
 static const httpd_uri_t web_ui_alpine_js_uri = {
     .uri = "/alpinejs.min.js", .method = HTTP_GET, .handler = web_ui_alpine_js_get_handler};
