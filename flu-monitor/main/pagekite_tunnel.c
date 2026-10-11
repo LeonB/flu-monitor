@@ -5,6 +5,7 @@
 #include "pagekite_tunnel.h"
 #include "settings.h"
 #include "esp_tls.h"
+#include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_random.h"
 #include "esp_system.h"
@@ -130,14 +131,114 @@ static void authenticate(void) {
     }
     die("Unresolved authentication challenge");
 }
-static void connect_tls(void) {
+#define FRONTEND_POOL "frontends.b5p.us"
+#define FRONTEND_CANDIDATES 8
+#define FRONTEND_PROBE_TIMEOUT_MS 3000
+
+// Resolve PageKite's published frontend pool, try every returned IPv4
+// address with certificate verification, and choose the quickest TLS route.
+// esp-tls selects only one getaddrinfo result, so probe addresses explicitly.
+static bool connect_verified(const char *host, int timeout_ms) {
     tls = esp_tls_init();
-    if (!tls) die("TLS allocation failed");
+    if (!tls) return false;
     esp_tls_cfg_t cfg = {.crt_bundle_attach = esp_crt_bundle_attach,
-        .common_name = "frontends.b5p.us", .timeout_ms = 10000};
-    if (esp_tls_conn_new_sync(config.relay, strlen(config.relay), 443, &cfg, tls) != 1)
-        die("Verified relay TLS handshake failed");
-    if (esp_tls_get_conn_sockfd(tls, &transport) != ESP_OK) die("TLS socket unavailable");
+        .common_name = FRONTEND_POOL, .timeout_ms = timeout_ms};
+    if (esp_tls_conn_new_sync(host, strlen(host), 443, &cfg, tls) != 1 ||
+        esp_tls_get_conn_sockfd(tls, &transport) != ESP_OK) {
+        esp_tls_conn_destroy(tls); tls = NULL; transport = -1;
+        return false;
+    }
+    return true;
+}
+
+static bool select_frontend(char selected[INET_ADDRSTRLEN]) {
+    struct addrinfo hints = {.ai_family = AF_INET, .ai_socktype = SOCK_STREAM};
+    struct addrinfo *results = NULL;
+    if (getaddrinfo(FRONTEND_POOL, "443", &hints, &results) != 0 || !results) return false;
+    char candidates[FRONTEND_CANDIDATES][INET_ADDRSTRLEN];
+    size_t count = 0;
+    for (struct addrinfo *it = results; it && count < FRONTEND_CANDIDATES; it = it->ai_next) {
+        struct sockaddr_in *address = (struct sockaddr_in *)it->ai_addr;
+        char ip[INET_ADDRSTRLEN];
+        if (!inet_ntop(AF_INET, &address->sin_addr, ip, sizeof ip)) continue;
+        bool duplicate = false;
+        for (size_t i = 0; i < count; i++) if (!strcmp(ip, candidates[i])) duplicate = true;
+        if (!duplicate) strcpy(candidates[count++], ip);
+    }
+    freeaddrinfo(results);
+    bool found = false;
+    int64_t fastest = INT64_MAX;
+    for (size_t i = 0; i < count; i++) {
+        int64_t started = esp_timer_get_time();
+        if (!connect_verified(candidates[i], FRONTEND_PROBE_TIMEOUT_MS)) continue;
+        int64_t elapsed = esp_timer_get_time() - started;
+        esp_tls_conn_destroy(tls); tls = NULL; transport = -1;
+        if (!found || elapsed < fastest) {
+            strcpy(selected, candidates[i]); fastest = elapsed; found = true;
+        }
+    }
+    return found;
+}
+
+static void ddns_signature(const char *ip, char out[49]) {
+    unsigned char salt[4], digest[20];
+    char salt_hex[9], digest_hex[41], payload[SETTINGS_PAGEKITE_TEXT_MAX_LEN * 2 + 64];
+    esp_fill_random(salt, sizeof salt); hex(salt, sizeof salt, salt_hex);
+    int n = snprintf(payload, sizeof payload, "%s%s:%s%s", secret, domain, ip, salt_hex);
+    if (n < 0 || (size_t)n >= sizeof payload) die("DNS update signature input too large");
+    mbedtls_sha1_context ctx; mbedtls_sha1_init(&ctx);
+    if (mbedtls_sha1_starts(&ctx) ||
+        mbedtls_sha1_update(&ctx, (const unsigned char *)payload, (size_t)n) ||
+        mbedtls_sha1_finish(&ctx, digest)) die("DNS update signature failed");
+    mbedtls_sha1_free(&ctx); hex(digest, sizeof digest, digest_hex);
+    snprintf(out, 49, "%s%s", salt_hex, digest_hex);
+    memset(payload, 0, sizeof payload);
+}
+
+typedef struct { char body[96]; size_t used; } ddns_reply_t;
+static esp_err_t ddns_event_handler(esp_http_client_event_t *event) {
+    ddns_reply_t *reply = event->user_data;
+    if (event->event_id == HTTP_EVENT_ON_DATA && event->data_len > 0 && reply) {
+        size_t amount = (size_t)event->data_len;
+        if (amount > sizeof reply->body - 1 - reply->used) amount = sizeof reply->body - 1 - reply->used;
+        memcpy(reply->body + reply->used, event->data, amount);
+        reply->used += amount; reply->body[reply->used] = 0;
+    }
+    return ESP_OK;
+}
+
+// PageKite requires the public kite DNS to follow the selected frontend.
+// Update it over separately verified HTTPS after freeing the probe TLS context.
+static void update_kite_dns(const char *ip) {
+    char sign[49], url[320]; ddns_signature(ip, sign);
+    int n = snprintf(url, sizeof url,
+        "https://up.pagekite.net/?hostname=%s&myip=%s&sign=%s", domain, ip, sign);
+    memset(sign, 0, sizeof sign);
+    if (n < 0 || (size_t)n >= sizeof url) die("DNS update URL too large");
+    ddns_reply_t reply = {0};
+    esp_http_client_config_t cfg = {
+        .url = url, .method = HTTP_METHOD_GET, .timeout_ms = 15000,
+        .buffer_size = 512, .buffer_size_tx = 512,
+        .event_handler = ddns_event_handler, .user_data = &reply,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .common_name = "up.pagekite.net",
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) die("DNS update client unavailable");
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+    memset(url, 0, sizeof url);
+    if (err != ESP_OK || status != 200 ||
+        (strncmp(reply.body, "good", 4) && strncmp(reply.body, "nochg", 5))) {
+        memset(&reply, 0, sizeof reply);
+        die("Verified PageKite DNS update failed");
+    }
+    memset(&reply, 0, sizeof reply);
+}
+
+static void connect_tls(const char *ip) {
+    if (!connect_verified(ip, 10000)) die("Verified relay TLS handshake failed");
 }
 static void eof(const char *sid) {
     char data[128]; int n=snprintf(data,sizeof data,"SID: %s\r\nEOF: 1WR\r\n\r\n",sid); chunk(data,n);
@@ -437,8 +538,13 @@ static void task(void *unused) {
         if (time(NULL) < 1700000000) { ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000)); continue; }
         transport = -1;
         if (!setjmp(failed)) {
-            connect_tls(); authenticate(); backoff = 2;
-            ESP_LOGI("pagekite", "Verified TLS dashboard tunnel ready");
+            char selected[INET_ADDRSTRLEN];
+            if (!select_frontend(selected)) die("No verified PageKite frontend available");
+            if (config_changed()) continue;
+            update_kite_dns(selected);
+            if (config_changed()) continue;
+            connect_tls(selected); authenticate(); backoff = 2;
+            ESP_LOGI("pagekite", "Verified automatic PageKite frontend ready");
             session_loop();
         }
         for (int i = 0; i < STREAMS; i++) release(i);

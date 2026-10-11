@@ -16,7 +16,7 @@ extern "C" {
 typedef struct {
   uint32_t enabled;
   char domain[SETTINGS_PAGEKITE_TEXT_MAX_LEN];
-  char relay[SETTINGS_PAGEKITE_TEXT_MAX_LEN];
+  char relay[SETTINGS_PAGEKITE_TEXT_MAX_LEN]; // legacy NVS field; relay selection is automatic
   char secret[SETTINGS_PAGEKITE_TEXT_MAX_LEN];
 } pagekite_settings_t;
 

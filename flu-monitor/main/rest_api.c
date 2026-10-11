@@ -237,7 +237,6 @@ static const httpd_uri_t devices_wifi_get_uri = {
 static void settings_to_json(const settings_t *s, cJSON *root) {
   cJSON_AddBoolToObject(root, "pagekite_enabled", s->pagekite.enabled);
   cJSON_AddStringToObject(root, "pagekite_domain", s->pagekite.domain);
-  cJSON_AddStringToObject(root, "pagekite_relay", s->pagekite.relay);
   cJSON_AddBoolToObject(root, "pagekite_secret_set", *s->pagekite.secret != 0);
   cJSON_AddNumberToObject(root, "settings_revision", ws_server_settings_revision(false));
   cJSON_AddNumberToObject(root, "log_heartbeat_min", s->log_heartbeat_min);
@@ -385,16 +384,16 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
   item = cJSON_GetObjectItemCaseSensitive(root, "pagekite_enabled");
   if (item && !cJSON_IsBool(item)) goto invalid_pagekite;
   if (item) s.pagekite.enabled = cJSON_IsTrue(item);
-  const char *pk_keys[] = {"pagekite_domain", "pagekite_relay", "pagekite_secret"};
-  char *pk_values[] = {s.pagekite.domain, s.pagekite.relay, s.pagekite.secret};
-  for (int i = 0; i < 3; i++) {
+  const char *pk_keys[] = {"pagekite_domain", "pagekite_secret"};
+  char *pk_values[] = {s.pagekite.domain, s.pagekite.secret};
+  for (int i = 0; i < 2; i++) {
     item = cJSON_GetObjectItemCaseSensitive(root, pk_keys[i]);
     if (!item) continue;
     if (!cJSON_IsString(item) || strlen(item->valuestring) >= SETTINGS_PAGEKITE_TEXT_MAX_LEN) goto invalid_pagekite;
     // Empty/omitted secret retains the stored value, including on LAN saves.
-    if (i == 2 && !*item->valuestring) continue;
+    if (i == 1 && !*item->valuestring) continue;
     strcpy(pk_values[i], item->valuestring);
-    if (i < 2) for (char *c = pk_values[i]; *c; c++) *c = tolower((unsigned char)*c);
+    if (i == 0) for (char *c = pk_values[i]; *c; c++) *c = tolower((unsigned char)*c);
   }
   item = cJSON_GetObjectItemCaseSensitive(root, "minimum_brightness");
   if (item != NULL && (!cJSON_IsNumber(item) || !isfinite(item->valuedouble) ||

@@ -55,7 +55,7 @@ def online(expected, timeout=35):
 
 assert get(lan, '/api/reading')['thermocouple_ok']
 baseline = get(lan)
-configured = dict(baseline, pagekite_enabled=True, pagekite_domain=credential['domain'], pagekite_relay='176.58.121.52', pagekite_secret=credential['secret'])
+configured = dict(baseline, pagekite_enabled=True, pagekite_domain=credential['domain'], pagekite_secret=credential['secret'])
 try:
     save(lan, configured)
     online(True)
@@ -93,7 +93,7 @@ try:
     print('PASS replacement secret is applied at runtime; restoring valid secret reconnects', flush=True)
     actual = get(lan)
     for key, value in baseline.items():
-        if key not in ('settings_revision', 'pagekite_enabled', 'pagekite_domain', 'pagekite_relay', 'pagekite_secret_set'):
+        if key not in ('settings_revision', 'pagekite_enabled', 'pagekite_domain', 'pagekite_secret_set'):
             assert actual[key] == value, key
     print('PASS all existing settings and Google Sheets credentials preserved', flush=True)
 finally:

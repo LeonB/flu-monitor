@@ -78,7 +78,7 @@ int main(void) {
  memcpy(stored,&old,offsetof(settings_t,pagekite));stored_len=offsetof(settings_t,pagekite);
  settings_init();settings_t current;settings_get(&current);
  assert(current.log_heartbeat_min==60 && !strcmp(current.zone_cold_color,"#fab100"));
- assert(!current.pagekite.enabled && !*current.pagekite.secret && !strcmp(current.pagekite.relay,"176.58.121.52"));
+ assert(!current.pagekite.enabled && !*current.pagekite.secret && !*current.pagekite.relay);
  // Every historical prefix remains loadable, with defaults filling the tail.
  size_t sizes[]={offsetof(settings_t,zone_cold_color),offsetof(settings_t,breathing_exponent),offsetof(settings_t,maximum_brightness)};
  for(size_t i=0;i<sizeof sizes/sizeof sizes[0];i++){memcpy(stored,&old,sizes[i]);stored_len=sizes[i];settings_init();settings_get(&current);assert(current.log_heartbeat_min==60 && current.maximum_brightness==DEFAULT_MAXIMUM_BRIGHTNESS);}
@@ -108,7 +108,7 @@ int main(void) {
  cJSON_DeleteItemFromObject(json,"pagekite_secret");cJSON_ReplaceItemInObject(json,"pagekite_enabled",cJSON_CreateBool(false));write_api(json,true,200);settings_get(&current);assert(!current.pagekite.enabled && !strcmp(current.pagekite.secret,"replacement-secret") && wakes==2);
  cJSON_ReplaceItemInObject(json,"pagekite_enabled",cJSON_CreateBool(true));cJSON_ReplaceItemInObject(json,"pagekite_domain",cJSON_CreateString("https://invalid.host"));before=writes;write_api(json,false,400);assert(writes==before);
  cJSON_ReplaceItemInObject(json,"pagekite_domain",cJSON_CreateString("demo.pagekite.me"));cJSON_ReplaceItemInObject(json,"pagekite_enabled",cJSON_CreateBool(false));
- cJSON_DeleteItemFromObject(json,"pagekite_enabled");cJSON_DeleteItemFromObject(json,"pagekite_domain");cJSON_DeleteItemFromObject(json,"pagekite_relay");write_api(json,false,200);settings_get(&current);assert(!current.pagekite.enabled && !strcmp(current.pagekite.domain,"demo.pagekite.me") && wakes==2);
+ cJSON_DeleteItemFromObject(json,"pagekite_enabled");cJSON_DeleteItemFromObject(json,"pagekite_domain");write_api(json,false,200);settings_get(&current);assert(!current.pagekite.enabled && !strcmp(current.pagekite.domain,"demo.pagekite.me") && wakes==2);
  cJSON_Delete(json);
  puts("PASS LAN/public credential redaction, blank/omitted secret retention, strict types/lengths, replacement, disabling and older clients");
  return 0;

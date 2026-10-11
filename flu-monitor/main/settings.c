@@ -39,7 +39,6 @@ static void set_defaults(settings_t *s) {
   s->breathing_exponent = DEFAULT_BREATHING_EXPONENT;
   s->minimum_brightness = DEFAULT_MINIMUM_BRIGHTNESS;
   s->maximum_brightness = DEFAULT_MAXIMUM_BRIGHTNESS;
-  strcpy(s->pagekite.relay, "176.58.121.52");
 }
 
 static bool valid_color(const char color[8]) {
@@ -70,11 +69,11 @@ static bool valid_host(const char *host) {
 }
 static bool valid_pagekite(const pagekite_settings_t *p) {
   if (p->enabled > 1) return false;
-  if ((*p->domain && !valid_host(p->domain)) || (*p->relay && !valid_host(p->relay))) return false;
+  if (*p->domain && !valid_host(p->domain)) return false;
   size_t n = strnlen(p->secret, sizeof p->secret);
   if (n >= sizeof p->secret) return false;
   for (size_t i = 0; i < n; i++) if ((unsigned char)p->secret[i] < 33 || (unsigned char)p->secret[i] > 126) return false;
-  return !p->enabled || (*p->domain && *p->relay && n >= 8);
+  return !p->enabled || (*p->domain && n >= 8);
 }
 
 static bool validate(const settings_t *s) {

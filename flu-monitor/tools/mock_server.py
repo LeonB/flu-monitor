@@ -52,7 +52,6 @@ settings = {
     "settings_revision": 1,
     "pagekite_enabled": False,
     "pagekite_domain": "",
-    "pagekite_relay": "176.58.121.52",
     "pagekite_secret_set": False,
     "log_heartbeat_min": 15,
     "zone_cold_max_c": 150,

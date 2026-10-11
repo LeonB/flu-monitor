@@ -55,7 +55,7 @@ The temporary tunnel/backend were closed and the temporary credential file
 was removed. Firmware was not changed or flashed for this experiment. This is protocol feasibility,
 not an ESP32 integration or evidence of long-term SaaS reliability.
 
-## Limits before an ESP-IDF port
+## Limits of the desktop prototype
 
 - No automatic reconnect or relay failover; the current client tries one
   successfully connected pool address and fails if its TLS verification fails.
@@ -82,9 +82,10 @@ not an ESP32 integration or evidence of long-term SaaS reliability.
 
 `main/pagekite_tunnel.c` runs PageKite directly on ESP-IDF using ESP-TLS,
 mbedTLS and the existing certificate bundle. It waits for SNTP before TLS
-validation and destroys TLS/backend state before reconnecting with a 2–60
-second retry delay. Relay identity is `frontends.b5p.us`; the current fixed
-relay is `176.58.121.52`. Public URL:
+validation, selects the quickest verified IPv4 frontend from
+`frontends.b5p.us`, updates kite DNS with the signed PageKite HTTPS endpoint,
+and reconnects to that frontend. TLS contexts are used sequentially to keep
+memory bounded. The public URL is:
 https://flumonitor-vanutsteen.pagekite.me/
 
 The tunnel forwards an explicit allowlist of dashboard assets and GETs for
@@ -115,14 +116,16 @@ its socket timeout; long-term soak, relay failover and forced WiFi loss remain
 untested.
 
 The monitor's Settings → PageKite form now configures the enabled flag,
-kite domain, relay and shared secret in NVS. No private header or build-time
-credential is needed. The shared secret is write-only: GET returns
+kite domain and shared secret in NVS. Firmware selects the fastest verified
+relay from `frontends.b5p.us` and updates kite DNS over signed HTTPS before
+opening the tunnel; the relay field is no longer exposed. No private header
+or build-time credential is needed. The shared secret is write-only: GET returns
 `pagekite_secret_set`, and blank/omitted secret values preserve it on POST.
 Changing tunnel settings applies after the save response, without a reboot;
 disabling closes the sockets and retains the configuration. Previous NVS
-settings migrate without losing values. The default relay's routing was
-established during the desktop test; automatic DDNS updates and relay
-selection are not implemented by the firmware.
+settings migrate without losing values. The live device has not yet been
+updated or verified with automatic relay selection; DNS updates take effect
+when the new firmware is flashed and the tunnel reconnects.
 
 For live configuration tests, use the credential helper above to create an
 owner-only temporary JSON, then run

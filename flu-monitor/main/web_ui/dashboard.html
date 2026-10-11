@@ -395,23 +395,18 @@
         <h6>PageKite</h6>
         <div class="field-list">
           <div class="field-row">
-            <label class="field-label" for="pagekite-enabled">Remote access<small id="pagekite-enabled-help" class="field-help">Enable the tunnel to access this dashboard at your PageKite address. Changes reconnect the tunnel; disabling it keeps your configuration.</small></label>
+            <label class="field-label" for="pagekite-enabled">Remote access<small id="pagekite-enabled-help" class="field-help">Enable the tunnel to access this dashboard at your PageKite address. The monitor picks a nearby PageKite relay automatically. Disabling the tunnel keeps your configuration.</small></label>
             <input id="pagekite-enabled" type="checkbox" aria-describedby="pagekite-enabled-help" x-model="draft.pagekite_enabled" :class="{ changed: changed('pagekite_enabled') }" style="width:24px;height:24px;accent-color:var(--color-accent)">
           </div>
           <div class="text-field">
             <label for="pagekite-domain">Kite domain</label>
-            <small id="pagekite-domain-help" class="field-help" style="margin-bottom:8px">Your registered PageKite hostname, without https:// or a path.</small>
+            <small id="pagekite-domain-help" class="field-help" style="margin-bottom:8px">Your registered PageKite hostname, without https:// or a path. The monitor selects a nearby relay and updates PageKite routing automatically.</small>
             <input id="pagekite-domain" aria-describedby="pagekite-domain-help" class="input" x-model="draft.pagekite_domain" maxlength="127" autocapitalize="none" spellcheck="false" placeholder="your-kite.pagekite.me">
           </div>
           <div class="text-field" style="padding-top:0">
             <label for="pagekite-secret">Shared secret</label>
             <small id="pagekite-secret-help" class="field-help" style="margin-bottom:8px">The kite's shared secret from your PageKite account, rather than your account password. Stored on the monitor; leave blank to keep it.</small>
             <input id="pagekite-secret" aria-describedby="pagekite-secret-help" class="input" type="password" x-model="draft.pagekite_secret" maxlength="127" autocomplete="new-password" :placeholder="settings.pagekite_secret_set ? 'Saved — enter a replacement to change it' : 'Enter your kite shared secret'">
-          </div>
-          <div class="text-field" style="padding-top:0">
-            <label for="pagekite-relay">Relay address</label>
-            <small id="pagekite-relay-help" class="field-help" style="margin-bottom:8px">PageKite frontend IP or hostname. Your kite's DNS routing must point to this relay; changing it here does not update that routing.</small>
-            <input id="pagekite-relay" aria-describedby="pagekite-relay-help" class="input" x-model="draft.pagekite_relay" maxlength="127" autocapitalize="none" spellcheck="false" placeholder="176.58.121.52">
           </div>
         </div>
       </div>

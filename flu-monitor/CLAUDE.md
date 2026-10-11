@@ -1019,14 +1019,17 @@ captive portal browser verification remain for hardware deployment.
 The monitor runs PageKite directly (`main/pagekite_tunnel.c`) with verified
 ESP-TLS relay identity `frontends.b5p.us`, the existing CA bundle and an SNTP
 wait before certificate validation. It starts after the REST API when enabled
-in NVS settings. Settings → PageKite edits enabled/domain/relay/shared secret;
+in NVS settings. Settings → PageKite edits enabled/domain/shared secret;
 no build-time credentials or private include directory remain. First enable
 creates the tunnel task; after disable it waits without open relay/backend
 sockets. Settings changes allow one second for the save response, then clean
 up all sockets and reconnect with a fresh settings snapshot. Notifications
-interrupt backoff/disabled waits. Current relay defaults to 176.58.121.52;
-its existing kite routing was configured by the desktop prototype. Changing
-the relay here does not update PageKite DNS routing.
+interrupt backoff/disabled waits. The monitor resolves the pool, probes every
+returned IPv4 relay with TLS verification, chooses the lowest handshake
+latency, updates kite DNS via
+`https://up.pagekite.net/` using the PageKite SHA-1 signed update, then opens
+a fresh verified tunnel to the selected relay. TLS contexts are sequential to
+keep memory bounded. DNS update failures keep the tunnel closed and retry.
 
 Public `https://flumonitor-vanutsteen.pagekite.me/` supports the dashboard,
 settings edits and event logging. GET/POST /api/settings map to
@@ -1042,8 +1045,8 @@ Eight streams, two local backend sockets and a 4 KiB receive buffer bound
 memory. Combined request/header buffers grow in 512-byte increments to at
 most 4 KiB only while collecting/queueing, and are freed after forwarding.
 POST bodies must be application/json with one explicit Content-Length below
-2048 bytes (the settings handler allocates its body on the heap). Fragmented bodies are collected before local
-forwarding; upgrades, duplicate lengths, pipelined and truncated requests are
+2048 bytes (the settings handler allocates its body on the heap). Fragmented
+bodies are collected before local forwarding; upgrades, duplicate lengths, pipelined and truncated requests are
 rejected. Each socket is half-closed for writing after its complete request:
 ESP-IDF HTTPD does not close just because Connection: close was requested.
 TLS failures close all backend sockets before 2–60 second reconnect retries.
@@ -1056,17 +1059,19 @@ display acknowledged matching revisions. Event POST transport was tested with
 an invalid slug to avoid inserting fake burn data. Image 0x1395b0 leaves 16%
 app-slot space. A 9260-byte mixed-traffic heap minimum led to temporary request
 buffer allocation; final hardware checks were repeated after that improvement.
-Long-term soak, forced WiFi loss, automatic relay selection/DDNS and visitor
-authentication remain unfinished. See tools/pagekite-prototype/README.md,
+Automatic relay selection and signed DNS updates are implemented in firmware,
+but have not yet been deployed or verified on hardware. Long-term soak, forced
+WiFi loss and visitor authentication remain unfinished. See tools/pagekite-prototype/README.md,
 tools/test_pagekite.py and tools/test_pagekite_dashboard.py. Temporary tunnel
 credentials are removed after tests; rebuilding no longer requires a secret.
 
 PageKite configuration is an appended settings_t tail. The preceding NVS
 blob size migrates using offsetof(settings_t, pagekite), preserving existing
-values and seeding the tunnel disabled with the relay default. Both LAN and
-public GETs expose only pagekite_secret_set; POST preserves blank/omitted
-secrets and omitted PageKite fields. Strict type/length and host validation
-reject protocol injection. Successful UI saves discard the submitted secret
+values and seeding the tunnel disabled; the legacy relay slot defaults empty.
+Both LAN and public GETs expose only pagekite_secret_set; POST preserves blank/omitted
+secrets and omitted PageKite fields. The legacy NVS relay slot remains for
+blob migration but is not exposed or used. Strict type/length and domain
+validation reject protocol injection. Successful UI saves discard the submitted secret
 while retaining any newer edit. PageKite keys are monitor-only. Tests:
 `tools/test_pagekite_settings.py` executes actual settings/REST code with NVS
 shims and cJSON under ASan/UBSan; `tools/test_pagekite_configuration.py`

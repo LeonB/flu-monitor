@@ -37,6 +37,7 @@ assert 'google_sheets_secret' not in settings
 assert 'google_sheets_webhook_url' not in settings
 assert 'zone_cold_color' in settings
 assert 'pagekite_secret' not in settings
+assert 'pagekite_relay' not in settings
 assert settings['pagekite_secret_set'] is True
 assert settings['pagekite_enabled'] is True
 assert get_json('/api/reading')['thermocouple_ok']
