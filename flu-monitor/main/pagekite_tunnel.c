@@ -229,11 +229,17 @@ static void update_kite_dns(const char *ip) {
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
     memset(url, 0, sizeof url);
-    if (err != ESP_OK || status != 200 ||
-        (strncmp(reply.body, "good", 4) && strncmp(reply.body, "nochg", 5))) {
+    // Some PageKite DDNS responses end with an unclean close before ESP-IDF's
+    // chunk parser sees the terminal chunk. Trust the update only when the
+    // complete application-level success token and HTTP success status arrived.
+    bool accepted = status == 200 &&
+        ((!strncmp(reply.body, "good", 4) && reply.used >= 4) ||
+         (!strncmp(reply.body, "nochg", 5) && reply.used >= 5));
+    if (!accepted) {
         memset(&reply, 0, sizeof reply);
         die("Verified PageKite DNS update failed");
     }
+    if (err != ESP_OK) ESP_LOGW("pagekite", "DDNS success confirmed despite incomplete chunked terminator");
     memset(&reply, 0, sizeof reply);
 }
 
