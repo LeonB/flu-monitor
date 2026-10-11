@@ -289,6 +289,8 @@ static void sheets_logger_task(void *arg) {
 
 void sheets_logger_init(void) {
   s_event_queue = xQueueCreate(4, sizeof(queued_event_t));
-  // The expanded NVS settings snapshot adds stack usage alongside HTTPS/TLS.
-  xTaskCreate(sheets_logger_task, "sheets_logger", 6144, NULL, tskIDLE_PRIORITY + 1, NULL);
+  // HTTPS/TLS uses substantial stack while the logger's local request buffers
+  // and settings snapshot are live. The previous 6 KiB stack overflowed during
+  // the first periodic webhook request on-device.
+  xTaskCreate(sheets_logger_task, "sheets_logger", 12288, NULL, tskIDLE_PRIORITY + 1, NULL);
 }
