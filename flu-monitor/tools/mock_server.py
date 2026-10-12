@@ -52,6 +52,7 @@ settings = {
     "settings_revision": 1,
     "pagekite_enabled": False,
     "pagekite_domain": "",
+    "pagekite_custom_domain": "",
     "pagekite_secret_set": False,
     "log_heartbeat_min": 15,
     "zone_cold_max_c": 150,
@@ -71,6 +72,11 @@ settings = {
     "zone_optimal_color": "#ff3700",
     "zone_hot_color": "#ff0000",
 }
+if os.environ.get("MOCK_PAGEKITE_ENABLED", "false").lower() == "true":
+    settings["pagekite_enabled"] = True
+    settings["pagekite_domain"] = os.environ.get("MOCK_PAGEKITE_DOMAIN", "flumonitor-vanutsteen.pagekite.me")
+    settings["pagekite_custom_domain"] = os.environ.get("MOCK_PAGEKITE_CUSTOM_DOMAIN", "")
+    settings["pagekite_secret_set"] = True
 
 server_start = time.monotonic()
 
@@ -216,6 +222,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/settings/status":
             self._json({"settings_revision": settings["settings_revision"], "display_applied": os.environ.get("MOCK_DISPLAY_APPLIED", "true").lower() == "true"})
+            return
+
+        if path == "/api/pagekite/status":
+            default_state = "connected" if settings["pagekite_enabled"] else "disabled"
+            state = os.environ.get("MOCK_PAGEKITE_STATUS", default_state)
+            payload = {"state": state}
+            if state in ("auth_error", "network_error"):
+                payload["retry_in_s"] = int(os.environ.get("MOCK_PAGEKITE_RETRY_IN_S", "16"))
+            self._json(payload)
             return
 
         if path == "/api/settings":
