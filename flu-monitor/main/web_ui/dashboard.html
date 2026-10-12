@@ -106,6 +106,13 @@
   .stepper .stepper-value { min-width: 68px; text-align: center; font-weight: 700; font-size: 14px; }
   .text-field { padding: 10px 16px 14px; }
   .text-field label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .pagekite-status { display: flex; gap: 10px; align-items: flex-start; margin: 0 4px 4px; padding: 13px 16px; border-radius: 20px; background: var(--color-surface); }
+  .pagekite-status-icon { width: 10px; height: 10px; margin-top: 5px; border-radius: 50%; flex: 0 0 auto; background: var(--color-neutral-500); }
+  .pagekite-status.connected .pagekite-status-icon { background: #427656; }
+  .pagekite-status.connecting .pagekite-status-icon, .pagekite-status.network_error .pagekite-status-icon { background: #b56a18; }
+  .pagekite-status.auth_error .pagekite-status-icon { background: #b54132; }
+  .pagekite-status-title { font-size: 14px; font-weight: 700; }
+  .pagekite-status-detail { margin-top: 3px; color: var(--color-neutral-700); font-size: 12px; line-height: 1.45; }
   .save-bar { position: fixed; left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 15; max-width: 428px; margin: 0 auto; padding: 8px 8px 8px 20px; border-radius: 999px; background: var(--color-text); color: var(--color-bg); display: flex; align-items: center; gap: 10px; box-shadow: var(--shadow-lg); }
   .save-bar span { flex: 1; font-size: 14px; font-weight: 600; }
   .save-bar button { height: 44px; border-radius: 999px; border: none; font: inherit; font-weight: 600; cursor: pointer; padding: 0 18px; }
@@ -392,7 +399,39 @@
       </div>
 
       <div class="field-group">
+        <h6>Dashboard access</h6>
+        <div class="field-list">
+          <div class="text-field">
+            <label for="auth-current-password">Change dashboard password</label>
+            <small class="field-help" style="margin-bottom:8px">Protects this dashboard on your home network and through PageKite. Changing it signs out the current session and other browsers.</small>
+            <input id="auth-current-password" class="input" type="password" autocomplete="current-password" placeholder="Current password">
+          </div>
+          <div class="text-field" style="padding-top:0">
+            <input id="auth-new-password" class="input" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="New password (8–128 characters)">
+          </div>
+          <div class="text-field" style="padding-top:0">
+            <input id="auth-confirm-password" class="input" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="Confirm new password">
+          </div>
+          <div class="text-field" style="padding-top:0">
+            <button class="btn btn-primary" type="button" style="width:100%;height:46px" @click="updateDashboardPassword()" :disabled="authSaving" x-text="authSaving ? 'Updating…' : 'Update password'"></button>
+            <div x-text="authMessage" :role="authError ? 'alert' : 'status'" style="min-height:18px;margin-top:8px;color:var(--color-accent);font-size:12px"></div>
+          </div>
+          <div class="field-row" style="border-top:1px solid var(--color-divider);margin:0 8px;padding:14px 8px 10px">
+            <span class="field-label">Sign out<small class="field-help">End this browser session.</small></span>
+            <button class="btn btn-secondary" type="button" style="height:40px" @click="logout()">Sign out</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
         <h6>PageKite</h6>
+        <div class="pagekite-status" :class="pagekiteStatus.state || 'unknown'" x-show="draft.pagekite_enabled" x-cloak role="status" aria-live="polite">
+          <span class="pagekite-status-icon" aria-hidden="true"></span>
+          <div>
+            <div class="pagekite-status-title" x-text="pagekiteStatusTitle"></div>
+            <div class="pagekite-status-detail" x-text="pagekiteStatusDetail"></div>
+          </div>
+        </div>
         <div class="field-list">
           <div class="field-row">
             <label class="field-label" for="pagekite-enabled">Remote access<small id="pagekite-enabled-help" class="field-help">Enable the tunnel to access this dashboard at your PageKite address. The monitor picks a nearby PageKite relay automatically. Disabling the tunnel keeps your configuration.</small></label>
@@ -402,6 +441,11 @@
             <label for="pagekite-domain">Kite domain</label>
             <small id="pagekite-domain-help" class="field-help" style="margin-bottom:8px">Your registered PageKite hostname, without https:// or a path. The monitor selects a nearby relay and updates PageKite routing automatically.</small>
             <input id="pagekite-domain" aria-describedby="pagekite-domain-help" class="input" x-model="draft.pagekite_domain" maxlength="127" autocapitalize="none" spellcheck="false" placeholder="your-kite.pagekite.me">
+          </div>
+          <div class="text-field" style="padding-top:0">
+            <label for="pagekite-custom-domain">Custom domain (optional)</label>
+            <small id="pagekite-custom-domain-help" class="field-help" style="margin-bottom:8px">A custom hostname registered as a CNAME kite in your PageKite account. Point its DNS CNAME to the Kite domain above.</small>
+            <input id="pagekite-custom-domain" aria-describedby="pagekite-custom-domain-help" class="input" x-model="draft.pagekite_custom_domain" maxlength="127" autocapitalize="none" spellcheck="false" placeholder="flumonitor.example.nl">
           </div>
           <div class="text-field" style="padding-top:0">
             <label for="pagekite-secret">Shared secret</label>

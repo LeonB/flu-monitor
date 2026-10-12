@@ -70,6 +70,7 @@ static bool valid_host(const char *host) {
 static bool valid_pagekite(const pagekite_settings_t *p) {
   if (p->enabled > 1) return false;
   if (*p->domain && !valid_host(p->domain)) return false;
+  if (*p->custom_domain && (!valid_host(p->custom_domain) || !strcmp(p->domain, p->custom_domain))) return false;
   size_t n = strnlen(p->secret, sizeof p->secret);
   if (n >= sizeof p->secret) return false;
   for (size_t i = 0; i < n; i++) if ((unsigned char)p->secret[i] < 33 || (unsigned char)p->secret[i] > 126) return false;
@@ -118,7 +119,9 @@ void settings_init(void) {
     // Earlier layouts are unchanged prefixes (before colours, shape, or
     // minimum brightness). Seed missing tail fields while retaining old values.
     if (nvs_get_blob(handle, NVS_KEY_BLOB, &from_nvs, &len) == ESP_OK &&
-        (len == sizeof(from_nvs) || len == offsetof(settings_t, zone_cold_color) ||
+        (len == sizeof(from_nvs) ||
+         len == offsetof(settings_t, pagekite) + offsetof(pagekite_settings_t, custom_domain) ||
+         len == offsetof(settings_t, zone_cold_color) ||
          len == offsetof(settings_t, breathing_exponent) ||
          len == offsetof(settings_t, maximum_brightness) ||
          len == offsetof(settings_t, pagekite)) &&

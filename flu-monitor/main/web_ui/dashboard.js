@@ -101,6 +101,8 @@ function app() {
     lastReadingMs: 0,
     settings: {},
     draft: {},
+    pagekiteStatus: { state: 'unknown' },
+    pagekiteStatusTimer: null,
     events: [],
     history: { now_s: 0, samples: [], events: [] },
     historyLoaded: false,
@@ -109,6 +111,9 @@ function app() {
     saving: false,
     savingDisplaySettings: false,
     displaySyncError: '',
+    authSaving: false,
+    authError: false,
+    authMessage: '',
 
     // Glow animation state, updated ~30fps by a requestAnimationFrame loop
     // -- see runGlowFrame() below.
@@ -135,6 +140,22 @@ function app() {
       return rgbCss(zoneColor(this.reading.thermocouple_zone, this.settings).bg);
     },
 
+    get pagekiteStatusTitle() {
+      if (this.pagekiteStatus.state === 'disabled') return this.draft.pagekite_enabled ? 'Waiting for save' : 'Off';
+      return ({ connected: 'Connected', connecting: 'Connecting', auth_error: 'Connection issue', network_error: 'Trying to reconnect', unavailable: 'Status unavailable' })[this.pagekiteStatus.state] || 'Checking connection…';
+    },
+
+    get pagekiteStatusDetail() {
+      const status = this.pagekiteStatus;
+      if (status.state === 'disabled') return 'Save the PageKite settings to start the tunnel.';
+      if (status.state === 'connected') return `Dashboard is available at ${this.settings.pagekite_custom_domain || this.settings.pagekite_domain || 'your PageKite address'}.`;
+      if (status.state === 'connecting') return 'The monitor is starting the remote access tunnel.';
+      if (status.state === 'auth_error') return `PageKite rejected the domain or shared secret. Check both settings; retrying${status.retry_in_s ? ` in ${status.retry_in_s} seconds` : ' automatically'}.`;
+      if (status.state === 'network_error') return `The relay could not be reached. The monitor will retry${status.retry_in_s ? ` in ${status.retry_in_s} seconds` : ' automatically'}.`;
+      if (status.state === 'unavailable') return 'The monitor has not reported tunnel status yet.';
+      return 'Checking the tunnel status…';
+    },
+
     async init() {
       setInterval(() => this.fetchReading(), 5000);
       setInterval(() => this.fetchDeviceWifi(), 10000);
@@ -143,13 +164,41 @@ function app() {
       this.fetchHistory(); // Warm the graph while the dashboard is visible.
     },
 
+    async authorizedFetch(url, options) {
+      const response = await fetch(url, options);
+      if (response.status === 401) {
+        location.replace('/');
+        throw new Error('Your session expired. Sign in again.');
+      }
+      return response;
+    },
+
     async fetchDeviceWifi() {
       try {
-        const res = await fetch('/api/devices/wifi', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+        const res = await this.authorizedFetch('/api/devices/wifi', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
         if (!res.ok) throw new Error('unavailable');
         this.deviceWifi = await res.json();
       } catch (e) {
         this.deviceWifi = {}; // Never show a cached signal as a live connection.
+      }
+    },
+
+    async fetchPagekiteStatus() {
+      // Local-only visual states for tools/mock_server.py previews. This lets
+      // us inspect the UI against an already-running mock process without
+      // changing or flashing firmware.
+      const previewState = location.hostname === 'localhost'
+        ? new URLSearchParams(location.search).get('pagekite-preview-status') : null;
+      if (previewState && ['connected', 'connecting', 'auth_error', 'network_error', 'unavailable'].includes(previewState)) {
+        this.pagekiteStatus = { state: previewState, retry_in_s: 16 };
+        return;
+      }
+      try {
+        const res = await this.authorizedFetch('/api/pagekite/status', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+        if (!res.ok) throw new Error('unavailable');
+        this.pagekiteStatus = await res.json();
+      } catch (e) {
+        this.pagekiteStatus = { state: 'unavailable' };
       }
     },
 
@@ -165,7 +214,7 @@ function app() {
 
     async fetchReading() {
       try {
-        const res = await fetch('/api/reading');
+        const res = await this.authorizedFetch('/api/reading');
         this.reading = await res.json();
         this.lastReadingMs = Date.now();
       } catch (e) { /* leaves the last-known reading up, isStale reflects the gap */ }
@@ -173,18 +222,66 @@ function app() {
 
     async fetchSettings() {
       try {
-        const res = await fetch('/api/settings');
+        const res = await this.authorizedFetch('/api/settings');
         this.settings = { pagekite_secret: '', minimum_brightness: 20, maximum_brightness: 255, breathing_exponent: DEFAULT_BREATHING_EXPONENT, ...Object.fromEntries(ZONE_ORDER.map((zone) => [`zone_${zone}_color`, DEFAULT_ZONE_COLORS[zone]])), ...await res.json() };
+        if (location.hostname === 'localhost' && new URLSearchParams(location.search).has('pagekite-preview-status')) {
+          this.settings.pagekite_enabled = true;
+          this.settings.pagekite_domain ||= 'flumonitor-vanutsteen.pagekite.me';
+        }
         this.draft = { ...this.settings };
       } catch (e) { /* keeps whatever was loaded before, if anything */ }
     },
 
     async fetchEvents() {
       try {
-        const res = await fetch('/api/events');
+        const res = await this.authorizedFetch('/api/events');
         this.events = await res.json();
       } catch (e) {
         this.events = [];
+      }
+    },
+
+    async updateDashboardPassword() {
+      this.authMessage = '';
+      const current = document.getElementById('auth-current-password').value;
+      const password = document.getElementById('auth-new-password').value;
+      const confirm = document.getElementById('auth-confirm-password').value;
+      if (password.length < 8 || password.length > 128) {
+        this.authError = true;
+        this.authMessage = 'Choose a password between 8 and 128 characters.';
+        return;
+      }
+      if (password !== confirm) {
+        this.authError = true;
+        this.authMessage = 'The new passwords do not match.';
+        return;
+      }
+      this.authSaving = true;
+      this.authError = false;
+      try {
+        const response = await fetch('/api/auth/password', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ current_password: current, password, confirm_password: confirm }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Password was not changed.');
+        location.assign('/');
+      } catch (error) {
+        this.authError = true;
+        this.authMessage = error.message || 'Could not update the password. Try again.';
+      } finally {
+        this.authSaving = false;
+        document.getElementById('auth-current-password').value = '';
+        document.getElementById('auth-new-password').value = '';
+        document.getElementById('auth-confirm-password').value = '';
+      }
+    },
+
+    async logout() {
+      try {
+        await fetch('/api/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      } finally {
+        location.assign('/');
       }
     },
 
@@ -193,7 +290,7 @@ function app() {
       if (this.historyReceivedMs && Date.now()-this.historyReceivedMs<30000) return;
       historyRequest = (async () => {
         try {
-          const res = await fetch('/api/history', { signal: AbortSignal.timeout(10000) });
+          const res = await this.authorizedFetch('/api/history', { signal: AbortSignal.timeout(10000) });
           if (!res.ok) throw new Error('unavailable');
           const history = await res.json();
           this.historyReceivedMs = Date.now();
@@ -215,7 +312,7 @@ function app() {
     async logEvent(ev) {
       this.sheetOpen = false;
       try {
-        const res = await fetch('/api/event', {
+        const res = await this.authorizedFetch('/api/event', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ event: ev.slug }),
@@ -255,11 +352,17 @@ function app() {
       this.draft = { ...this.settings };
       this.themeMenuOpen = false;
       this.view = 'settings';
+      this.fetchPagekiteStatus();
+      if (this.pagekiteStatusTimer === null) this.pagekiteStatusTimer = setInterval(() => {
+        if (this.view === 'settings') this.fetchPagekiteStatus();
+      }, 5000);
     },
 
     closeSettings() {
       this.themeMenuOpen = false;
       this.view = 'dashboard';
+      clearInterval(this.pagekiteStatusTimer);
+      this.pagekiteStatusTimer = null;
     },
 
     get zoneTheme() {
@@ -314,7 +417,7 @@ function app() {
       this.displaySyncError = '';
       let saved = false;
       try {
-        const res = await fetch('/api/settings', {
+        const res = await this.authorizedFetch('/api/settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(submitted),
@@ -357,7 +460,7 @@ function app() {
       const deadline = Date.now() + 20000;
       while (Date.now() < deadline) {
         try {
-          const res = await fetch('/api/settings/status', { signal: AbortSignal.timeout(3000), cache: 'no-store' });
+          const res = await this.authorizedFetch('/api/settings/status', { signal: AbortSignal.timeout(3000), cache: 'no-store' });
           if (res.ok) {
             const status = await res.json();
             if (status.settings_revision !== revision) return false;

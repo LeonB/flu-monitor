@@ -1037,9 +1037,11 @@ settings edits and event logging. GET/POST /api/settings map to
 credentials_redacted; POST preserves omitted credentials and accepts explicit
 replacements. Placeholder text explains that unchanged fields retain saved
 values. GET /api/settings/status exposes the normal display acknowledgement
-flow. The user explicitly requested full editing before authentication;
-authentication is deferred. OTA, WiFi setup and WebSocket upgrades are outside
-the dashboard routing. The display retains its existing LAN WebSocket.
+flow. Dashboard authentication is implemented; see the "Dashboard
+authentication" section below for its routes, limitations, and USB recovery
+status. OTA and WiFi setup remain outside dashboard routing. The display
+retains its existing LAN WebSocket, which is not gated by the dashboard
+session.
 
 Eight streams, two local backend sockets and a 4 KiB receive buffer bound
 memory. Combined request/header buffers grow in 512-byte increments to at
@@ -1065,14 +1067,16 @@ WiFi loss and visitor authentication remain unfinished. See tools/pagekite-proto
 tools/test_pagekite.py and tools/test_pagekite_dashboard.py. Temporary tunnel
 credentials are removed after tests; rebuilding no longer requires a secret.
 
-PageKite configuration is an appended settings_t tail. The preceding NVS
-blob size migrates using offsetof(settings_t, pagekite), preserving existing
-values and seeding the tunnel disabled; the legacy relay slot defaults empty.
-Both LAN and public GETs expose only pagekite_secret_set; POST preserves blank/omitted
-secrets and omitted PageKite fields. The legacy NVS relay slot remains for
-blob migration but is not exposed or used. Strict type/length and domain
-validation reject protocol injection. Successful UI saves discard the submitted secret
-while retaining any newer edit. PageKite keys are monitor-only. Tests:
+PageKite configuration is an appended settings_t tail. NVS migration accepts
+the earlier PageKite structure without custom_domain and seeds that new field
+empty; earlier settings prefixes remain supported. The primary pagekite.me
+name is still used for DDNS, while an optional custom CNAME hostname is
+registered as a second kite on the same tunnel. Both LAN and public GETs expose
+only pagekite_secret_set; POST preserves blank/omitted secrets and omitted
+PageKite fields. The legacy relay slot remains for blob migration but is not
+exposed or used. Strict type/length and domain validation reject protocol
+injection. Successful UI saves discard the submitted secret while retaining
+any newer edit. PageKite keys are monitor-only. Tests:
 `tools/test_pagekite_settings.py` executes actual settings/REST code with NVS
 shims and cJSON under ASan/UBSan; `tools/test_pagekite_configuration.py`
 reversibly verifies live configure/disable/re-enable/secret replacement.
@@ -1090,3 +1094,78 @@ Compiler stack frames show Sheets task snapshot 816 bytes plus log_to_sheets
 (4096 → 6144) and a reset_reason in /probe; image 0x139f80 leaves 16% free.
 This additional image and reboot/persistence verification still need deployment
 once the monitor is reachable. Do not claim the low-uptime restart diagnosed.
+
+
+## Dashboard authentication
+
+The embedded monitor dashboard and its REST API use a password stored as a
+salted PBKDF2-HMAC-SHA-256 hash in the separate `dashboard_auth` NVS namespace.
+`GET /api/auth/status` exposes only whether initial setup is complete. The
+first password can be set only from the LAN address; the peer socket identifies
+IPv4/IPv6-mapped loopback tunnel requests, so forged Host headers cannot bypass setup
+protection. Socket lookup errors fail closed. Login creates one in-RAM, high-entropy
+30-minute session cookie (only one browser session is active at a time). Five
+failed logins trigger a 30-second global lockout. Changing the password
+requires the current value and matching confirmation, then invalidates the
+session. Cookie-authenticated state-changing requests require an exact matching
+http(s) Origin; remote writes require HTTPS and remote cookies are Secure. Authentication covers the dashboard assets and REST
+endpoints; OTA retains its separate secret. The display's device WebSocket
+remains compatible and is not gated by dashboard sessions. Unauthenticated
+LAN GET /api/settings strips credentials for the display. Initial LAN
+commissioning POST /api/settings is allowed only before password enrollment
+and requires Origin. Omitted Sheets credentials always retain stored values.
+The tunnel forwards Cookie/Origin and accepts only configured Host names.
+The custom HTTP domain redirects to the primary HTTPS hostname. The old
+unauthenticated /probe diagnostic shortcut was removed.
+
+Important limitations: the local dashboard uses plain HTTP, so LAN observers
+can capture credentials and session cookies. There is not yet a USB-serial
+password recovery command; app-only flashing preserves the password and a full
+flash erase clears all NVS settings. Do not describe either as a safe recovery
+path.
+
+The local proxy in `tools/ui_proxy.py` remains a separate design/demo server;
+its `review` password does not authenticate the firmware.
+
+Auth checks: tools/test_dashboard_auth.py runs actual auth code with real
+PBKDF2 via CommonCrypto plus HTTP/NVS/clock shims under ASan/UBSan;
+tools/test_login_page.js executes the actual inline login script.
+Settings/tunnel tests also cover credential-free LAN reads, unauthorized
+writes, first-use commissioning, Host spoofing and Cookie/Origin forwarding.
+Crypto errors fail closed; cookies require exact names/64-character values.
+Firmware build 0x13cb80 leaves 16% application-slot space and was deployed
+by OTA. The first transfer temporarily served the setup portal and returned
+to previous firmware; the cause was not established. Final hardware checks
+confirmed LAN enrollment allowed, remote enrollment denied (403), remote
+reading/settings GET and settings POST denied without login (401), and
+/probe removed (404). The custom HTTP hostname redirects (303) to the
+primary HTTPS hostname. Existing settings were retained when correcting
+the primary/alias configuration. The owner must choose the first password
+locally; real-device authenticated login awaits that enrollment.
+
+The server can report IPv4 HTTP peers as IPv6-mapped addresses; auth locality
+handles both families. Only RFC1918/link-local IPv4 and IPv6 ULA/link-local
+clients can enroll locally, and loopback always counts as tunnel/remote.
+Hardware initially reported setup_local_only=true even over LAN until this
+mapped-address correction; the final image reports local enrollment correctly.
+
+2026-10-12 login fix: ESP-IDF's httpd_resp_set_hdr retains the value pointer
+until the response is sent; a stack-local Set-Cookie in dashboard_auth_login
+expired before auth_form_handler sent its JSON. The cookie buffer now has
+static lifetime (the single HTTP server task serializes handlers). The auth
+test shim now retains the pointer instead of copying it, and forces ASan
+stack-use-after-return detection: it fails on the previous implementation and
+passes with the fix. Login uses explicit DOM references, progress/success
+messages, catches network/non-JSON errors, and aborts after 20 seconds.
+Firmware 0x13d120 builds with 15% slot space remaining. Final OTA succeeded; LAN and HTTPS serve the new page and both report the
+existing password configured after reboot. Owner login must be verified with
+their own password, which was not reset or requested.
+
+2026-10-12 login design: warm dashboard palette, Caprasimo/Figtree, responsive full-height form and accessible password visibility toggle.
+Login fonts are public credential-free assets; dashboard data/assets remain
+session-protected. Initial enrollment and login keep progress/error feedback.
+No pretend remember-me or recovery controls were added. Actual inline page
+previewed in Chrome at localhost:8876; script regression checks and firmware
+build pass. The glow was removed at the owner’s request; image 0x13dc30 was flashed
+by OTA and verified after reboot: new login HTML without glow, all three
+login fonts available without a session, existing password still configured.

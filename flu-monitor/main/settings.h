@@ -18,6 +18,7 @@ typedef struct {
   char domain[SETTINGS_PAGEKITE_TEXT_MAX_LEN];
   char relay[SETTINGS_PAGEKITE_TEXT_MAX_LEN]; // legacy NVS field; relay selection is automatic
   char secret[SETTINGS_PAGEKITE_TEXT_MAX_LEN];
+  char custom_domain[SETTINGS_PAGEKITE_TEXT_MAX_LEN]; // optional CNAME host, registered alongside the PageKite hostname
 } pagekite_settings_t;
 
 // Runtime-editable tunables -- replaces the ESPHome sidecar's YAML

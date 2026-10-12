@@ -93,7 +93,7 @@ try:
     print('PASS replacement secret is applied at runtime; restoring valid secret reconnects', flush=True)
     actual = get(lan)
     for key, value in baseline.items():
-        if key not in ('settings_revision', 'pagekite_enabled', 'pagekite_domain', 'pagekite_secret_set'):
+        if key not in ('settings_revision', 'pagekite_enabled', 'pagekite_domain', 'pagekite_custom_domain', 'pagekite_secret_set'):
             assert actual[key] == value, key
     print('PASS all existing settings and Google Sheets credentials preserved', flush=True)
 finally:

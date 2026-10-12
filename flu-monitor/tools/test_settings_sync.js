@@ -23,7 +23,7 @@ async function saveCase(confirmation) {
 (async () => {
   await saveCase(true);
   await saveCase(false);
-  for (const key of ['log_heartbeat_min', 'thermocouple_deadband_c', 'google_sheets_webhook_url', 'google_sheets_secret', 'pagekite_enabled', 'pagekite_domain', 'pagekite_relay']) {
+  for (const key of ['log_heartbeat_min', 'thermocouple_deadband_c', 'google_sheets_webhook_url', 'google_sheets_secret', 'pagekite_enabled', 'pagekite_domain', 'pagekite_custom_domain', 'pagekite_relay']) {
     const logging = context.app();
     logging.settings = { [key]: 'before', maximum_brightness: 100 };
     logging.draft = { [key]: 'after', maximum_brightness: 100 };

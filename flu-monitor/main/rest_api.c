@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "cJSON.h"
 #include "esp_log.h"
@@ -14,6 +15,7 @@
 
 #include "sensors.h"
 #include "settings.h"
+#include "dashboard_auth.h"
 #include "pagekite_tunnel.h"
 #include "sheets_logger.h"
 #include "ws_server.h"
@@ -21,6 +23,105 @@
 #include "compressed_assets.h"
 
 static const char *TAG = "rest_api";
+
+static bool auth_required(httpd_req_t *req) {
+  if (dashboard_auth_check(req)) return false;
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  httpd_resp_set_hdr(req, "WWW-Authenticate", "Session");
+  httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Sign in required");
+  return true;
+}
+
+// Initial password enrollment is allowed only through a LAN hostname/IP.
+// Never let a remote PageKite visitor race to claim a factory-fresh device.
+static bool auth_setup_is_remote(httpd_req_t *req) {
+  return dashboard_auth_is_remote(req);
+}
+
+static const char login_page[] = "<!doctype html><html lang=\"en\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><title>Flu Monitor sign in</title><style>@font-face{font-family:Caprasimo;src:url('/fonts/caprasimo-400.woff2') format('woff2');font-display:swap}@font-face{font-family:Figtree;src:url('/fonts/figtree-400.woff2') format('woff2');font-display:swap}@font-face{font-family:Figtree;src:url('/fonts/figtree-600.woff2') format('woff2');font-weight:600;font-display:swap}*{box-sizing:border-box}body{margin:0;background:#f5ead8;color:#201e1d;font:18px Figtree,system-ui,sans-serif}main{width:min(100%,480px);min-height:100svh;margin:auto;padding:clamp(40px,12vh,100px) 28px max(32px,env(safe-area-inset-bottom));display:flex;flex-direction:column}h1{font:400 clamp(34px,8vw,42px)/1.15 Caprasimo,Georgia,serif;letter-spacing:-.7px;margin:0 0 14px}#intro{margin:0;color:#645c50;line-height:1.5}form{flex:1;display:flex;flex-direction:column;margin-top:42px}label{display:block;font-size:16px;font-weight:600;color:#645c50;margin:0 0 12px 18px}.field{position:relative}input{width:100%;font:inherit;min-height:64px;padding:18px 64px 18px 22px;border:1px solid #cfc2ab;border-radius:36px;background:#ebddc5;color:#201e1d;outline:none}input:focus{border-color:#b2622d;box-shadow:0 0 0 3px #c6713926}#c{margin-top:14px;padding-right:22px}button{font:inherit;cursor:pointer}#show{position:absolute;right:13px;top:10px;width:44px;height:44px;display:grid;place-items:center;background:none;border:0;color:#201e1d;border-radius:50%}#show:focus-visible,#b:focus-visible{outline:3px solid #7a8a5e;outline-offset:4px}#show svg{width:24px;height:24px}#e{min-height:48px;margin:18px 12px;color:#8c491a;font-size:16px;line-height:1.5}.actions{margin-top:auto;padding-top:64px}#b{width:100%;min-height:64px;border:0;border-radius:36px;background:#bb773e;color:#fff5e6;font:400 23px Caprasimo,Georgia,serif;transition:background .15s}#b:hover{background:#a56331}#b:disabled{cursor:wait;opacity:.65}.note{margin:20px 0 0;text-align:center;color:#82796a;font-size:14px;line-height:1.5}@media(min-width:700px){main{min-height:min(860px,100svh);padding-top:80px}.actions{padding-top:90px}}@media(max-height:600px){main{padding-top:30px}form{margin-top:24px}.actions{padding-top:24px}}</style><main><h1 id=\"title\">Welcome back</h1><p id=\"intro\">Connecting to your Flu Monitor…</p><form><label id=\"label\" for=\"p\">Password</label><div class=\"field\"><input id=\"p\" name=\"password\" type=\"password\" required minlength=\"8\" maxlength=\"128\" autocomplete=\"current-password\"><button id=\"show\" type=\"button\" aria-label=\"Show password\" aria-pressed=\"false\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" aria-hidden=\"true\"><path d=\"M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/></svg></button></div><input id=\"c\" name=\"confirm_password\" aria-label=\"Confirm password\" type=\"password\" maxlength=\"128\" autocomplete=\"new-password\" placeholder=\"Confirm password\" style=\"display:none\"><p id=\"e\" role=\"status\" aria-live=\"polite\" aria-atomic=\"true\"></p><div class=\"actions\"><button id=\"b\" disabled>Sign in</button><p class=\"note\">Your stove, at a glance.</p></div></form></main>"
+  "<script>(()=>{const form=document.querySelector('form'),password=document.getElementById('p'),confirm=document.getElementById('c'),intro=document.getElementById('intro'),label=document.getElementById('label'),button=document.getElementById('b'),feedback=document.getElementById('e');let first=false,ready=false,busy=false;const show=document.getElementById('show');show.onclick=()=>{const reveal=password.type==='password';password.type=reveal?'text':'password';show.setAttribute('aria-label',reveal?'Hide password':'Show password');show.setAttribute('aria-pressed',String(reveal))};if(location.protocol==='http:'&&location.hostname.endsWith('.pagekite.me')){location.replace('https://'+location.host+'/');return}async function request(url,options){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),20000);try{const response=await fetch(url,{...options,signal:controller.signal,cache:'no-store'});let data;try{data=await response.json()}catch{throw new Error('The monitor returned an unexpected response. Please try again.')}if(!response.ok)throw new Error(data.error||(response.status===403?'This address cannot be used to sign in. Open the HTTPS dashboard.':'Could not sign in. Please try again.'));return data}finally{clearTimeout(timer)}}request('/api/auth/status').then(status=>{first=!status.configured;document.getElementById('title').textContent=first?'Make yourself at home':'Welcome back';button.textContent=first?'Set password':'Sign in';intro.textContent=first?'Choose a dashboard password (8–128 characters).':'Sign in to your Flu Monitor.';label.textContent=first?'New password':'Dashboard password';password.autocomplete=first?'new-password':'current-password';confirm.style.display=first?'block':'none';confirm.required=first;if(first&&status.setup_local_only){intro.textContent='For security, set the first password from your home network using the monitor’s local address.';password.disabled=confirm.disabled=true;return}ready=true;button.disabled=false}).catch(error=>{feedback.textContent=error.name==='AbortError'?'The monitor did not respond. Reload the page to try again.':error.message});form.onsubmit=async event=>{event.preventDefault();if(!ready||busy)return;feedback.textContent='';if(first&&password.value!==confirm.value){feedback.textContent='Passwords do not match.';return}busy=true;button.disabled=true;button.textContent=first?'Saving…':'Signing in…';feedback.textContent='Waiting for the monitor…';try{const result=await request(first?'/api/auth/setup':'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(first?{password:password.value,confirm_password:confirm.value}:{password:password.value})});if(result.success!==true)throw new Error('The monitor did not confirm sign-in. Please try again.');feedback.textContent='Signed in. Opening dashboard…';location.replace('/')}catch(error){feedback.textContent=error.name==='AbortError'?'The monitor did not respond within 20 seconds. Please try again.':error.message}finally{busy=false;button.disabled=false;button.textContent=first?'Set password':'Sign in'}};})();</script>";
+
+static esp_err_t auth_status_handler(httpd_req_t *req) {
+  char body[80];
+  bool configured = dashboard_auth_is_configured();
+  snprintf(body, sizeof body, "{\"configured\":%s,\"setup_local_only\":%s}",
+           configured ? "true" : "false", !configured && auth_setup_is_remote(req) ? "true" : "false");
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  return httpd_resp_sendstr(req, body);
+}
+static const httpd_uri_t auth_status_uri = { .uri="/api/auth/status", .method=HTTP_GET, .handler=auth_status_handler };
+
+static esp_err_t auth_form_handler(httpd_req_t *req) {
+  if ((strcmp(req->uri, "/api/auth/password") == 0 || strcmp(req->uri, "/api/auth/logout") == 0) && auth_required(req)) return ESP_FAIL;
+  if (!dashboard_auth_check_csrf(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Invalid request origin");
+  if (req->content_len <= 0 || req->content_len > 512) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid request");
+  char body[513] = {0};
+  int got = 0;
+  while (got < req->content_len) {
+    int part = httpd_req_recv(req, body + got, req->content_len - got);
+    if (part <= 0) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Incomplete request");
+    got += part;
+  }
+  cJSON *root = cJSON_Parse(body);
+  if (!root) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+  const cJSON *pw = cJSON_GetObjectItemCaseSensitive(root, "password");
+  const cJSON *current = cJSON_GetObjectItemCaseSensitive(root, "current_password");
+  const cJSON *confirm = cJSON_GetObjectItemCaseSensitive(root, "confirm_password");
+  esp_err_t err = ESP_ERR_INVALID_ARG;
+  bool setup = strcmp(req->uri, "/api/auth/setup") == 0;
+  if (setup && auth_setup_is_remote(req)) {
+    cJSON_Delete(root);
+    return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Set the first password from your home network");
+  }
+  if (pw && (!cJSON_IsString(pw) || strlen(pw->valuestring) < 8 || strlen(pw->valuestring) > 128)) {
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "400 Bad Request");
+    return httpd_resp_sendstr(req, "{\"error\":\"Password must be 8–128 characters.\"}");
+  }
+  char password_copy[129] = {0};
+  if (cJSON_IsString(pw) && strlen(pw->valuestring) < sizeof password_copy)
+    strlcpy(password_copy, pw->valuestring, sizeof password_copy);
+  if (setup && !dashboard_auth_is_configured() && cJSON_IsString(pw) && cJSON_IsString(confirm) &&
+      strcmp(pw->valuestring, confirm->valuestring) == 0)
+    err = dashboard_auth_set_password(NULL, password_copy);
+  else if (!setup && strcmp(req->uri, "/api/auth/login") == 0 && cJSON_IsString(pw))
+    err = dashboard_auth_login(req, password_copy);
+  else if (strcmp(req->uri, "/api/auth/password") == 0 && dashboard_auth_check_csrf(req) && cJSON_IsString(current) && cJSON_IsString(pw) &&
+           cJSON_IsString(confirm) && strcmp(pw->valuestring, confirm->valuestring) == 0)
+    err = dashboard_auth_set_password(current->valuestring, pw->valuestring);
+  else if (strcmp(req->uri, "/api/auth/logout") == 0 && dashboard_auth_check_csrf(req)) {
+    dashboard_auth_logout(req);
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"success\":true}");
+  }
+  cJSON_Delete(root);
+  if (err == ESP_OK) {
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    if (strcmp(req->uri, "/api/auth/login") == 0)
+      return httpd_resp_sendstr(req, "{\"success\":true}");
+    if (strcmp(req->uri, "/api/auth/setup") == 0) {
+      // First-use setup signs in the owner immediately after persisting.
+      dashboard_auth_login(req, password_copy);
+      return httpd_resp_sendstr(req, "{\"success\":true}");
+    }
+    return httpd_resp_sendstr(req, "{\"success\":true,\"reauthenticate\":true}");
+  }
+  httpd_resp_set_type(req, "application/json");
+  const char *status = err == ESP_ERR_NOT_FOUND ? "401 Unauthorized" :
+                       err == ESP_ERR_TIMEOUT ? "429 Too Many Requests" : "400 Bad Request";
+  httpd_resp_set_status(req, status);
+  return httpd_resp_sendstr(req, err == ESP_ERR_NOT_FOUND ? "{\"error\":\"Password is incorrect.\"}" :
+                             err == ESP_ERR_TIMEOUT ? "{\"error\":\"Too many attempts. Wait 30 seconds and try again.\"}" :
+                             "{\"error\":\"Password must be 8–128 characters and both entries must match.\"}");
+}
+static const httpd_uri_t auth_login_uri = { .uri="/api/auth/login", .method=HTTP_POST, .handler=auth_form_handler };
+static const httpd_uri_t auth_setup_uri = { .uri="/api/auth/setup", .method=HTTP_POST, .handler=auth_form_handler };
+static const httpd_uri_t auth_password_uri = { .uri="/api/auth/password", .method=HTTP_POST, .handler=auth_form_handler };
+static const httpd_uri_t auth_logout_uri = { .uri="/api/auth/logout", .method=HTTP_POST, .handler=auth_form_handler };
 
 // Text assets are stored only as gzip; WOFF2 files are already compressed.
 extern const char web_ui_font_caprasimo_400_start[] asm("_binary_caprasimo_400_woff2_start");
@@ -38,6 +139,8 @@ extern const char web_ui_font_figtree_700_end[] asm("_binary_figtree_700_woff2_e
 static esp_err_t serve_asset(httpd_req_t *req, const char *type,
                              const char *raw, size_t raw_len, const char *raw_etag,
                              const unsigned char *gzip, size_t gzip_len, const char *gzip_etag) {
+  // Login uses these public, credential-free fonts too.
+  if (strcmp(type, "font/woff2") != 0 && auth_required(req)) return ESP_FAIL;
   bool compressed = gzip && compressed_asset_accepts_gzip(req);
   const char *etag = compressed ? gzip_etag : raw_etag;
   char condition[256];
@@ -75,6 +178,26 @@ static esp_err_t web_ui_uplot_css_get_handler(httpd_req_t *req) {
 static const httpd_uri_t web_ui_uplot_css_uri = {.uri = "/vendor/uplot.min.css", .method = HTTP_GET, .handler = web_ui_uplot_css_get_handler};
 
 static esp_err_t web_ui_html_get_handler(httpd_req_t *req) {
+  // The custom CNAME currently lacks HTTPS; send visitors to the verified
+  // PageKite HTTPS hostname before presenting any password form.
+  if (dashboard_auth_is_remote(req)) {
+    pagekite_settings_t pk;
+    settings_get_pagekite(&pk);
+    char host[160];
+    if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof host) != ESP_OK || strcasecmp(host, pk.domain)) {
+      char location[160];
+      snprintf(location, sizeof location, "https://%s/", pk.domain);
+      httpd_resp_set_status(req, "303 See Other");
+      httpd_resp_set_hdr(req, "Location", location);
+      httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+      return httpd_resp_sendstr(req, "Use the HTTPS dashboard to sign in.");
+    }
+  }
+  if (!dashboard_auth_check(req)) {
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, login_page, HTTPD_RESP_USE_STRLEN);
+  }
   return serve_asset(req, "text/html", NULL, ASSET_html_RAW_SIZE,
                      ASSET_html_ETAG, asset_html_gzip, sizeof(asset_html_gzip), ASSET_html_GZIP_ETAG);
 }
@@ -155,6 +278,7 @@ char *rest_api_reading_json(const sensor_reading_t *r) {
 }
 
 static esp_err_t reading_get_handler(httpd_req_t *req) {
+  if (auth_required(req)) return ESP_FAIL;
   sensor_reading_t r;
   sensors_get_last_reading(&r);
 
@@ -179,6 +303,7 @@ static const httpd_uri_t reading_uri = {
 // caching here: this is meant to answer "how's the signal right now," not
 // "how was it at boot."
 static esp_err_t wifi_get_handler(httpd_req_t *req) {
+  if (auth_required(req)) return ESP_FAIL;
   wifi_ap_record_t info;
   esp_err_t err = esp_wifi_sta_get_ap_info(&info);
 
@@ -209,6 +334,7 @@ static const httpd_uri_t wifi_get_uri = {
 };
 
 static esp_err_t devices_wifi_get_handler(httpd_req_t *req) {
+  if (auth_required(req)) return ESP_FAIL;
   wifi_ap_record_t info;
   bool monitor_connected = esp_wifi_sta_get_ap_info(&info) == ESP_OK;
   int display_rssi = 0;
@@ -237,6 +363,7 @@ static const httpd_uri_t devices_wifi_get_uri = {
 static void settings_to_json(const settings_t *s, cJSON *root) {
   cJSON_AddBoolToObject(root, "pagekite_enabled", s->pagekite.enabled);
   cJSON_AddStringToObject(root, "pagekite_domain", s->pagekite.domain);
+  cJSON_AddStringToObject(root, "pagekite_custom_domain", s->pagekite.custom_domain);
   cJSON_AddBoolToObject(root, "pagekite_secret_set", *s->pagekite.secret != 0);
   cJSON_AddNumberToObject(root, "settings_revision", ws_server_settings_revision(false));
   cJSON_AddNumberToObject(root, "log_heartbeat_min", s->log_heartbeat_min);
@@ -259,12 +386,14 @@ static void settings_to_json(const settings_t *s, cJSON *root) {
 }
 
 static esp_err_t settings_get_handler(httpd_req_t *req) {
+  bool device_settings = !req->user_ctx && !dashboard_auth_is_remote(req) && !dashboard_auth_check(req);
+  if (!device_settings && auth_required(req)) return ESP_FAIL;
   settings_t s;
   settings_get(&s);
 
   cJSON *root = cJSON_CreateObject();
   settings_to_json(&s, root);
-  if (req->user_ctx) {
+  if (req->user_ctx || device_settings) {
     cJSON_DeleteItemFromObject(root, "google_sheets_secret");
     cJSON_DeleteItemFromObject(root, "google_sheets_webhook_url");
     cJSON_AddBoolToObject(root, "credentials_redacted", true);
@@ -298,6 +427,10 @@ static const httpd_uri_t tunnel_settings_get_uri = {
 // older clients may omit them, retaining the saved palette. Breathing shape
 // likewise retains its saved value when omitted.
 static esp_err_t settings_post_handler(httpd_req_t *req) {
+  // Local commissioning is allowed before the owner sets the first password.
+  // Loopback tunnel visitors always require a session, even before setup.
+  if ((dashboard_auth_is_configured() || dashboard_auth_is_remote(req)) && auth_required(req)) return ESP_FAIL;
+  if (!dashboard_auth_check_csrf(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Invalid request origin");
   if (req->content_len <= 0 || req->content_len >= 2048) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Request body too large");
     return ESP_FAIL;
@@ -331,12 +464,10 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
   }
 
   settings_t s = {0};
-  if (req->user_ctx) {
-    settings_t current;
-    settings_get(&current);
-    memcpy(s.google_sheets_webhook_url, current.google_sheets_webhook_url, sizeof s.google_sheets_webhook_url);
-    memcpy(s.google_sheets_secret, current.google_sheets_secret, sizeof s.google_sheets_secret);
-  }
+  settings_t current;
+  settings_get(&current);
+  memcpy(s.google_sheets_webhook_url, current.google_sheets_webhook_url, sizeof s.google_sheets_webhook_url);
+  memcpy(s.google_sheets_secret, current.google_sheets_secret, sizeof s.google_sheets_secret);
   cJSON *item;
 
   item = cJSON_GetObjectItem(root, "log_heartbeat_min");
@@ -378,22 +509,20 @@ static esp_err_t settings_post_handler(httpd_req_t *req) {
 
   // Older API clients omit colours: retain those already saved. Explicit
   // values must be exactly #RRGGBB; never truncate invalid input into validity.
-  settings_t current;
-  settings_get(&current);
   s.pagekite = current.pagekite;
   item = cJSON_GetObjectItemCaseSensitive(root, "pagekite_enabled");
   if (item && !cJSON_IsBool(item)) goto invalid_pagekite;
   if (item) s.pagekite.enabled = cJSON_IsTrue(item);
-  const char *pk_keys[] = {"pagekite_domain", "pagekite_secret"};
-  char *pk_values[] = {s.pagekite.domain, s.pagekite.secret};
-  for (int i = 0; i < 2; i++) {
+  const char *pk_keys[] = {"pagekite_domain", "pagekite_secret", "pagekite_custom_domain"};
+  char *pk_values[] = {s.pagekite.domain, s.pagekite.secret, s.pagekite.custom_domain};
+  for (int i = 0; i < 3; i++) {
     item = cJSON_GetObjectItemCaseSensitive(root, pk_keys[i]);
     if (!item) continue;
     if (!cJSON_IsString(item) || strlen(item->valuestring) >= SETTINGS_PAGEKITE_TEXT_MAX_LEN) goto invalid_pagekite;
     // Empty/omitted secret retains the stored value, including on LAN saves.
     if (i == 1 && !*item->valuestring) continue;
     strcpy(pk_values[i], item->valuestring);
-    if (i == 0) for (char *c = pk_values[i]; *c; c++) *c = tolower((unsigned char)*c);
+    if (i != 1) for (char *c = pk_values[i]; *c; c++) *c = tolower((unsigned char)*c);
   }
   item = cJSON_GetObjectItemCaseSensitive(root, "minimum_brightness");
   if (item != NULL && (!cJSON_IsNumber(item) || !isfinite(item->valuedouble) ||
@@ -533,6 +662,7 @@ static void event_log_push(const char *slug) {
 }
 
 static esp_err_t events_get_handler(httpd_req_t *req) {
+  if (auth_required(req)) return ESP_FAIL;
   cJSON *root = cJSON_CreateArray();
   for (size_t i = 0; i < EVENT_COUNT; i++) {
     cJSON *item = cJSON_CreateObject();
@@ -559,6 +689,8 @@ static const httpd_uri_t events_get_uri = {
 // -- see sheets_logger_log_event()'s own doc comment for why this bypasses
 // the periodic deadband/heartbeat check and doesn't reset its clock.
 static esp_err_t event_post_handler(httpd_req_t *req) {
+  if (auth_required(req)) return ESP_FAIL;
+  if (!dashboard_auth_check_csrf(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Invalid request origin");
   if (req->content_len <= 0 || req->content_len >= 128) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Request body too large");
     return ESP_FAIL;
@@ -633,6 +765,7 @@ static const httpd_uri_t event_post_uri = {
 // value the client would otherwise need this device's boot time to
 // interpret.
 static esp_err_t history_get_handler(httpd_req_t *req) {
+  if (auth_required(req)) return ESP_FAIL;
   uint32_t now_s = (uint32_t) (esp_timer_get_time() / 1000000);
 
   static history_sample_t samples[SENSORS_HISTORY_CAPACITY];
@@ -678,6 +811,7 @@ static const httpd_uri_t history_get_uri = {
 };
 
 static esp_err_t settings_status_handler(httpd_req_t *req) {
+  if (auth_required(req)) return ESP_FAIL;
   uint32_t revision = ws_server_settings_revision(false);
   char json[112];
   snprintf(json, sizeof(json), "{\"settings_revision\":%lu,\"display_applied\":%s}",
@@ -689,6 +823,29 @@ static const httpd_uri_t settings_status_uri = {
     .uri = "/api/settings/status", .method = HTTP_GET, .handler = settings_status_handler,
 };
 
+static esp_err_t pagekite_status_handler(httpd_req_t *req) {
+  if (auth_required(req)) return ESP_FAIL;
+  pagekite_status_t status;
+  pagekite_tunnel_get_status(&status);
+  const char *state = "unavailable";
+  switch (status.state) {
+    case PAGEKITE_STATUS_DISABLED: state = "disabled"; break;
+    case PAGEKITE_STATUS_CONNECTING: state = "connecting"; break;
+    case PAGEKITE_STATUS_CONNECTED: state = "connected"; break;
+    case PAGEKITE_STATUS_AUTH_ERROR: state = "auth_error"; break;
+    case PAGEKITE_STATUS_NETWORK_ERROR: state = "network_error"; break;
+  }
+  char json[96];
+  snprintf(json, sizeof(json), "{\"state\":\"%s\",\"retry_in_s\":%lu}",
+           state, (unsigned long)status.retry_in_s);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  return httpd_resp_sendstr(req, json);
+}
+static const httpd_uri_t pagekite_status_uri = {
+    .uri = "/api/pagekite/status", .method = HTTP_GET, .handler = pagekite_status_handler,
+};
+
 // Explicit, not just relying on HTTPD_DEFAULT_CONFIG()'s own default (also
 // 7) -- rest_api_log_socket_usage() below needs to size its client_fds
 // buffer to match whatever this is actually set to.
@@ -697,6 +854,7 @@ static const httpd_uri_t settings_status_uri = {
 static httpd_handle_t s_server = NULL;
 
 httpd_handle_t rest_api_start(void) {
+  dashboard_auth_init();
   httpd_handle_t server = NULL;
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.stack_size = 8192;  // shared with ota_server's esp_ota_* calls, which need more than the 4096 default
@@ -720,12 +878,18 @@ httpd_handle_t rest_api_start(void) {
 
   ESP_LOGI(TAG, "Starting REST API server on port %d", config.server_port);
   ESP_ERROR_CHECK(httpd_start(&server, &config));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &auth_status_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &auth_login_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &auth_setup_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &auth_password_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &auth_logout_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &reading_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &wifi_get_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &devices_wifi_get_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &settings_get_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &tunnel_settings_get_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &settings_status_uri));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(server, &pagekite_status_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &settings_post_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &tunnel_settings_post_uri));
   ESP_ERROR_CHECK(httpd_register_uri_handler(server, &events_get_uri));

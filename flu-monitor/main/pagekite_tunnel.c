@@ -39,13 +39,14 @@ static int transport = -1;
 static unsigned reconnects;
 static pagekite_settings_t config;
 static TaskHandle_t tunnel_task;
-static const char *domain, *secret;
+static const char *domain, *custom_domain, *secret;
 static bool config_changed(void) {
     pagekite_settings_t latest;
     settings_get_pagekite(&latest);
     return memcmp(&latest, &config, sizeof config) != 0;
 }
 static char client_token[37];
+static void set_failure_status(const char *message);
 typedef struct {
     char sid[64];
     int fd;
@@ -55,7 +56,41 @@ typedef struct {
     int64_t last_activity;
 } stream_t;
 static stream_t *streams;
-static void die(const char *text) { fprintf(stderr, "%s\n", text); longjmp(failed, 1); }
+static void die(const char *text) { fprintf(stderr, "%s\n", text); set_failure_status(text); longjmp(failed, 1); }
+
+static portMUX_TYPE status_mux = portMUX_INITIALIZER_UNLOCKED;
+static pagekite_status_state_t current_status = PAGEKITE_STATUS_DISABLED;
+static int64_t retry_deadline_us;
+
+static void set_status(pagekite_status_state_t state) {
+    portENTER_CRITICAL(&status_mux);
+    current_status = state;
+    retry_deadline_us = 0;
+    portEXIT_CRITICAL(&status_mux);
+}
+
+static void set_failure_status(const char *message) {
+    bool auth_failure = strstr(message, "rejected kite") ||
+                        strstr(message, "authentication") ||
+                        strstr(message, "credentials");
+    set_status(auth_failure ? PAGEKITE_STATUS_AUTH_ERROR : PAGEKITE_STATUS_NETWORK_ERROR);
+}
+
+static void set_retry_deadline(unsigned seconds) {
+    portENTER_CRITICAL(&status_mux);
+    retry_deadline_us = esp_timer_get_time() + (int64_t)seconds * 1000000;
+    portEXIT_CRITICAL(&status_mux);
+}
+
+void pagekite_tunnel_get_status(pagekite_status_t *status) {
+    if (!status) return;
+    portENTER_CRITICAL(&status_mux);
+    status->state = current_status;
+    int64_t retry_at = retry_deadline_us;
+    portEXIT_CRITICAL(&status_mux);
+    int64_t remaining = retry_at - esp_timer_get_time();
+    status->retry_in_s = remaining > 0 ? (uint32_t)((remaining + 999999) / 1000000) : 0;
+}
 
 static void write_tls(const void *data, size_t length) {
     const unsigned char *p = data;
@@ -89,13 +124,16 @@ static void chunk(const void *data, size_t size) {
     char header[32]; int n = snprintf(header, sizeof header, "%zx\r\n", size);
     write_tls(header, n); write_tls(data, size);
 }
-static void auth_header(char *out, size_t capacity, const char *challenge) {
+static void auth_header_for(char *out, size_t capacity, const char *host, const char *challenge) {
     char payload[1024], sign[37];
-    int n = snprintf(payload, sizeof payload, "http:%s:%s:%s", domain, client_token, challenge);
+    int n = snprintf(payload, sizeof payload, "http:%s:%s:%s", host, client_token, challenge);
     if (n < 0 || (size_t)n >= sizeof payload) die("Authentication too large");
     signature(payload, sign);
     n = snprintf(out, capacity, "X-PageKite: %s:%s\r\n", payload, sign);
     if (n < 0 || (size_t)n >= capacity) die("Authentication header too large");
+}
+static bool registered_host(const char *host) {
+    return !strcmp(host, domain) || (custom_domain && *custom_domain && !strcmp(host, custom_domain));
 }
 static size_t read_chunk(char *out) {
     char length[32], *end; line(length, sizeof length);
@@ -106,10 +144,14 @@ static size_t read_chunk(char *out) {
 static void authenticate(void) {
     unsigned char nonce[18]; esp_fill_random(nonce, sizeof nonce);
     hex(nonce, sizeof nonce, client_token);
-    char auth[1200], request[1500]; auth_header(auth, sizeof auth, "");
+    char auth[512], alias_auth[512], request[1500];
+    auth_header_for(auth, sizeof auth, domain, "");
+    alias_auth[0] = 0;
+    if (custom_domain && *custom_domain) auth_header_for(alias_auth, sizeof alias_auth, custom_domain, "");
     int n = snprintf(request, sizeof request,
         "CONNECT PageKite:1 HTTP/1.0\r\nX-PageKite-Features: AddKites\r\n"
-        "X-PageKite-Version: flu-monitor-c-prototype-0.1\r\n%s\r\n", auth);
+        "X-PageKite-Version: flu-monitor-c-prototype-0.1\r\n%s%s\r\n", auth, alias_auth);
+    if (n < 0 || (size_t)n >= sizeof request) die("Handshake request too large");
     write_tls(request, n);
     char *response = response_buffer;
     size_t used = 0;
@@ -119,14 +161,37 @@ static void authenticate(void) {
     } while (used < 4 || memcmp(response + used - 4, "\r\n\r\n", 4));
     response[used] = 0;
     for (int attempt=0; attempt<2; attempt++) {
-        if (strstr(response, "X-PageKite-Reject") || strstr(response, "X-PageKite-Duplicate")) die("Relay rejected kite (details suppressed)");
-        if (strstr(response, "X-PageKite-OK:")) {  puts("AUTHENTICATED"); fflush(stdout); return; }
-        char *challenge = strstr(response, "X-PageKite-SignThis:");
-        if (!challenge) die("Unexpected relay handshake");
-        char *end = strstr(challenge, "\r\n"); if (!end) die("Malformed challenge"); *end = 0;
-        char *token = strrchr(challenge, ':'); if (!token) die("Malformed challenge");
-        auth_header(auth, sizeof auth, token + 1);
-        n = snprintf(request, sizeof request, "NOOP: 1\r\n%s\r\n", auth);
+        if (strstr(response, "X-PageKite-Reject") || strstr(response, "X-PageKite-Duplicate") ||
+            strstr(response, "X-PageKite-Invalid")) die("Relay rejected kite (details suppressed)");
+        char answers[1200] = {0}; size_t answers_used = 0; bool challenged = false;
+        char *challenge = response;
+        while ((challenge = strstr(challenge, "X-PageKite-SignThis:")) != NULL) {
+            char *value = challenge + strlen("X-PageKite-SignThis:");
+            char *end = strstr(value, "\r\n"); if (!end) die("Malformed challenge");
+            *end = 0;
+            while (*value == ' ' || *value == '\t') value++;
+            char *first_colon = strchr(value, ':');
+            char *second_colon = first_colon ? strchr(first_colon + 1, ':') : NULL;
+            char *token = strrchr(value, ':');
+            if (!first_colon || !second_colon || !token || token + 1 == value + strlen(value)) die("Malformed challenge");
+            char host[SETTINGS_PAGEKITE_TEXT_MAX_LEN];
+            size_t host_len = (size_t)(second_colon - first_colon - 1);
+            if (!host_len || host_len >= sizeof host) die("Malformed challenge host");
+            memcpy(host, first_colon + 1, host_len); host[host_len] = 0;
+            if (!registered_host(host)) die("Relay challenged an unknown kite");
+            auth_header_for(auth, sizeof auth, host, token + 1);
+            size_t auth_len = strlen(auth);
+            if (auth_len > sizeof answers - answers_used - 1) die("Too many relay challenges");
+            memcpy(answers + answers_used, auth, auth_len); answers_used += auth_len;
+            challenged = true;
+            challenge = end + 2;
+        }
+        if (!challenged) {
+            if (strstr(response, "X-PageKite-OK:")) { puts("AUTHENTICATED"); fflush(stdout); return; }
+            die("Unexpected relay handshake");
+        }
+        n = snprintf(request, sizeof request, "NOOP: 1\r\n%s\r\n", answers);
+        if (n < 0 || (size_t)n >= sizeof request) die("Authentication response too large");
         chunk(request, n); read_chunk(response);
     }
     die("Unresolved authentication challenge");
@@ -236,8 +301,11 @@ static void update_kite_dns(const char *ip) {
         ((!strncmp(reply.body, "good", 4) && reply.used >= 4) ||
          (!strncmp(reply.body, "nochg", 5) && reply.used >= 5));
     if (!accepted) {
+        bool explicit_rejection = status == 200 && reply.used > 0 &&
+            strncmp(reply.body, "good", 4) && strncmp(reply.body, "nochg", 5);
         memset(&reply, 0, sizeof reply);
-        die("Verified PageKite DNS update failed");
+        die(explicit_rejection ? "PageKite DNS credentials or kite domain rejected" :
+                                 "Verified PageKite DNS update failed");
     }
     if (err != ESP_OK) ESP_LOGW("pagekite", "DDNS success confirmed despite incomplete chunked terminator");
     memset(&reply, 0, sizeof reply);
@@ -271,6 +339,8 @@ static const char *route(const char *method, const char *path) {
     if (!strcmp(method, "POST")) {
         if (!strcmp(path, "/api/settings")) return "/api/tunnel/settings";
         if (!strcmp(path, "/api/event")) return "/api/event";
+        if (!strcmp(path, "/api/auth/login") || !strcmp(path, "/api/auth/setup") ||
+            !strcmp(path, "/api/auth/password") || !strcmp(path, "/api/auth/logout")) return path;
         return NULL;
     }
     static const char *allowed[] = {
@@ -278,7 +348,9 @@ static const char *route(const char *method, const char *path) {
         "/alpinejs.min.js", "/vendor/uplot.min.js", "/vendor/uplot.min.css",
         "/fonts/caprasimo-400.woff2", "/fonts/figtree-400.woff2",
         "/fonts/figtree-600.woff2", "/fonts/figtree-700.woff2",
-        "/api/reading", "/api/history", "/api/events", "/api/devices/wifi", "/api/settings/status"
+        "/api/reading", "/api/history", "/api/events", "/api/devices/wifi", "/api/settings/status",
+        "/api/auth/status",
+        "/api/pagekite/status"
     };
     if (!strcmp(path, "/api/settings")) return "/api/tunnel/settings";
     for (size_t i = 0; i < sizeof allowed / sizeof allowed[0]; i++)
@@ -327,6 +399,8 @@ static void prepare(int i) {
     char encoding[256] = "identity", etag[128] = "";
     unsigned long body_size = 0;
     bool has_length = false, json_type = false;
+    char request_host[160] = "localhost", cookie[384] = "", origin[256] = "";
+    bool have_host = false, have_cookie = false, have_origin = false;
     char *header = first + 2;
     while (*header && header < headers + header_size - 4) {
         char *next = strstr(header, "\r\n");
@@ -352,6 +426,18 @@ static void prepare(int i) {
         }
         if (!strcasecmp(header, "Content-Type"))
             json_type = !strncasecmp(colon, "application/json", 16) && (!colon[16] || colon[16] == ';');
+        if (!strcasecmp(header, "Host")) {
+            if (have_host || strlen(colon) >= sizeof request_host) { reject(i, 400, "Bad Request"); return; }
+            strcpy(request_host, colon); have_host = true;
+        }
+        if (!strcasecmp(header, "Cookie")) {
+            if (have_cookie || strlen(colon) >= sizeof cookie) { reject(i, 431, "Request Header Fields Too Large"); return; }
+            strcpy(cookie, colon); have_cookie = true;
+        }
+        if (!strcasecmp(header, "Origin")) {
+            if (have_origin || strlen(colon) >= sizeof origin) { reject(i, 431, "Request Header Fields Too Large"); return; }
+            strcpy(origin, colon); have_origin = true;
+        }
         if (!strcasecmp(header, "Accept-Encoding")) {
             if (strlen(colon) >= sizeof encoding) { reject(i, 431, "Request Header Fields Too Large"); return; }
             strcpy(encoding, colon);
@@ -368,24 +454,22 @@ static void prepare(int i) {
     if (header_size + body_size > REQUEST_LIMIT) { reject(i, 413, "Content Too Large"); return; }
     if (s->used > header_size + body_size) { reject(i, 400, "Bad Request"); return; }
     if (s->used < header_size + body_size) return;
-    if (!post && !strcmp(path, "/probe")) {
-        char body[256];
-        snprintf(body, sizeof body,
-            "{\"device\":\"flu-monitor\",\"mode\":\"pagekite-dashboard\",\"uptime_s\":%lld,"
-            "\"free_heap\":%lu,\"minimum_free_heap\":%lu,\"reconnects\":%u,\"reset_reason\":%d}\n",
-            (long long)(esp_timer_get_time() / 1000000), (unsigned long)esp_get_free_heap_size(),
-            (unsigned long)esp_get_minimum_free_heap_size(), reconnects, (int)esp_reset_reason());
-        reply(s->sid, 200, "OK", body); release(i); return;
-    }
     const char *target = route(method, path);
     if (!target) { reject(i, 404, "Not Found"); return; }
     char body_header[96] = "";
     if (post) snprintf(body_header, sizeof body_header,
         "Content-Type: application/json\r\nContent-Length: %lu\r\n", body_size);
+    if (!have_host || (strcasecmp(request_host, domain) &&
+        (!custom_domain || !*custom_domain || strcasecmp(request_host, custom_domain)))) {
+        reject(i, 400, "Bad Request"); return;
+    }
+    char forwarded_auth[704] = "";
+    if (have_cookie) snprintf(forwarded_auth + strlen(forwarded_auth), sizeof forwarded_auth - strlen(forwarded_auth), "Cookie: %s\r\n", cookie);
+    if (have_origin) snprintf(forwarded_auth + strlen(forwarded_auth), sizeof forwarded_auth - strlen(forwarded_auth), "Origin: %s\r\n", origin);
     int n = snprintf(response_buffer, sizeof response_buffer,
-        "%s %s HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAccept-Encoding: %s\r\n%s%s%s%s\r\n",
-        method, target, encoding, *etag ? "If-None-Match: " : "", etag,
-        *etag ? "\r\n" : "", body_header);
+        "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nAccept-Encoding: %s\r\n%s%s%s%s%s\r\n",
+        method, target, request_host, encoding, *etag ? "If-None-Match: " : "", etag,
+        *etag ? "\r\n" : "", forwarded_auth, body_header);
     if (n < 0 || (size_t)n + body_size > REQUEST_LIMIT) { reject(i, 431, "Request Header Fields Too Large"); return; }
     if (!reserve_request(s, n + body_size)) { reject(i, 503, "Service Unavailable"); return; }
     memmove(s->request + n, s->request + header_size, body_size);
@@ -526,7 +610,7 @@ static void session_loop(void) {
 }
 static void task(void *unused) {
     (void)unused;
-    domain = config.domain; secret = config.secret;
+    domain = config.domain; custom_domain = config.custom_domain; secret = config.secret;
     streams = calloc(STREAMS, sizeof *streams);
     if (!streams) { ESP_LOGE("pagekite", "Stream allocation failed"); tunnel_task = NULL; vTaskDelete(NULL); return; }
     for (int i = 0; i < STREAMS; i++) streams[i].fd = -1;
@@ -534,12 +618,14 @@ static void task(void *unused) {
     for (;;) {
         settings_get_pagekite(&config);
         if (!config.enabled) {
+            set_status(PAGEKITE_STATUS_DISABLED);
             // Wake on settings save; disabling closes all relay/backend sockets.
             memset(config.secret, 0, sizeof config.secret);
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             backoff = 2;
             continue;
         }
+        set_status(PAGEKITE_STATUS_CONNECTING);
         // SNTP must have set wall-clock time before certificate validation.
         if (time(NULL) < 1700000000) { ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000)); continue; }
         transport = -1;
@@ -550,6 +636,7 @@ static void task(void *unused) {
             update_kite_dns(selected);
             if (config_changed()) continue;
             connect_tls(selected); authenticate(); backoff = 2;
+            set_status(PAGEKITE_STATUS_CONNECTED);
             ESP_LOGI("pagekite", "Verified automatic PageKite frontend ready");
             session_loop();
         }
@@ -559,15 +646,17 @@ static void task(void *unused) {
         if (config_changed()) { backoff = 2; continue; }
         reconnects++;
         ESP_LOGW("pagekite", "Tunnel disconnected; retry in %u seconds", backoff);
+        set_retry_deadline(backoff);
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(backoff * 1000));
         if (backoff < 60) backoff = backoff > 30 ? 60 : backoff * 2;
     }
 }
 void pagekite_tunnel_start(void) {
-    if (tunnel_task) { xTaskNotifyGive(tunnel_task); return; }
     pagekite_settings_t initial;
     settings_get_pagekite(&initial);
-    if (!initial.enabled) return;
+    if (!initial.enabled) { set_status(PAGEKITE_STATUS_DISABLED); return; }
+    set_status(PAGEKITE_STATUS_CONNECTING);
+    if (tunnel_task) { xTaskNotifyGive(tunnel_task); return; }
     if (xTaskCreate(task, "pagekite", 12288, NULL, 1, &tunnel_task) != pdPASS)
-        ESP_LOGE("pagekite", "Unable to allocate tunnel task");
+        { set_status(PAGEKITE_STATUS_NETWORK_ERROR); ESP_LOGE("pagekite", "Unable to allocate tunnel task"); }
 }

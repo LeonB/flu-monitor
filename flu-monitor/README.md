@@ -107,22 +107,55 @@ over `/ws` (see below). The three `zone_*_color` fields accept exactly
 
 ## PageKite remote access
 
-In **Settings → PageKite**, enter your registered kite domain and its shared
-secret, then enable Remote access and Save. Use the kite's shared secret,
-not your PageKite account password. The monitor selects the fastest
-certificate-verified relay from PageKite's `frontends.b5p.us` pool, then
-updates your kite's DNS over verified HTTPS.
+In **Settings → PageKite**, enter your registered `*.pagekite.me` kite domain
+and its shared secret, then enable Remote access and Save. Use the kite's
+shared secret, not your PageKite account password. The monitor selects the
+fastest certificate-verified relay from PageKite's `frontends.b5p.us` pool,
+then updates your kite's DNS over verified HTTPS. To use a custom hostname,
+also enter it as **Custom domain** after adding it as a CNAME kite in PageKite,
+and point its DNS CNAME at the `*.pagekite.me` kite. The firmware registers
+both names on the same tunnel. Use a DNS CNAME record rather than URL
+forwarding if you want the custom hostname to remain in the browser address
+bar.
 
 Configuration persists in device NVS across reboot and firmware updates.
 Changing tunnel settings reconnects it without rebuilding or restarting the
 monitor. Disabling Remote access closes the tunnel and retains the saved
 configuration. The shared secret is masked, never returned by settings APIs,
 and cleared from the form after a successful save. Leaving it blank keeps
-the stored value. Remote settings and event logging remain editable;
-visitor authentication is a separate follow-up.
+the stored value. Remote settings and event logging remain editable.
 
-API fields: `pagekite_enabled` (boolean), `pagekite_domain`, and write-only
-`pagekite_secret` (strings, at most 127 characters).
+The embedded dashboard asks you to choose a password on first use; do this
+from the monitor's home-network address. Initial setup is blocked through
+PageKite so a remote visitor cannot claim a fresh device. It protects the
+dashboard assets and REST endpoints over LAN and PageKite. Unauthenticated
+LAN GET /api/settings remains available without credentials for flu-display;
+local commissioning saves are allowed only until the first password is set. The password is
+stored in NVS as a salted PBKDF2-HMAC-SHA-256 hash; the settings API never
+returns it. Change it in **Settings → Dashboard access**; the current
+password is required and the new password must be confirmed. One browser
+session is active at a time; it expires after 30 minutes. Five failed sign-ins
+cause a 30-second lockout. Password changes invalidate the active session.
+Remote cookies are Secure and all remote state-changing requests require
+a matching HTTPS Origin. The custom HTTP CNAME redirects to the primary
+PageKite HTTPS dashboard for sign-in. The device WebSocket used by flu-display remains outside dashboard
+authentication. The local proxy preview in
+`tools/ui_proxy.py` remains a design prototype and does not secure the device.
+
+USB-serial password recovery is not implemented yet. A normal app-only flash
+preserves NVS and therefore will not reset the password; a full flash erase
+clears all NVS settings and is not the intended recovery method. The web
+interface uses HTTP on the local network, so a password entered over plain
+LAN HTTP can be observed by someone able to monitor that network traffic.
+
+`GET /api/pagekite/status` reports `disabled`, `connecting`, `connected`,
+`auth_error`, or `network_error`, with `retry_in_s` while retrying. It never
+returns credentials. The Settings page requests it on entry and refreshes
+every 5 seconds while open; it stops polling when Settings closes.
+
+API fields: `pagekite_enabled` (boolean), `pagekite_domain`, optional
+`pagekite_custom_domain`, and write-only `pagekite_secret` (strings, at most
+127 characters).
 `pagekite_secret_set` reports whether a secret is saved. Omitted PageKite
 fields retain their previous values, so older settings clients keep working.
 Enabling requires a domain and shared secret of at least 8 characters.
