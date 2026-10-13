@@ -1104,7 +1104,11 @@ salted PBKDF2-HMAC-SHA-256 hash in the separate `dashboard_auth` NVS namespace.
 first password can be set only from the LAN address; the peer socket identifies
 IPv4/IPv6-mapped loopback tunnel requests, so forged Host headers cannot bypass setup
 protection. Socket lookup errors fail closed. Login creates one in-RAM, high-entropy
-30-minute session cookie (only one browser session is active at a time). Five
+session cookie: 24 hours by default, or no server expiry with Keep me signed
+in (only one browser session is active at a time). Both modes end on monitor
+restart; no sessions are stored in NVS. Remembered cookies use a 400-day
+browser lifetime renewed during authenticated requests; browser cookie
+removal/expiry can still require sign-in. Five
 failed logins trigger a 30-second global lockout. Changing the password
 requires the current value and matching confirmation, then invalidates the
 session. Cookie-authenticated state-changing requests require an exact matching
@@ -1169,3 +1173,12 @@ previewed in Chrome at localhost:8876; script regression checks and firmware
 build pass. The glow was removed at the owner’s request; image 0x13dc30 was flashed
 by OTA and verified after reboot: new login HTML without glow, all three
 login fonts available without a session, existing password still configured.
+
+2026-10-13 sessions: unchecked login expires at exactly 24 hours; Keep me
+signed in skips server expiry until restart. Logout/password change still
+revoke access, and a later login still replaces the single active session.
+Host tests cover the 24-hour boundary, long remembered uptime, restart,
+logout and password-change revocation; actual login script tests cover both
+checkbox payloads. Image 0x13df10 (15% slot free) built and flashed via OTA.
+After reboot the new checkbox/duration HTML and retained password were
+verified on the monitor. No owner password was requested or reset.

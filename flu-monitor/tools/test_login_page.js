@@ -5,7 +5,7 @@ const html = [...source.matchAll(/"(?:[^"\\]|\\.)*"/g)].map(m => JSON.parse(m[0]
 assert.match(html, /type="password"/);
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 async function page(configured, remote = false) {
-  const elements = Object.fromEntries(['p','c','intro','label','b','e','show','title'].map(k => [k, { value: '', style: {}, textContent: '', disabled: k === 'b', type:'password', setAttribute(name,value){this[name]=value} }]));
+  const elements = Object.fromEntries(['p','c','intro','label','b','e','show','title','remember'].map(k => [k, { value: '', style: {}, textContent: '', disabled: k === 'b', checked:false, type:'password', setAttribute(name,value){this[name]=value} }]));
   const form = {}; let writes = [], redirects = [];
   const context = { AbortController, setTimeout, clearTimeout, document: { querySelector: selector => selector === 'form' ? form : elements.e, getElementById: id => elements[id] },
     location: { protocol: 'https:', hostname: 'demo.pagekite.me', host: 'demo.pagekite.me', replace: value => redirects.push(value) },
@@ -30,7 +30,8 @@ async function page(configured, remote = false) {
   assert.equal(remote.elements.b.disabled, true); assert.equal(remote.elements.p.disabled, true); assert.match(remote.elements.intro.textContent, /home network/);
   const login = await page(true);
   assert.equal(login.elements.c.style.display, 'none'); login.elements.p.value = 'mock-password';
-  await login.form.onsubmit({preventDefault(){}}); assert.equal(login.writes[0].url, '/api/auth/login'); assert.equal(login.redirects[0], '/');
+  await login.form.onsubmit({preventDefault(){}}); assert.equal(login.writes[0].body.remember,false); assert.equal(login.writes[0].url, '/api/auth/login'); assert.equal(login.redirects[0], '/');
+  login.elements.remember.checked=true;await login.form.onsubmit({preventDefault(){}});assert.equal(login.writes.at(-1).body.remember,true);
   login.context.fetch = async () => ({ok:false,json:async()=>({error:'Password is incorrect.'})});
   await login.form.onsubmit({preventDefault(){}}); assert.equal(login.elements.e.textContent, 'Password is incorrect.');
   login.context.fetch = async () => { throw new Error('Network disconnected'); };

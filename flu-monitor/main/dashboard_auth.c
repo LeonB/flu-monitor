@@ -15,7 +15,9 @@
 #define AUTH_PASSWORD_MIN 8
 #define AUTH_PASSWORD_MAX 128
 #define AUTH_PBKDF2_ROUNDS 12000
-#define AUTH_SESSION_SECONDS (30 * 60)
+#define AUTH_SESSION_SECONDS (24 * 60 * 60)
+// Browsers cap persistent cookies; refresh this lifetime during remembered use.
+#define AUTH_COOKIE_SECONDS (400 * 24 * 60 * 60)
 
 typedef struct {
   uint8_t salt[16];
@@ -26,6 +28,17 @@ static credential_t s_credential;
 static bool s_configured;
 static char s_session[65];
 static int64_t s_session_expiry_us;
+static bool s_remember;
+
+static void session_cookie(httpd_req_t *req) {
+  // HTTPD retains the header pointer until the response is sent.
+  static char cookie[160];
+  snprintf(cookie, sizeof cookie,
+           "flu_session=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict%s",
+           s_session, s_remember ? AUTH_COOKIE_SECONDS : AUTH_SESSION_SECONDS,
+           dashboard_auth_is_remote(req) ? "; Secure" : "");
+  httpd_resp_set_hdr(req, "Set-Cookie", cookie);
+}
 static unsigned s_failed_logins;
 static int64_t s_login_lockout_until_us;
 
@@ -66,6 +79,9 @@ static void make_token(char out[65]) {
 }
 
 void dashboard_auth_init(void) {
+  memset(s_session, 0, sizeof s_session);
+  s_session_expiry_us = 0;
+  s_remember = false;
   nvs_handle_t nvs;
   size_t size = sizeof s_credential;
   if (nvs_open(AUTH_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
@@ -105,15 +121,18 @@ bool dashboard_auth_is_remote(httpd_req_t *req) {
 bool dashboard_auth_check(httpd_req_t *req) {
   if (!s_configured) return false;
   char cookie[256];
-  if (!s_session[0] || esp_timer_get_time() >= s_session_expiry_us ||
+  if (!s_session[0] || (!s_remember && esp_timer_get_time() >= s_session_expiry_us) ||
       httpd_req_get_hdr_value_str(req, "Cookie", cookie, sizeof cookie) != ESP_OK) return false;
   const char *p = cookie;
   while (*p) {
     while (*p == ' ' || *p == ';') ++p;
     const char *end = strchr(p, ';');
     size_t n = end ? (size_t)(end - p) : strlen(p);
-    if (n == 76 && !strncmp(p, "flu_session=", 12))
-      return equal_secret((const uint8_t *)(p + 12), (const uint8_t *)s_session, 64);
+    if (n == 76 && !strncmp(p, "flu_session=", 12)) {
+      bool valid = equal_secret((const uint8_t *)(p + 12), (const uint8_t *)s_session, 64);
+      if (valid && s_remember) session_cookie(req);
+      return valid;
+    }
     if (!end) break;
     p = end + 1;
   }
@@ -131,7 +150,7 @@ bool dashboard_auth_check_csrf(httpd_req_t *req) {
   return strcmp(origin + (https ? 8 : 7), host) == 0;
 }
 
-esp_err_t dashboard_auth_login(httpd_req_t *req, const char *password) {
+esp_err_t dashboard_auth_login(httpd_req_t *req, const char *password, bool remember) {
   if (esp_timer_get_time() < s_login_lockout_until_us) return ESP_ERR_TIMEOUT;
   if (!s_configured || !password || strlen(password) < AUTH_PASSWORD_MIN ||
       strlen(password) > AUTH_PASSWORD_MAX || !password_matches(password)) {
@@ -145,13 +164,8 @@ esp_err_t dashboard_auth_login(httpd_req_t *req, const char *password) {
   s_login_lockout_until_us = 0;
   make_token(s_session);
   s_session_expiry_us = esp_timer_get_time() + (int64_t)AUTH_SESSION_SECONDS * 1000000;
-  // HTTPD retains header pointers until the handler sends its response.
-  // Its single server task serializes logins, so this buffer survives safely.
-  static char cookie[160];
-  snprintf(cookie, sizeof cookie,
-           "flu_session=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict%s",
-           s_session, AUTH_SESSION_SECONDS, dashboard_auth_is_remote(req) ? "; Secure" : "");
-  httpd_resp_set_hdr(req, "Set-Cookie", cookie);
+  s_remember = remember;
+  session_cookie(req);
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
   return ESP_OK;
 }
