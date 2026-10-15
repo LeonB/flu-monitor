@@ -1104,8 +1104,8 @@ salted PBKDF2-HMAC-SHA-256 hash in the separate `dashboard_auth` NVS namespace.
 first password can be set only from the LAN address; the peer socket identifies
 IPv4/IPv6-mapped loopback tunnel requests, so forged Host headers cannot bypass setup
 protection. Socket lookup errors fail closed. Login creates one in-RAM, high-entropy
-session cookie: 24 hours by default, or no server expiry with Keep me signed
-in (only one browser session is active at a time). Both modes end on monitor
+cookie: a browser-session cookie by default (no Max-Age/Expires), or a
+persistent cookie with Keep me signed in (only one browser session is active at a time). Both modes end on monitor
 restart; no sessions are stored in NVS. Remembered cookies use a 400-day
 browser lifetime renewed during authenticated requests; browser cookie
 removal/expiry can still require sign-in. Five
@@ -1201,3 +1201,13 @@ public URLs returned the login page in six checks spaced 15 seconds apart
 primary HTTPS hostname. Existing password configuration survived reboot.
 This is a short live availability check, not a long-term soak or proof of
 the original outage cause.
+
+Browser-session update: unchecked login now uses a standard session cookie
+without Max-Age/Expires, with no separate 24-hour server cutoff. The browser
+manages session lifetime (session restoration can preserve such cookies).
+Checked retains the persistent cookie until monitor restart. Both modes
+remain in RAM and are revoked by logout/password change/new login.
+Image 0x13e250 built and flashed; login copy and retained password
+configuration verified after reboot. Host auth tests verify omitted expiry
+attributes for unchecked login, persistent-cookie attributes for checked
+login, no 24-hour cutoff, missing-cookie rejection and restart revocation.

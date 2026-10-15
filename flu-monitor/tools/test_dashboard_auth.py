@@ -80,7 +80,7 @@ int main(void) {
  assert(dashboard_auth_check_csrf(&remote));remote.origin="https://demo.pagekite.me.evil";assert(!dashboard_auth_check_csrf(&remote));
  remote.origin="ftp://demo.pagekite.me";assert(!dashboard_auth_check_csrf(&remote));remote.origin="http://demo.pagekite.me";assert(!dashboard_auth_check_csrf(&remote));
  remote.origin=NULL;assert(!dashboard_auth_check_csrf(&remote));assert(dashboard_auth_check_csrf(&local));
- now=AUTH_SESSION_SECONDS*1000000LL;assert(!dashboard_auth_check(&remote));now=0;
+ now=86400LL*1000000;assert(dashboard_auth_check(&remote));remote.cookie=NULL;assert(!dashboard_auth_check(&remote));remote.cookie=valid;now=0;
  for(int i=0;i<5;i++)assert(dashboard_auth_login(&remote,"incorrect-password",false)==ESP_ERR_NOT_FOUND);
  assert(dashboard_auth_login(&remote,"test-password-123",false)==ESP_ERR_TIMEOUT);now+=30000001;
  assert(dashboard_auth_login(&remote,"test-password-123",false)==ESP_OK);
@@ -92,7 +92,7 @@ int main(void) {
  char remembered[80];
  assert(dashboard_auth_login(&local,"next-password-123",true)==ESP_OK);
  snprintf(remembered,sizeof remembered,"flu_session=%s",s_session);local.cookie=remembered;
- now=1000LL*AUTH_SESSION_SECONDS*1000000;assert(dashboard_auth_check(&local));
+ now=1000LL*86400*1000000;assert(dashboard_auth_check(&local));
  assert(strstr(local.set_cookie,"Max-Age=34560000"));
  dashboard_auth_init();assert(!dashboard_auth_check(&local));
  assert(dashboard_auth_login(&local,"next-password-123",true)==ESP_OK);snprintf(remembered,sizeof remembered,"flu_session=%s",s_session);
@@ -100,11 +100,13 @@ int main(void) {
  assert(dashboard_auth_set_password("final-password-123","next-password-123")==ESP_OK);
  dashboard_auth_logout(&local);assert(!dashboard_auth_check(&local));now=0;
  assert(dashboard_auth_login(&local,"next-password-123",false)==ESP_OK);
- assert(strstr(local.set_cookie,"Max-Age=86400"));
- now=AUTH_SESSION_SECONDS*1000000LL-1;snprintf(remembered,sizeof remembered,"flu_session=%s",s_session);local.cookie=remembered;assert(dashboard_auth_check(&local));
- now++;assert(!dashboard_auth_check(&local));now=0;
+ assert(!strstr(local.set_cookie,"Max-Age") && !strstr(local.set_cookie,"Expires"));
+ now=86400LL*1000000;snprintf(remembered,sizeof remembered,"flu_session=%s",s_session);local.cookie=remembered;assert(dashboard_auth_check(&local));
+ now+=86400LL*1000000;assert(dashboard_auth_check(&local));
+ local.cookie=NULL;assert(!dashboard_auth_check(&local));
+ dashboard_auth_init();local.cookie=remembered;assert(!dashboard_auth_check(&local));now=0;
  local.cookie=s_session;dashboard_auth_logout(&local);assert(!*s_session && strstr(local.set_cookie,"Max-Age=0"));
- puts("PASS password hashing/persistence, crypto/NVS failure, socket-based remote detection, cookie boundaries, session expiry, CSRF/HTTPS, lockout, password change and logout");
+ puts("PASS password hashing/persistence, crypto/NVS failure, socket-based remote detection, cookie boundaries, browser-session versus persistent cookies, CSRF/HTTPS, lockout, password change and logout");
  return 0;
 }
 '''

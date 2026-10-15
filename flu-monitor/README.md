@@ -134,7 +134,8 @@ local commissioning saves are allowed only until the first password is set. The 
 stored in NVS as a salted PBKDF2-HMAC-SHA-256 hash; the settings API never
 returns it. Change it in **Settings → Dashboard access**; the current
 password is required and the new password must be confirmed. One browser
-session is active at a time; without Keep me signed in it expires after 24 hours. Remembered sessions
+session is active at a time; without Keep me signed in it uses a browser-session cookie (no expiry date).
+Browsers may preserve session cookies when restoring a previous session. Remembered sessions
 have no server time limit and end on monitor restart. Five failed sign-ins
 cause a 30-second lockout. Password changes invalidate the active session.
 Remote cookies are Secure and all remote state-changing requests require

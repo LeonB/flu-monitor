@@ -15,7 +15,6 @@
 #define AUTH_PASSWORD_MIN 8
 #define AUTH_PASSWORD_MAX 128
 #define AUTH_PBKDF2_ROUNDS 12000
-#define AUTH_SESSION_SECONDS (24 * 60 * 60)
 // Browsers cap persistent cookies; refresh this lifetime during remembered use.
 #define AUTH_COOKIE_SECONDS (400 * 24 * 60 * 60)
 
@@ -27,16 +26,16 @@ typedef struct {
 static credential_t s_credential;
 static bool s_configured;
 static char s_session[65];
-static int64_t s_session_expiry_us;
 static bool s_remember;
 
 static void session_cookie(httpd_req_t *req) {
   // HTTPD retains the header pointer until the response is sent.
   static char cookie[160];
+  char persistence[40] = "";
+  if (s_remember) snprintf(persistence, sizeof persistence, "; Max-Age=%d", AUTH_COOKIE_SECONDS);
   snprintf(cookie, sizeof cookie,
-           "flu_session=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict%s",
-           s_session, s_remember ? AUTH_COOKIE_SECONDS : AUTH_SESSION_SECONDS,
-           dashboard_auth_is_remote(req) ? "; Secure" : "");
+           "flu_session=%s; Path=/%s; HttpOnly; SameSite=Strict%s",
+           s_session, persistence, dashboard_auth_is_remote(req) ? "; Secure" : "");
   httpd_resp_set_hdr(req, "Set-Cookie", cookie);
 }
 static unsigned s_failed_logins;
@@ -80,7 +79,6 @@ static void make_token(char out[65]) {
 
 void dashboard_auth_init(void) {
   memset(s_session, 0, sizeof s_session);
-  s_session_expiry_us = 0;
   s_remember = false;
   nvs_handle_t nvs;
   size_t size = sizeof s_credential;
@@ -121,7 +119,7 @@ bool dashboard_auth_is_remote(httpd_req_t *req) {
 bool dashboard_auth_check(httpd_req_t *req) {
   if (!s_configured) return false;
   char cookie[256];
-  if (!s_session[0] || (!s_remember && esp_timer_get_time() >= s_session_expiry_us) ||
+  if (!s_session[0] ||
       httpd_req_get_hdr_value_str(req, "Cookie", cookie, sizeof cookie) != ESP_OK) return false;
   const char *p = cookie;
   while (*p) {
@@ -163,7 +161,6 @@ esp_err_t dashboard_auth_login(httpd_req_t *req, const char *password, bool reme
   s_failed_logins = 0;
   s_login_lockout_until_us = 0;
   make_token(s_session);
-  s_session_expiry_us = esp_timer_get_time() + (int64_t)AUTH_SESSION_SECONDS * 1000000;
   s_remember = remember;
   session_cookie(req);
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -194,7 +191,6 @@ esp_err_t dashboard_auth_set_password(const char *current, const char *password)
     s_failed_logins = 0;
     s_login_lockout_until_us = 0;
     memset(s_session, 0, sizeof s_session);
-    s_session_expiry_us = 0;
   }
   memset(&next, 0, sizeof next);
   return err;
@@ -202,7 +198,6 @@ esp_err_t dashboard_auth_set_password(const char *current, const char *password)
 
 void dashboard_auth_logout(httpd_req_t *req) {
   memset(s_session, 0, sizeof s_session);
-  s_session_expiry_us = 0;
   httpd_resp_set_hdr(req, "Set-Cookie", "flu_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 }
