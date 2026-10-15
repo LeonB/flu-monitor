@@ -1182,3 +1182,22 @@ logout and password-change revocation; actual login script tests cover both
 checkbox payloads. Image 0x13df10 (15% slot free) built and flashed via OTA.
 After reboot the new checkbox/duration HTML and retained password were
 verified on the monitor. No owner password was requested or reset.
+
+2026-10-15 tunnel outage: both public names returned relay-generated 503
+(offline, FE); LAN auth status remained reachable. Local and public DNS
+resolvers agreed on 95.216.158.189, so no DNS mismatch was observed.
+Previously connected meant successful initial relay authentication only;
+there was no active probe, so a silently lost tunnel could remain connected
+in the UI indefinitely. Added a PING every 30 seconds and a 15-second matching
+PONG deadline; timeout goes through existing socket cleanup/reconnect.
+Only a matching PONG clears the pending probe. UI now says Relay connected
+and explicitly does not claim public availability is checked. Host routing/
+framing/queue tests cover heartbeat success, wrong PONG and exact timeout,
+and pass with ASan/UBSan. Initial live failure cause cannot be proven without
+relay/device logs; heartbeat is not an end-to-end public-hostname check.
+Final image 0x13e290 (15% slot free) deployed successfully by OTA. Both
+public URLs returned the login page in six checks spaced 15 seconds apart
+(across multiple probe cycles); the custom HTTP hostname redirects to the
+primary HTTPS hostname. Existing password configuration survived reboot.
+This is a short live availability check, not a long-term soak or proof of
+the original outage cause.

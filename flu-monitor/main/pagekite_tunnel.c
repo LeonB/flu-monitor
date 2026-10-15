@@ -56,6 +56,8 @@ typedef struct {
     int64_t last_activity;
 } stream_t;
 static stream_t *streams;
+static char pending_ping[32];
+static int64_t ping_sent_at, last_ping_at;
 static void die(const char *text) { fprintf(stderr, "%s\n", text); set_failure_status(text); longjmp(failed, 1); }
 
 static portMUX_TYPE status_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -323,6 +325,20 @@ static void release(int i) {
     memset(&streams[i], 0, sizeof streams[i]);
     streams[i].fd = -1;
 }
+// Probe the relay even when no visitor traffic arrives. A live TCP socket
+// alone cannot detect a silently dropped NAT mapping or a stalled relay.
+static void heartbeat(int64_t now) {
+    if (*pending_ping) {
+        if (now - ping_sent_at >= 15000000) die("Relay heartbeat timed out");
+        return;
+    }
+    if (now - last_ping_at < 30000000) return;
+    snprintf(pending_ping, sizeof pending_ping, "%llx", (unsigned long long)now);
+    char data[96];
+    int n = snprintf(data, sizeof data, "NOOP: 1\r\nPING: %s\r\n\r\n!", pending_ping);
+    chunk(data, n);
+    ping_sent_at = last_ping_at = now;
+}
 static bool reserve_request(stream_t *s, size_t needed) {
     if (needed > REQUEST_LIMIT) return false;
     if (needed <= s->capacity) return true;
@@ -520,7 +536,7 @@ static void receive(void) {
     }
     if (used < 4 || memcmp(headers + used - 4, "\r\n\r\n", 4)) die("Malformed frame");
     headers[used] = 0;
-    char sid[64] = "", ping[128] = "", flags[32] = "";
+    char sid[64] = "", ping[128] = "", pong[128] = "", flags[32] = "";
     char *save;
     for (char *p = strtok_r(headers, "\r\n", &save); p; p = strtok_r(NULL, "\r\n", &save)) {
         if (!strncmp(p, "SID: ", 5)) {
@@ -528,6 +544,7 @@ static void receive(void) {
             strcpy(sid, p + 5);
         }
         if (!strncmp(p, "PING: ", 6)) snprintf(ping, sizeof ping, "%s", p + 6);
+        if (!strncmp(p, "PONG: ", 6)) snprintf(pong, sizeof pong, "%s", p + 6);
         if (!strncmp(p, "EOF: ", 5)) snprintf(flags, sizeof flags, "%s", p + 5);
     }
     if (*ping) {
@@ -568,6 +585,7 @@ static void receive(void) {
             if (!*s->sid) index = -1;
         }
     }
+    if (*pending_ping && !strcmp(pong, pending_ping)) pending_ping[0] = 0;
     if (index >= 0 && *flags) {
         if (strchr(flags, 'R')) { release(index); }
         else if (strchr(flags, 'W')) {
@@ -579,6 +597,8 @@ static void receive(void) {
 }
 static void session_loop(void) {
     int64_t reconfigure_at = 0;
+    pending_ping[0] = 0;
+    last_ping_at = esp_timer_get_time();
     for (;;) {
         // Allow the save response to reach the browser before replacing its tunnel.
         if (config_changed() && !reconfigure_at) reconfigure_at = esp_timer_get_time() + 1000000;
@@ -603,6 +623,7 @@ static void session_loop(void) {
         }
         if (esp_tls_get_bytes_avail(tls) > 0 || FD_ISSET(transport, &ready)) receive();
         int64_t now = esp_timer_get_time();
+        heartbeat(now);
         for (int i = 0; i < STREAMS; i++) if (*streams[i].sid && now - streams[i].last_activity > 30000000) {
             eof(streams[i].sid); release(i);
         }

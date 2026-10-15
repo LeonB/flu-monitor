@@ -10,6 +10,7 @@ preamble = r'''
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
+#include <setjmp.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -32,7 +33,8 @@ static int64_t esp_timer_get_time(void) {struct timespec t;clock_gettime(CLOCK_M
 static unsigned esp_get_free_heap_size(void) {return 100000;}
 static int esp_reset_reason(void) {return 3;}
 static unsigned esp_get_minimum_free_heap_size(void) {return 90000;}
-static void die(const char *message) {fprintf(stderr,"%s\n",message);abort();}
+static bool expect_failure;static jmp_buf failure;
+static void die(const char *message) {if(expect_failure)longjmp(failure,1);fprintf(stderr,"%s\n",message);abort();}
 static void read_tls(void *data,size_t n) {size_t got=0;while(got<n){ssize_t r=recv(transport,(char *)data+got,n-got,0);assert(r>0);got+=r;}}
 static void write_tls(const void *data,size_t n) {assert(send(transport,data,n,0)==(ssize_t)n);}
 static void line(char *data,size_t n) {size_t i=0;while(i+1<n){read_tls(data+i,1);if(data[i++]=='\n'){data[i]=0;return;}}abort();}
@@ -68,6 +70,12 @@ int main(void) {
  streams=calloc(STREAMS,sizeof *streams);assert(streams);
  for(int i=0;i<STREAMS;i++)streams[i].fd=-1;
  int pair[2];assert(!socketpair(AF_UNIX,SOCK_STREAM,0,pair));transport=pair[0];peer=pair[1];int buffer_size=262144;setsockopt(peer,SOL_SOCKET,SO_SNDBUF,&buffer_size,sizeof buffer_size);
+ heartbeat(29999999);assert(!*pending_ping);
+ heartbeat(30000000);assert(*pending_ping);char probe[256];int probe_n=recv(peer,probe,sizeof probe-1,0);assert(probe_n>0);probe[probe_n]=0;assert(strstr(probe,"PING: "));
+ char heartbeat_payload[128],frame[180];int size=snprintf(heartbeat_payload,sizeof heartbeat_payload,"NOOP: 1\r\nPONG: wrong\r\n\r\n!");int framed=snprintf(frame,sizeof frame,"%x\r\n%s",size,heartbeat_payload);assert(send(peer,frame,framed,0)==framed);receive();assert(*pending_ping);
+ size=snprintf(heartbeat_payload,sizeof heartbeat_payload,"NOOP: 1\r\nPONG: %s\r\n\r\n!",pending_ping);framed=snprintf(frame,sizeof frame,"%x\r\n%s",size,heartbeat_payload);assert(send(peer,frame,framed,0)==framed);receive();assert(!*pending_ping);
+ heartbeat(60000000);heartbeat(74999999);expect_failure=true;if(!setjmp(failure)){heartbeat(75000000);assert(0);}expect_failure=false;pending_ping[0]=0;reset();
+ puts("PASS relay heartbeat: active probe, matching PONG required, exact timeout and reconnect failure path");
  request("GET /api/settings?cache=1 HTTP/1.1\r\nHost: demo.pagekite.me\r\nAccept-Encoding: gzip\r\nIf-None-Match: \"tag\"\r\nX-Forwarded-For: bad\r\n\r\n");
  assert(streams[0].ready);assert(strstr(streams[0].request,"GET /api/tunnel/settings HTTP/1.1"));assert(strstr(streams[0].request,"Accept-Encoding: gzip"));assert(strstr(streams[0].request,"If-None-Match: \"tag\""));assert(strstr(streams[0].request,"Host: demo.pagekite.me"));assert(!strstr(streams[0].request,"Forwarded"));
  request("POST /api/auth/login HTTP/1.1\r\nHost: demo.pagekite.me\r\nCookie: flu_session=test\r\nOrigin: https://demo.pagekite.me\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}");assert(streams[0].ready);assert(strstr(streams[0].request,"Cookie: flu_session=test"));assert(strstr(streams[0].request,"Origin: https://demo.pagekite.me"));

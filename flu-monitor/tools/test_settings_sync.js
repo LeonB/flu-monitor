@@ -21,6 +21,9 @@ async function saveCase(confirmation) {
   else assert.match(a.displaySyncError, /Settings saved, but/);
 }
 (async () => {
+  const relayStatus=context.app();relayStatus.pagekiteStatus={state:'connected'};
+  assert.equal(relayStatus.pagekiteStatusTitle,'Relay connected');
+  assert.match(relayStatus.pagekiteStatusDetail,/availability is not checked/);
   await saveCase(true);
   await saveCase(false);
   for (const key of ['log_heartbeat_min', 'thermocouple_deadband_c', 'google_sheets_webhook_url', 'google_sheets_secret', 'pagekite_enabled', 'pagekite_domain', 'pagekite_custom_domain', 'pagekite_relay']) {

@@ -142,13 +142,13 @@ function app() {
 
     get pagekiteStatusTitle() {
       if (this.pagekiteStatus.state === 'disabled') return this.draft.pagekite_enabled ? 'Waiting for save' : 'Off';
-      return ({ connected: 'Connected', connecting: 'Connecting', auth_error: 'Connection issue', network_error: 'Trying to reconnect', unavailable: 'Status unavailable' })[this.pagekiteStatus.state] || 'Checking connection…';
+      return ({ connected: 'Relay connected', connecting: 'Connecting', auth_error: 'Connection issue', network_error: 'Trying to reconnect', unavailable: 'Status unavailable' })[this.pagekiteStatus.state] || 'Checking connection…';
     },
 
     get pagekiteStatusDetail() {
       const status = this.pagekiteStatus;
       if (status.state === 'disabled') return 'Save the PageKite settings to start the tunnel.';
-      if (status.state === 'connected') return `Dashboard is available at ${this.settings.pagekite_custom_domain || this.settings.pagekite_domain || 'your PageKite address'}.`;
+      if (status.state === 'connected') return 'The monitor is connected to PageKite. Public dashboard availability is not checked.';
       if (status.state === 'connecting') return 'The monitor is starting the remote access tunnel.';
       if (status.state === 'auth_error') return `PageKite rejected the domain or shared secret. Check both settings; retrying${status.retry_in_s ? ` in ${status.retry_in_s} seconds` : ' automatically'}.`;
       if (status.state === 'network_error') return `The relay could not be reached. The monitor will retry${status.retry_in_s ? ` in ${status.retry_in_s} seconds` : ' automatically'}.`;
