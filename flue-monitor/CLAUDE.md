@@ -1237,3 +1237,15 @@ The Codex workspace is now open at the renamed checkout. No changes committed or
 Naming cleanup: setup AP passwords in source now use flue-monitor-setup /
 flue-display-setup. This supersedes the earlier password-preservation notes;
 these changes have not been flashed.
+
+2026-10-16 deployment after naming cleanup: rename committed as b39b0be.
+Both production firmware builds pass (monitor 15% / display 29% OTA-slot
+headroom); display test WS override is empty. Login-page and settings-sync
+host checks pass. Monitor OTA to confirmed .137 returned OK, rebooting;
+flue-monitor.local auth status and redacted settings respond after reboot,
+with saved settings retained. Display OTA to confirmed .138 redirected to
+the captive portal instead of accepting firmware. Its /status still reports
+failed Wi-Fi association to the stored SSID. Display remains unflashed for
+this cleanup; power-cycle or USB recovery is needed. No USB serial device
+is currently available. The new setup password is therefore deployed on the
+monitor only. Untracked design-import files and resume.txt were not committed.
