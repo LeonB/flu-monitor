@@ -577,3 +577,14 @@ failed Wi-Fi association to the stored SSID. Display remains unflashed for
 this cleanup; power-cycle or USB recovery is needed. No USB serial device
 is currently available. The new setup password is therefore deployed on the
 monitor only. Untracked design-import files and resume.txt were not committed.
+
+2026-10-16 display recovery: owner power-cycled the display. Confirmed .138
+returned normal HTTP 404 for /status instead of captive-portal JSON. Retried
+OTA with the built flue-display.bin: full upload returned OK, rebooting.
+After reboot flue-display.local resolves to .138 and serves the normal
+HTTP 404 response; /status no longer reports setup failure. The code starts
+mDNS after Wi-Fi connection and rollback cancellation. Naming cleanup is
+now flashed on both devices, including their new setup passwords. Monitor
+settings acknowledgement and display RSSI endpoints require dashboard login;
+no authenticated session is available, so end-to-end settings acknowledgement
+and physical display output remain unverified.
