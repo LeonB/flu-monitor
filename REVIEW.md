@@ -10,7 +10,7 @@ should be fixed before sustained data collection.
 
 - Reviewed both firmwares, shared components, Google Sheets integration, and
   the dashboard in Chrome using the mock server.
-- Successfully built `flu-monitor` and `flu-display` with ESP-IDF 5.5.5.
+- Successfully built `flue-monitor` and `flue-display` with ESP-IDF 5.5.5.
 - Exercised dashboard navigation, the history graph, event entry, and the
   settings screen in the browser.
 - Reproduced the rapid-rise filter rejection, settings-save race, and
@@ -55,7 +55,7 @@ incomplete handler (`grep` for `WIFI_EVENT_STA_DISCONNECTED`/`esp_wifi_connect`/
 `reconnect` in both `main.c` files returns nothing). `status_led_set(STATUS_LED_CONNECTED)`
 (`main.c:117`) fires exactly once, right after the initial connect, and is
 never called again -- there is no code path that reacts to a later
-disconnect at all. Affects both `flu-monitor` and `flu-display` identically,
+disconnect at all. Affects both `flue-monitor` and `flue-display` identically,
 since they share this exact `wifi_setup.c`.
 
 **Fixed (2026-09-29):** added `wifi_sta_enable_auto_reconnect()` to
@@ -79,7 +79,7 @@ stale during precisely the event it should highlight.
 Revise the confirmation logic to admit sustained trends while still rejecting
 isolated glitches.
 
-Source: [flue_poll.c](flu-display/main/flue_poll.c), line 196.
+Source: [flue_poll.c](flue-display/main/flue_poll.c), line 196.
 
 **Independently verified (2026-09-29):** confirmed by tracing the exact logic
 with the review's own example numbers (readings 100, 120, 140, 160 arriving
@@ -91,7 +91,7 @@ delta (20C here), which always exceeds the 10C tolerance. Confirmation can
 therefore never succeed as long as the rate holds roughly steady. The last
 confirmed reading remains cached, but the physical display switches to a
 neutral pulse after more than 30 seconds without an accepted reading,
-on the next staleness check (`STALE_READING_MS=30000`; `flu-display/main/main.c`,
+on the next staleness check (`STALE_READING_MS=30000`; `flue-display/main/main.c`,
 lines 88-92). Temperature display resumes when a reading passes the filter,
 for example when two consecutive pending readings land within 10C of each
 other. The rapid-rise rejection remains a real bug; holding the last color
@@ -110,7 +110,7 @@ alternates HELD/ACCEPTED, advancing every other tick instead of freezing)
 and the filter's original motivating case (a one-off glitch: 150, 250, 152
 -- the glitch is still correctly held and discarded, since the
 self-correcting 152 reading is a small delta from the last *confirmed*
-150, not a same-direction continuation of the spike). `flu-display` builds
+150, not a same-direction continuation of the spike). `flue-display` builds
 clean.
 
 ### 3. Event logging can silently lose or misalign annotations
@@ -125,7 +125,7 @@ Queue the event's timestamp and sensor snapshot, and distinguish accepted,
 delivered, and failed states. Event-triggered uploads also bypass the sensor
 validity and plausibility checks used for periodic uploads.
 
-Source: [sheets_logger.c](flu-monitor/main/sheets_logger.c), lines 87 and 101.
+Source: [sheets_logger.c](flue-monitor/main/sheets_logger.c), lines 87 and 101.
 
 **Independently verified (2026-09-29):** confirmed on both counts.
 `sheets_logger_log_event()`'s queue is `xQueueCreate(4, ...)` (line 155) with
@@ -162,7 +162,7 @@ errors. Missing rows therefore suppress subsequent attempts.
 Add delivery tracking and an idempotent retry mechanism to handle ambiguous
 timeouts without duplicate rows.
 
-Source: [sheets_logger.c](flu-monitor/main/sheets_logger.c), line 148.
+Source: [sheets_logger.c](flue-monitor/main/sheets_logger.c), line 148.
 
 **Independently verified (2026-09-29):** confirmed -- `log_to_sheets()` is
 `static void` and its caller (lines 148-150) updates
@@ -222,7 +222,7 @@ actual packet length remains real: neither label parsing nor reading the
 question's type/class verifies that the required bytes were received.
 The original severity claim should not be treated as a demonstrated
 memory-corruption exploit on this target. This is vendored Espressif example
-code (per `flu-display/CLAUDE.md`), but it is the implementation running here.
+code (per `flue-display/CLAUDE.md`), but it is the implementation running here.
 
 **Fixed (2026-09-29), with a correction to my own earlier claim above:** I
 initially described this as a negative-length-becomes-huge-`memcpy`
@@ -249,7 +249,7 @@ host-side harness (compiled and run separately from the firmware): a
 legitimate query name (`captive.apple.com`) still parses identically to
 before, a label claiming to extend past the received packet is now
 rejected (`NULL`) instead of read out-of-bounds, and a compression-pointer
-byte is now rejected outright. Both `flu-monitor` and `flu-display` build
+byte is now rejected outright. Both `flue-monitor` and `flue-display` build
 clean (this file is a shared component).
 
 ## Other functionality and code issues
@@ -262,7 +262,7 @@ creates duplicate fetches, polling intervals, and animation loops.
 
 Remove the explicit invocation.
 
-Source: [dashboard.html](flu-monitor/main/web_ui/dashboard.html), line 89.
+Source: [dashboard.html](flue-monitor/main/web_ui/dashboard.html), line 89.
 
 **Independently verified (2026-09-29):** confirmed -- `<body x-data="app()"
 x-init="init()">`. Alpine auto-invokes an `init()` method found on an
@@ -282,7 +282,7 @@ UI displays it.
 Expose validity consistently across consumers. Successful HTTP requests also
 do not establish sensor freshness; the API needs a sample timestamp or age.
 
-Source: [sensors.c](flu-monitor/main/sensors.c), line 327.
+Source: [sensors.c](flue-monitor/main/sensors.c), line 327.
 
 **Independently verified (2026-09-29):** confirmed -- `sensors_read()` sets
 `out->thermocouple_ok = read_mcp9601(...)` (a successful I2C transaction)
@@ -303,7 +303,7 @@ reconnection.
 Re-resolve after repeated failures and fetch settings on every WebSocket
 connection.
 
-Source: [flue_poll.c](flu-display/main/flue_poll.c), line 289.
+Source: [flue_poll.c](flue-display/main/flue_poll.c), line 289.
 
 **Independently verified (2026-09-29):** confirmed -- `ws_event_handler`'s
 `WEBSOCKET_EVENT_CONNECTED` case only logs; nothing refetches settings on
@@ -311,7 +311,7 @@ reconnection, so a change missed while offline (the `"settings_changed"`
 broadcast that would have triggered it never arrives after the fact) stays
 missed until the next actual settings change. The "resolves once, obsolete
 IP" half is a documented, intentional tradeoff rather than an overlooked
-bug -- `flu-display/CLAUDE.md`'s Milestone 5 notes explicitly call out that
+bug -- `flue-display/CLAUDE.md`'s Milestone 5 notes explicitly call out that
 a DHCP re-lease changing the sidecar's IP isn't specially handled, judged
 rare enough on a home network not to be worth the complexity.
 
@@ -324,7 +324,7 @@ using a delayed response.
 Snapshot the submitted draft, disable duplicate saves, and reconcile with the
 server response.
 
-Source: [dashboard.js](flu-monitor/main/web_ui/dashboard.js), line 227.
+Source: [dashboard.js](flue-monitor/main/web_ui/dashboard.js), line 227.
 
 **Independently verified (2026-09-29):** confirmed. `saveSettings()` does
 correctly snapshot the request body (`JSON.stringify(this.draft)` runs
@@ -344,7 +344,7 @@ displays “Holding steady.”
 
 Use nullish fallback for valid zero values.
 
-Source: [dashboard.js](flu-monitor/main/web_ui/dashboard.js), line 118.
+Source: [dashboard.js](flue-monitor/main/web_ui/dashboard.js), line 118.
 
 **Independently verified (2026-09-29):** confirmed --
 `this.settings.rate_deadband_c_per_min || DEFAULT_RATE_DEADBAND_C_PER_MIN`
@@ -363,7 +363,7 @@ Only the live endpoint keeps updating; historical ages and event positions
 remain fixed, making the curve increasingly misleading. Refresh history
 periodically and show gaps during outages.
 
-Source: [dashboard.js](flu-monitor/main/web_ui/dashboard.js), line 196.
+Source: [dashboard.js](flue-monitor/main/web_ui/dashboard.js), line 196.
 
 ### Graph labels extend outside the chart
 
@@ -371,7 +371,7 @@ This was observed in Chrome. Dense events will also overlap. The chart needs
 constrained labels or tappable markers, intermediate time ticks, and
 temperature inspection.
 
-Source: [dashboard.js](flu-monitor/main/web_ui/dashboard.js), `graphSvg`.
+Source: [dashboard.js](flue-monitor/main/web_ui/dashboard.js), `graphSvg`.
 
 ### The mock hides production differences
 
@@ -379,8 +379,8 @@ The mock accepts invalid settings without firmware validation and returns
 friendly event labels, while firmware returns slugs such as `added_wood`.
 This makes browser testing look better than the actual device.
 
-Sources: [mock_server.py](flu-monitor/tools/mock_server.py) and
-[rest_api.c](flu-monitor/main/rest_api.c), line 488.
+Sources: [mock_server.py](flue-monitor/tools/mock_server.py) and
+[rest_api.c](flue-monitor/main/rest_api.c), line 488.
 
 ### Settings and failed-load flows need clearer feedback
 
@@ -388,8 +388,8 @@ Settings lack field-level validation, bounds on steppers, and an
 unsaved-changes guard. Failed initial settings/events requests have no retry,
 leaving unusable screens.
 
-Sources: [dashboard.js](flu-monitor/main/web_ui/dashboard.js) and
-[dashboard.html](flu-monitor/main/web_ui/dashboard.html).
+Sources: [dashboard.js](flue-monitor/main/web_ui/dashboard.js) and
+[dashboard.html](flue-monitor/main/web_ui/dashboard.html).
 
 ### Accessibility needs attention
 
@@ -397,8 +397,8 @@ The event sheet lacks dialog semantics, focus trapping, Escape dismissal,
 and a close button. Stepper buttons are named only “+” or “−”. Animation has
 no reduced-motion option.
 
-Sources: [dashboard.html](flu-monitor/main/web_ui/dashboard.html) and
-[dashboard.js](flu-monitor/main/web_ui/dashboard.js).
+Sources: [dashboard.html](flue-monitor/main/web_ui/dashboard.html) and
+[dashboard.js](flue-monitor/main/web_ui/dashboard.js).
 
 ## Missing features worth prioritizing
 
@@ -471,8 +471,8 @@ Verified by source inspection of the success condition, the baseline update,
 and the Apps Script authentication response. Check both the HTTP status and
 the webhook acknowledgement before advancing the baseline.
 
-Sources: [sheets_logger.c](flu-monitor/main/sheets_logger.c), line 91, and
-[Code.gs](flu-monitor/google-sheets-logger/Code.gs), `doGet()`.
+Sources: [sheets_logger.c](flue-monitor/main/sheets_logger.c), line 91, and
+[Code.gs](flue-monitor/google-sheets-logger/Code.gs), `doGet()`.
 
 **Fixed (2026-09-29):** confirmed by reading `Code.gs` directly -- a bad
 secret does return plain HTTP 200 with body `"forbidden"`. Added an
@@ -493,8 +493,8 @@ Verified by source inspection of `queued_event_t`, the request query fields,
 and the Apps Script row timestamp. Capture the event time, send it with the
 snapshot, and preserve it in Sheets independently of delivery time.
 
-Sources: [sheets_logger.c](flu-monitor/main/sheets_logger.c), line 36, and
-[Code.gs](flu-monitor/google-sheets-logger/Code.gs), line 69.
+Sources: [sheets_logger.c](flue-monitor/main/sheets_logger.c), line 36, and
+[Code.gs](flue-monitor/google-sheets-logger/Code.gs), line 69.
 
 **Fixed (2026-09-29):** confirmed by reading `Code.gs` directly -- `new
 Date()` with no timestamp param sent at all. `sheets_logger_log_event()`
@@ -526,9 +526,9 @@ Retain enough information about the pending reading to distinguish a
 continued trend from a reversal, and coordinate confirmation delay with the
 staleness policy so a healthy stream does not repeatedly appear unavailable.
 
-Sources: [flue_poll.c](flu-display/main/flue_poll.c), line 205,
-[config.h](flu-display/main/config.h), `STALE_READING_MS`, and
-[main.c](flu-display/main/main.c), the staleness-check loop.
+Sources: [flue_poll.c](flue-display/main/flue_poll.c), line 205,
+[config.h](flue-display/main/config.h), `STALE_READING_MS`, and
+[main.c](flue-display/main/main.c), the staleness-check loop.
 
 **Fixed (2026-09-29):** confirmed both parts by tracing the actual code.
 The reversal false-positive: now stores the pending reading's actual value
@@ -560,8 +560,8 @@ Verified by source inspection of `event_post_handler()` and the dashboard's
 error handling. Queue before recording locally, or return a partial-success
 state that the UI handles explicitly without duplicating the local event.
 
-Sources: [rest_api.c](flu-monitor/main/rest_api.c), line 443, and
-[dashboard.js](flu-monitor/main/web_ui/dashboard.js), `logEvent()`.
+Sources: [rest_api.c](flue-monitor/main/rest_api.c), line 443, and
+[dashboard.js](flue-monitor/main/web_ui/dashboard.js), `logEvent()`.
 
 **Fixed (2026-09-29):** always responds 200 now (the tap did succeed) with
 a `sheets_queued` flag distinguishing whether the Sheets-delivery queue
@@ -596,7 +596,7 @@ Confirm consistent readings at a new level as well as continued trends,
 while retaining reversal protection. Track stream freshness and accepted
 reading age separately, or bound how long the old display can remain valid.
 
-Source: [flue_poll.c](flu-display/main/flue_poll.c), lines 212 and 226–234.
+Source: [flue_poll.c](flue-display/main/flue_poll.c), lines 212 and 226–234.
 
 **Fixed (2026-09-30):** confirmed by tracing the exact example (150, 170,
 170, 170) through the actual code. Changed the strict `>`/`<` comparisons
@@ -630,7 +630,7 @@ Capture decoded data regardless of transfer encoding, isolate the body
 for each response, and validate only the final response's status and
 acknowledgement. Verify chunked acknowledgements and redirects with bodies.
 
-Source: [sheets_logger.c](flu-monitor/main/sheets_logger.c), lines 42–53,
+Source: [sheets_logger.c](flue-monitor/main/sheets_logger.c), lines 42–53,
 and the final acknowledgement check in `log_to_sheets()`.
 
 **Fixed (2026-09-30):** confirmed both mechanisms by reading
@@ -662,9 +662,9 @@ Verified by tracing the queue-full return through the API and dashboard.
 Say “Saved locally; not sent to Sheets,” or retain the event for later
 delivery before claiming that Sheets is catching up.
 
-Sources: [dashboard.js](flu-monitor/main/web_ui/dashboard.js), lines
-180–188; [rest_api.c](flu-monitor/main/rest_api.c), `event_post_handler()`;
-and [sheets_logger.c](flu-monitor/main/sheets_logger.c),
+Sources: [dashboard.js](flue-monitor/main/web_ui/dashboard.js), lines
+180–188; [rest_api.c](flue-monitor/main/rest_api.c), `event_post_handler()`;
+and [sheets_logger.c](flue-monitor/main/sheets_logger.c),
 `sheets_logger_log_event()`.
 
 **Fixed (2026-09-30):** confirmed -- nothing anywhere retains a dropped
@@ -691,8 +691,8 @@ Send an absolute event timestamp from a synchronized device clock. If
 relative age remains a fallback, document its uncertainty. Periodic uploads
 currently send age zero and retain processing-time timestamps as well.
 
-Sources: [sheets_logger.c](flu-monitor/main/sheets_logger.c), lines 191–192,
-and [Code.gs](flu-monitor/google-sheets-logger/Code.gs), lines 77–78.
+Sources: [sheets_logger.c](flue-monitor/main/sheets_logger.c), lines 191–192,
+and [Code.gs](flue-monitor/google-sheets-logger/Code.gs), lines 77–78.
 
 **Fixed (2026-09-30), per explicit user decision to take the full fix over
 the documented-limitation option:** `main.c` now starts SNTP (fire-and-

@@ -1,0 +1,1239 @@
+# flue-monitor (plain ESP-IDF, not ESPHome/Arduino)
+
+See the repo root `CLAUDE.md` for the bigger-picture project this is one half
+of, and `README.md` (this folder) for day-to-day build/flash/OTA commands and
+the REST API. This file covers implementation-specific gotchas, most of them
+hard-won on real hardware.
+
+## Why this rewrite exists
+
+This folder was originally `flue-monitor-idf/`, a ground-up rewrite of an
+earlier ESPHome version of this same sidecar (then itself named
+`flue-monitor/`) that ran alongside it as the rollback path throughout the
+rewrite. The rewrite happened because the rate-of-change regression and zone
+classification became real algorithmic C++ living inside a YAML multiline
+lambda string — no separate compile step, awkward to iterate. Plain ESP-IDF,
+matching `../flue-display/`'s own architecture, fixes that. API-first, OTA,
+captive portal, mDNS were all part of the same ask; no MQTT broker exists on
+this network, so WebSocket is the mechanism for pushing live readings to
+`flue-display` instead. Once the rewrite caught up (see Status below) and a
+BMP581 sensor originally alongside the MCP9601 was physically removed (see
+"BMP581 removed" below), the ESPHome version was retired and removed
+entirely, and this folder renamed from `flue-monitor-idf/` to take its place.
+
+## Status
+
+**Adopted as the production sidecar** (this folder's rename from
+`flue-monitor-idf/` to `flue-monitor/`, and the ESPHome version's removal, was
+that cutover). **Milestones 1-5 done and verified on the real Feather
+board:**
+- **Milestone 1**: WiFi (stored creds) + captive portal fallback (scanned
+  network list, live test-connect-before-save, a dedicated failure screen) +
+  mDNS + OTA.
+- **Milestone 2**: BMP581 + MCP9601 both reading correctly, verified
+  side-by-side against the ESPHome sidecar's own values on the same physical
+  sensors. (The BMP581 was later physically removed from the board -- its
+  ambient temperature reading was almost a duplicate of the MCP9601's own
+  cold-junction reading -- and all BMP581 code has since been removed; see
+  "BMP581 removed" below.)
+- **Milestone 3**: NVS-backed settings (replacing ESPHome's YAML
+  `substitutions:`), the rate/zone regression ported from the ESPHome
+  lambda, and a REST API (`GET /api/reading`, `GET`/`POST /api/settings`).
+- **Milestone 4**: a `/ws` broadcast endpoint (reading every ~30s,
+  `settings_changed` on a successful settings POST), consumed by
+  `../flue-display/`'s own Milestone 4 (WS subscription replacing its old 3s
+  REST poll) -- verified end to end on both real devices.
+- **Milestone 5**: periodic (deadband/heartbeat-gated) + event-triggered
+  Google Sheets logging (`sheets_logger.c/.h`), ported from the ESPHome
+  sidecar's own logic onto a dedicated FreeRTOS task so a slow Apps Script
+  response never blocks sensor sampling or the REST/WS servers -- verified
+  against the real production webhook (a real row logged, status 200) after
+  fixing a missing TLS cert bundle attachment (see below).
+- **Milestone 7**: `POST /api/event` + `GET /api/events` (`rest_api.c`'s
+  `EVENTS[]`), the fixed woodstove-event taxonomy ported verbatim from the
+  ESPHome sidecar's own template buttons (same slugs, e.g. `cold_start`,
+  `added_wood` -- see "The woodstove-event taxonomy is a closed set" below)
+  -- verified against the real production webhook (a real row logged,
+  status 200, event=`added_wood`). No physical buttons or web UI to trigger
+  these yet -- just the REST endpoint, per the plan's "at minimum" scope.
+- **Milestone 6**: the embedded web UI (`main/web_ui/`) -- dashboard (glow
+  circle, pulse math ported from `flue-display/main/led_display.c`), 24h
+  graph (`GET /api/history`, a new downsampled ring buffer in `sensors.c`),
+  settings, and the event-log bottom sheet, all one Alpine.js page with no
+  build step, served from `/`. Visually verified live in a real browser
+  (Chrome, via the Claude Code Chrome extension) -- dashboard glow,
+  settings steppers/save-bar/undo, the 24h graph, and the event sheet
+  (a real row logged: `added_wood`) all confirmed working end to end. Three
+  real bugs only showed up once actually rendered (static checks alone
+  missed all of them) -- see "Three real bugs only a real browser caught"
+  below.
+
+## STEMMA QT power (GPIO2) — the single biggest time sink so far
+
+**GPIO2 gates power to the entire STEMMA QT connector (both sensors) and
+must be driven HIGH before touching the I2C bus at all.** Without it, the
+bus reads stuck low on every single line/every bias condition (floating,
+internal pull-down, *and* internal pull-up all read 0) — indistinguishable
+from a genuinely wedged/shorted bus by any software-level test. `sensors.c`'s
+`sensors_init()` does this first, before anything else. The original
+ESPHome sidecar did the same thing via a `switch: platform: gpio` with
+`restore_mode: ALWAYS_ON` and `setup_priority: 1200` (higher than i2c's own
+1000) -- without that ordering, the sensors were unpowered when the i2c bus
+initialized, showing up as `SCL is held LOW on the bus` bus-recovery
+failures at boot, the same failure mode this port's own explicit
+before-anything-else ordering avoids.
+
+## I2C bus recovery is needed on every boot, not just after a crash
+
+`sensors.c`'s `i2c_bus_recover()` is a faithful port of ESPHome's own
+`i2c_bus_esp_idf.cpp`'s `recover_()` (same NXP/Analog Devices bus-recovery
+procedure: bit-bang 9 clock pulses, each waiting out clock-stretching, then a
+START immediately followed by a STOP) — ESPHome's own boot log shows
+"Performing bus recovery" on every single boot of this same hardware too,
+not just after a bad state. An earlier, simpler version of this function
+that didn't wait for clock-stretch release on each pulse (just toggled SCL
+on a fixed delay) failed to unstick a genuinely stuck bus; matching the
+proven ESPHome implementation exactly, rather than reinventing it, is what
+actually worked.
+
+## MCP960x errata: 85kHz nominal wasn't safe in practice
+
+The MCP960x family has a real, documented Microchip silicon errata
+("Intermittent I2C Read Command Clock Stretching Failure") that above
+~85kHz can make a read silently return stale duplicate register data --
+it manifests as **stale/frozen register reads**, not a bus error, so a read
+looks completely valid, just wrong (or just never updating). Background:
+rikeshkkpatel.co.uk/diy-reflow-oven/problems-with-the-mcp9600-thermocouple-amplifier.
+Two more things learned the hard way, on top of that:
+
+- **Requesting exactly 85000 Hz still hit the errata.** The ESP32's clock
+  divider rounds the *requested* rate to the nearest achievable one, which
+  can land slightly above it. `config.h`'s `I2C_FREQ_HZ` is `50000`, leaving
+  real margin instead of sitting right on the threshold.
+- **ESPHome's own `i2c:` component defaults `sda_pullup_enabled`/
+  `scl_pullup_enabled` to `true` on ESP32** (`cv.SplitDefault(...,
+  esp32=True)` in its own schema), and the sidecar's config never overrides
+  that — so its bus has the ESP32's internal weak pull-up engaged *in
+  parallel with* the breakout boards' own pull-ups. This rewrite wasn't
+  doing that at first. The extra pull-up speeds up the bus's rise time,
+  which matters here: slower edges distort SCL's effective duty cycle
+  enough to trip the errata even at a "safe" nominal frequency.
+  `init_mcp9601()` explicitly sets `sda_pullup_en`/`scl_pullup_en = true` on
+  its `i2c_dev_t` before the first real transaction, matching ESPHome's
+  default rather than relying on the driver's own default of `false` (the
+  now-removed BMP581 init did the same, for the same reason, while it was
+  still on the board).
+- **The MCP9601's device-config register (mode/ADC-resolution/burst count)
+  is never touched by esp-idf-lib's `mcp960x` driver** — it's left at
+  whatever the power-on-reset default is. ESPHome's own `mcp9600.cpp`
+  explicitly writes this register to `0x00` (Normal mode, 18-bit ADC, 1
+  burst sample) rather than trusting the default; `sensors.c` now does the
+  same via `mcp960x_set_device_config()`, since earlier debugging on this
+  exact chip (while the bus was still stuck low, before the GPIO2 fix)
+  involved I2C writes that could have left this register in an unknown
+  state.
+- **The 18-bit ADC's first conversion takes ~320ms.** Without an explicit
+  wait, the very first `sensors_read()` call (which can happen only tens of
+  ms after `sensors_init()` returns) reads back the register's
+  pre-conversion `0x0000` default — which passes the plausibility clamp
+  fine (`0.00°C` is well inside `-40..600`) and was getting admitted into
+  the rate-regression window as a real sample, producing a wildly wrong
+  initial rate once a genuine second sample arrived 30s later.
+  `init_mcp9601()` now waits 400ms after writing the device-config register,
+  before returning, specifically to avoid this.
+
+## The "GPIO is not usable, maybe conflict with others" warning is benign
+
+Every boot logs `W (xxx) i2c.common: GPIO 22/20 is not usable, maybe
+conflict with others` right after the I2C bus/device come up. Traced this
+down to `esp_gpio_reserve()`'s bookkeeping: `esp-idf-lib/i2cdev`'s new
+i2c_master-driver backend re-asserts its own bus's SDA/SCL pin reservation
+every time a *new device* is added to an already-installed bus (not just
+once at bus creation) — so the second sensor's device-add trips the "already
+reserved" warning against the *bus's own* prior reservation of the same
+pins, not a real external conflict. Confirmed empirically: dumping the
+reservation mask (`esp_gpio_reserve(0)`) immediately before bus setup showed
+bits 20/22 genuinely unset. Don't chase this warning as a real bug.
+
+## Live WiFi test-connect-before-save (captive portal)
+
+`wifi_setup.c`/`captive_portal.c`/`dns_server.c` now live in `../components/`,
+shared with `../flue-display/` (see the repo root `CLAUDE.md`'s "Shared
+components" section) -- this section's description of the test-connect
+design is unchanged, just no longer specific to this folder alone.
+
+`wifi_setup.c`'s `wifi_sta_test_connect()` attempts the real STA connection
+*while the setup AP stays up* (both possible simultaneously in
+`WIFI_MODE_APSTA`, already needed for the network-scan feature), and
+`captive_portal.c`'s `/save` handler only persists credentials + reboots on
+a *successful* test. A wrong password now shows an inline error on the same
+screen instead of triggering a blind reboot that may or may not come back —
+this was a deliberate design change mid-project (the original Milestone 1
+design saved-then-rebooted-then-recorded-failure-for-next-boot, working but
+worse UX for the common case of a typo).
+
+## (Historical) Reflashing the old ESPHome sidecar changed the NVS layout
+
+No longer a live concern -- the ESPHome sidecar has been retired and its
+firmware/project files removed entirely, so there's nothing left to
+reflash back and forth against. Kept for the underlying NVS-namespace fact,
+in case it's ever relevant again: ESPHome's own partition table placed
+`nvs` differently than this project's `partitions_ota.csv`, and even where
+they'd coincidentally overlap, ESPHome's own WiFi-credential storage
+format/keys differed from this project's own `wifi_cfg` namespace --
+flashing ESPHome and then flashing back meant this project's stored WiFi
+credentials were gone, requiring the captive portal setup flow to be redone.
+
+## Only one HTTP server can bind port 80
+
+`rest_api.c`'s `rest_api_start()` owns the single shared `httpd_handle_t` for
+normal running state (once connected to WiFi); `ota_server_register()` and
+`ws_server_register()` just add their own URI handlers onto that same server
+instead of each starting their own. The captive portal's own server
+(setup-time only, never running at the same time as the connected-state
+server) is separate and unaffected.
+
+## The REST API server is single-threaded, with an unresolved intermittent full hang
+
+`rest_api_start()` explicitly sets `max_open_sockets = REST_API_MAX_OPEN_SOCKETS`
+(7, matching `HTTPD_DEFAULT_CONFIG()`'s own default, but named so
+`rest_api_log_socket_usage()` below can size its buffer correctly rather
+than guessing), so up to 7 clients can have a socket open at once (plus
+`ws_server.c`'s own separate `WS_MAX_CLIENTS = 8` cap on broadcast
+fan-out). But `esp_http_server` here runs as a single FreeRTOS task --
+`HTTPD_DEFAULT_CONFIG()` only has one `task_priority`/`stack_size`/
+`core_id`, no thread pool -- so it services one HTTP request at a time,
+serially, even with several sockets open simultaneously. `POST /ota`
+writing firmware to flash in a loop on that same task is the one handler
+long enough for this to matter in the ordinary case: during an OTA push,
+the dashboard/REST API/WS are unresponsive to everyone else until it
+finishes (Google Sheets logging is deliberately exempt -- `sheets_logger.c`
+runs on its own task for exactly this reason).
+
+Beyond that ordinary case, this server has hung completely at least twice,
+under real usage, for reasons not yet fully root-caused:
+
+- **First time**: `GET /api/reading` took 15-20s (past `curl`'s own
+  timeout, `HTTP 000`), but a raw TCP connect succeeded and ping was
+  normal. Looked exactly like a wedged httpd task. Wasn't (this time) --
+  the boot log (captured by attaching serial *during* a fresh reset, not
+  after) showed the device had roamed to a different AP within the same
+  SSID at `rssi: -88`, a genuinely weak signal. A request that DID
+  eventually respond, just after 5+ seconds, from a real client (not a
+  synthetic one that gives up early) is what proved it was a slow/lossy
+  link rather than a stuck task -- a truly deadlocked task would never
+  respond no matter how long you wait. `GET /api/wifi` (queries
+  `esp_wifi_sta_get_ap_info()` fresh on every call, not cached, unlike
+  RSSI, which the WiFi driver only ever logs once at association) exists
+  specifically so this can be checked on demand, without forcing a reboot
+  to catch that one-shot boot-time log line.
+- **Second time, shortly after (same boot)**: every request hung
+  completely -- including using the bare IP (ruling out mDNS, see below)
+  and a fresh `nc -zv` TCP-only probe (which eventually succeeded, after
+  10+ seconds, meaning the TCP handshake itself was also slow). Crucially,
+  **the device's own serial log showed nothing at all** for any of these
+  attempts -- not even a warning, whereas a normal 404 (e.g. a browser's
+  `/favicon.ico` request) does get logged. Multiple consecutive attempts
+  over several minutes all failed identically, with the pattern getting
+  *worse* over time rather than being randomly intermittent like the RSSI
+  case -- consistent with some kind of accumulating resource exhaustion,
+  not (just) signal quality. `POST /ota` was also affected at this point
+  (`curl: (56) Recv failure: Connection reset by peer`), forcing a USB
+  reflash instead to get diagnostics onto the device. Also confirmed mDNS
+  was not the cause despite the symptom's obvious resemblance to this
+  project's own documented mDNS flakiness (`../flue-display/CLAUDE.md`):
+  `dns-sd -G v4 flue-monitor.local` resolved essentially instantly, and the
+  hang persisted identically when hitting the bare IP directly (no
+  hostname resolution involved at all).
+
+`rest_api_log_socket_usage()` (called every ~30s from `main.c`'s own
+`sensor_log_task`, piggybacking its cadence -- no dedicated timer) logs
+the current open-socket count via `httpd_get_client_list()`, specifically
+to catch this in the act next time: a count climbing toward 7 and staying
+pinned there would confirm socket/resource exhaustion; a low, stable count
+during a hang would point at something else (a genuinely wedged task, not
+a resource leak). Deliberately synthetic load right after adding this
+(sequential and concurrent `curl` bursts) did **not** reproduce either
+hang, and the socket count stayed low (2-3) throughout -- whatever
+triggers the second failure mode needed something closer to the original
+real-world condition, not short scripted request bursts.
+
+**Root cause found and fixed the next time it recurred.** The diagnostic
+caught it directly: `Open sockets: 7/7`, pinned across multiple 30s ticks,
+while `ws_server.c`'s own client count showed only 1-2 -- meaning most of
+those 7 httpd sessions weren't legitimate, currently-tracked WS clients at
+all. The bug: `ws_server.c`'s `clients_remove()` (called when a broadcast
+send to a client fails, or a clean WS close frame arrives) only removed
+the fd from *its own* bookkeeping array -- it never told httpd to actually
+close the underlying session. A WS client going away uncleanly (a WiFi
+drop with no close frame -- the normal case on this network, not the
+exception) permanently leaked one httpd socket slot, every single time.
+Fixed by also calling `httpd_sess_trigger_close(s_server, fd)` (the
+documented API for closing a session from a context other than the httpd
+worker task itself) in `clients_remove()`.
+
+Verified live: before the fix, a pinned 7/7 never recovered on its own,
+not even after many minutes with zero new client activity. After the fix,
+a post-reboot burst of reconnect activity (`flue-display` re-establishing
+its WS connection after `flue-monitor`'s own restart) still spiked the
+count to 7/7 briefly, but it now **recovers** -- settling back down and
+holding steady (observed at 4/7, stable for 2+ minutes) instead of staying
+pinned. That settled count is still higher than the "just 1 legitimate
+WS client" baseline would suggest, which points at some remaining
+churn/slow-to-detect staleness (each stale fd is only pruned reactively,
+on the *next* failed broadcast attempt against it specifically, up to a
+30s wait) -- worth continued attention via this same logging, but the
+severe failure mode (permanent, total lockup with zero recovery) is
+confirmed fixed.
+
+## `EMBED_FILES` collides on basename, not full path
+
+`main/web_ui/`'s first attempt named its copies of the shared design-system
+assets `styles.css` and `alpine.min.js` -- the same basenames
+`../components/captive_portal/` already uses for its own, *different*, copies
+of those files. Build failed with `ninja: error: ... multiple rules
+generate styles.css.S`. ESP-IDF's `EMBED_FILES` generates an intermediate
+`<basename>.S`/`.o` pair per embedded file, and that intermediate filename
+is derived from the basename only, dropping the directory -- so two
+different components each embedding their own `styles.css` collide in the
+same build tree even though the source files live in entirely different
+directories and neither component references the other's copy. Fixed by
+renaming `main/web_ui/`'s copies to `dashboard.css`/`alpinejs.min.js`
+(also updates the extern symbol names, e.g. `_binary_dashboard_css_start`
+-- the symbol name is derived from this same intermediate basename).
+Anything else embedding files across multiple components needs basenames
+unique across the *whole* build, not just within its own directory.
+
+**Confirmed by direct experiment: this collision happens even when both
+components' `EMBED_FILES` point at the exact same file on disk** (tried
+pointing `main/`'s own `EMBED_FILES` at `../../components/captive_portal/
+styles.css` directly, to physically de-duplicate `dashboard.css` from it --
+same `ninja: error: ... multiple rules generate styles.css.S`). Each
+component's own `idf_component_register(EMBED_FILES ...)` call independently
+generates a build rule for `<basename>.S` in the shared build tree,
+regardless of whether the underlying source content is identical -- so
+sharing one physical file across two components' embeds isn't possible
+without a bigger restructure (e.g. one component embedding it and exporting
+an accessor the other calls), not just picking the same path. `dashboard.css`
+and `components/captive_portal/styles.css` are instead kept
+*byte-identical in content* (the Google Fonts `@import` that used to be
+dashboard.css-only was moved out into a `<link>` in `dashboard.html`'s own
+`<head>`, since only the connected-mode page has real internet to load it)
+but stay two separate embedded files under different names, kept in sync by
+hand -- there's no way to make ESP-IDF treat them as one without an
+`EMBED_FILES`-level rename/alias facility it doesn't have.
+
+## Three real bugs only a real browser caught
+
+`main/web_ui/` built cleanly, and every backing REST endpoint tested fine
+via `curl`, but the page itself rendered completely blank when actually
+opened in Chrome (visual verification was flagged as pending in an earlier
+commit -- this is what turned up once it happened). None of these three
+would have been caught by static checks (`node --check`, balanced-tag
+counting) -- only a live browser, console errors, and screenshots surfaced
+them:
+
+- **`dashboard.js` must load (and define `app()` on `window`) *before*
+  `alpinejs.min.js` runs**, not after, even though both are
+  `<script defer>` and `defer` preserves *document* order. Alpine
+  auto-starts synchronously at the end of its own script -- scanning the
+  DOM and evaluating `x-data="app()"` immediately -- which happens before a
+  *later* deferred script gets a chance to execute. With
+  `<script src="/alpinejs.min.js" defer>` listed first, Alpine scanned the
+  DOM and threw `ReferenceError: app is not defined` on every directive,
+  leaving the whole page unrendered. Fixed by swapping the two `<script>`
+  tags' order. `../components/captive_portal/root.html` never hit this because
+  its own data function is inline (no `src`, no `defer`), which executes
+  synchronously at its position in the parse -- before any deferred script
+  runs at all.
+- **A CSS `transition` on an element whose inline style is rewritten every
+  animation frame fights the animation instead of smoothing it.**
+  `.glow-outer`/`.glow-inner` had `transition: box-shadow .3s ease` /
+  `transition: background-color .15s linear, color .15s linear` -- looked
+  like reasonable general-purpose polish, copied without thinking through
+  the interaction. `dashboard.js`'s `runGlowFrame()` already writes a new
+  inline `background-color`/`box-shadow` value ~30 times a second via
+  `requestAnimationFrame`; each write restarted a new CSS transition before
+  the previous one finished, so the rendered color perpetually chased a
+  moving target and never reached it -- rendered as a barely-visible,
+  washed-out near-transparent blend instead of the real zone color. The
+  glow circle was there, just practically invisible. Fixed by removing
+  both `transition` declarations -- the JS's own envelope-curve
+  interpolation already provides all the smoothness needed.
+- **`:viewBox="..."` (Alpine's dynamic attribute binding) silently produces
+  a lowercase `viewbox` attribute, which SVG does not recognize** (SVG
+  attribute names are case-sensitive). A directive attribute like
+  `:viewBox` isn't on the browser's fixed allowlist of camelCase SVG
+  attributes preserved during HTML parsing -- only a bare, statically-
+  written `viewBox="..."` is -- so the HTML parser lowercases the
+  *directive's own attribute name* to `:viewbox` before Alpine ever reads
+  it, and Alpine's `setAttribute` call inherits that already-lowercased
+  name. Confirmed via `element.getAttribute('viewbox')` (lowercase)
+  returning the value while `getAttribute('viewBox')` returned `null`. The
+  graph's `<svg>` rendered at a tiny fixed intrinsic size instead of
+  stretching to its container, with the drawn content confined to a small
+  corner. Fixed by hardcoding `viewBox="0 0 342 230"` as a static literal
+  instead of binding it (`graphHeight` was always a fixed 230 anyway, so
+  there was nothing that actually needed to be dynamic). General lesson: 
+  never bind SVG's camelCase presentation attributes (`viewBox`,
+  `preserveAspectRatio`, etc.) dynamically via `:attr` in Alpine (or likely
+  any framework using plain `setAttribute` off an HTML-parsed directive
+  name) -- keep them static, or set them via the SVG DOM's own typed
+  properties (e.g. `svgEl.viewBox.baseVal`) instead of `setAttribute`.
+
+## The woodstove-event taxonomy is a closed set, not free text
+
+`rest_api.c`'s `POST /api/event` validates the request's `event` field
+against a fixed `EVENTS[]` list (`cold_start`, `opened_stove`, `added_wood`,
+`damper_up`, `damper_down`, `burning_optimally`, `roaring`, `dying_down`,
+`fire_out`, `stove_off`) and rejects anything else with a `400`, rather than
+logging whatever string a caller sends. Deliberate: per the repo root
+`CLAUDE.md`'s "Current phase is data-gathering" section, the whole point of
+these annotations is correlating burns against each other later, which
+needs a consistent, known vocabulary -- free-text labels from a rushed tap
+at the stove wouldn't reliably give that. The slugs are ported verbatim
+from the original ESPHome sidecar's own template buttons (`GET
+/api/events` exposes both the slug and a human-readable label, e.g.
+`{"slug":"roaring","label":"Stove Roaring"}` -- note the slug/label mismatch
+on that one specifically, carried over as-is from the ESPHome config rather
+than "fixed" to match, since any existing Sheets data already uses `roaring`).
+
+## A WebSocket URI handler is never called for its own handshake
+
+`ws_server.c`'s first version tracked new clients with `if (req->method ==
+HTTP_GET) { ...; return ESP_OK; }` inside the registered handler, reasoning
+(wrongly) that the handshake request itself would arrive as a `GET` and could
+be detected that way. It compiled fine and looked reasonable, but silently
+never worked: a client could connect and the server would broadcast forever
+without ever reaching it. Confirmed straight from `esp_http_server`'s own
+source (`httpd_uri.c`): once `is_websocket` is set, the framework completes
+the entire WS handshake internally and explicitly does **not** call the
+registered handler for it (its own comment: *"If the request is websocket
+handshake, then do not call the uri->handler"*) — the handler is only ever
+invoked later, for an actual client→server data frame. `req->method` on such
+a later invocation is just the URI's own statically-registered method
+(`HTTP_GET`), not a live signal distinguishing "this is the handshake" —
+there's no invocation where that branch's premise is even true. Since a
+broadcast-only client like `flue-display` never sends anything, the handler
+was never entered at all, and the client list stayed empty forever.
+
+The actual hook that fires once a connection is open is
+`ws_post_handshake_cb` (a separate callback field on `httpd_uri_t`, gated by
+`CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT` — off by default, on in this
+project's `sdkconfig.defaults`). Client tracking lives there now;
+`ws_handler()` itself only ever runs for a real subsequent frame (a client
+CLOSE, or draining an unexpected data frame).
+
+## The onboard NeoPixel's power line is shared with STEMMA QT
+
+`status_led.c` drives the onboard NeoPixel (GPIO0) as a solid WiFi-status
+color, but doesn't do any power-enable sequencing of its own -- Adafruit's
+own pinout docs confirm the NeoPixel and STEMMA QT connector share the same
+power-enable pin (`STEMMA_QT_POWER_GPIO`/GPIO2), and `sensors_init()`
+already drives it high, unconditionally, before `status_led_init()` is ever
+called in `main.c`. If `status_led_init()` is ever reordered to run before
+`sensors_init()`, the NeoPixel would stay dark regardless of what color it's
+told to show.
+
+## `esp_http_client` needs its TLS cert bundle attached explicitly
+
+`sheets_logger.c`'s first version against the real Google Sheets webhook
+failed every single attempt with `ESP_ERR_HTTP_CONNECT`, even though
+`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y` (and `..._DEFAULT_FULL=y`) were already
+on in `sdkconfig` -- that config only makes the bundle *available*, esp-tls
+still has no way to verify `script.google.com`'s certificate unless
+`esp_http_client_config_t.crt_bundle_attach` is explicitly set to
+`esp_crt_bundle_attach` (from `esp_crt_bundle.h`, `mbedtls` component).
+ESPHome's own `http_request` component does this wiring automatically, which
+is why the equivalent ESPHome config never needed to think about it. Fixed
+by setting `.crt_bundle_attach = esp_crt_bundle_attach` on the config and
+adding `mbedtls` to `main/CMakeLists.txt`'s `PRIV_REQUIRES`.
+
+## The regression window assumes a fixed, sensor-matching read cadence
+
+`sensors_read()` admits the thermocouple reading into the rate-regression
+window on *every call* — it must only be called on the sensor's own true
+update cadence (currently every 30s, from `main.c`'s `sensor_log_task`), not
+from an arbitrary poller. This is exactly the rate-inflation bug
+`flue-display/CLAUDE.md` documents for its own polling-based rate calc:
+timestamping a value that only actually changes once per 30s as if every
+poll were a fresh sample makes any real delta look many times faster than
+it is. `GET /api/reading` (and any future WebSocket broadcast) must call
+`sensors_get_last_reading()` instead — a thread-safe copy of whatever the
+periodic task last computed, no I2C traffic, no window mutation.
+
+An implausible reading (outside `-40..600°C`) leaves the rate/zone at their
+last-known-good values rather than resetting them, exactly matching the
+ESPHome lambda's own `return;`-on-glitch behavior — the raw
+`thermocouple_c`/`cold_junction_c` fields are still reported as read either
+way; only the *derived* rate/zone are protected from a single glitch
+poisoning the ~3-minute window.
+
+## Sensor drivers: vendored official/registry drivers, not copied ESPHome components
+
+MCP9601 uses `esp-idf-lib/mcp960x` via the component registry. Deliberately
+*not* copying ESPHome's own `mcp9600.cpp` directly, even though its source
+was extremely useful for finding the gotchas above: ESPHome is GPL-3.0 (a
+real copyleft concern for otherwise permissively-licensed vendored code),
+and that file is written against ESPHome's own `Component`/`i2c::I2CDevice`
+base classes and HAL — not standalone, and pulling it in would drag along a
+meaningful slice of ESPHome's own core, working against the entire reason
+this rewrite exists. Reading ESPHome's source for the *procedural knowledge*
+(which register, which pin, which order) while keeping the actual driver
+code as the manufacturer's/registry's own reference implementation got the
+same debugging value without either problem. (The BMP581 previously used the
+same approach -- Bosch's own official `BMP5_SensorAPI`, vendored verbatim --
+before the sensor and all its code were removed; see "BMP581 removed"
+below.)
+
+## BMP581 removed
+
+The BMP581 (pressure/ambient-temperature sensor) was physically removed from
+the board -- its ambient temperature reading was almost a duplicate of the
+MCP9601's own cold-junction reading, so it wasn't earning its board space.
+All BMP581 code was removed to match: `sensors.c/.h`'s `bmp581_*` fields and
+`init_bmp581()`/`read_bmp581()`, `rest_api.c`'s `bmp581_*` JSON fields, the
+vendored `components/bmp5/` directory, and its `bmp5`/`BMP581_I2C_ADDR`
+references in `CMakeLists.txt`/`config.h`. `sheets_logger.c`'s webhook URL
+also dropped its `temperature`/`pressure` query params, which were sourced
+from the BMP581 -- **the Google Apps Script webhook itself (external to this
+repo) may still expect those params**; not updated here since its source
+isn't tracked in this repo.
+
+## `ota_server.c` moved to `../components/`
+
+Was a near-duplicate of `../flue-display/main/ota_server.c` (113 of ~120
+lines byte-identical -- the auth check and the entire streaming-OTA-write
+handler). Now the shared `components/ota_server/`. The one real difference
+between the two projects' old copies -- flue-monitor already has a shared
+httpd server to register onto (`rest_api_start()`'s handle), flue-display has
+none of its own -- became two entry points on the same component:
+`ota_server_register(server, secret)` for a caller with a server already
+running, `ota_server_start(secret)` (starts its own dedicated 8192-stack
+httpd first) for a caller with none. Each project still keeps its own
+`secrets.h`/`OTA_SECRET` (the two devices' secrets are intentionally
+different values) -- the shared component takes `secret` as a parameter
+rather than including a project-private header itself, so it carries no
+secret of its own and doesn't need visibility into either project's
+`main/secrets.h`.
+
+## LED/glow pulse-tuning constants now live in settings
+
+`settings_t` (see `settings.h`) gained four fields flue-monitor itself never
+reads -- `idle_pulse_period_ms`, `fast_pulse_period_ms`,
+`rate_deadband_c_per_min`, `color_transition_exponent` -- purely to be the
+one live source both `../flue-display/main/led_display.c`'s physical LED
+ring and this device's own `main/web_ui/dashboard.js` glow now fetch via
+`GET /api/settings`, the same mechanism `zone_cold_max_c`/
+`zone_optimal_max_c`/`fast_rise_c_per_min` already used. Before this, all
+four were hardcoded independently in `flue-display/main/config.h` *and*
+`dashboard.js` -- two copies with no mechanism keeping them in sync.
+
+That duplication had already drifted: `flue-display/CLAUDE.md`'s own tuning
+history describes `COLOR_TRANSITION_EXPONENT` being live-tuned on real
+hardware up through **11** ("a longer amber hold, quicker ramp"), but both
+hardcoded copies had `3.0` -- the original, untuned guess. **This refactor
+deliberately did NOT change the value** -- `DEFAULT_COLOR_TRANSITION_EXPONENT`
+in `config.h` is `3.0f`, a behavior-preserving default matching what was
+already running, not a silent retune. Whether `3.0` or `11` (or something
+re-tuned fresh) is actually correct on the real hardware is still an open
+question, now answerable by changing exactly one NVS-backed value instead
+of two hardcoded ones.
+
+## `max_uri_handlers` must cover every endpoint on this server
+
+Adding the 4 embedded-font routes (see the web UI section above) pushed
+this server's total registered handler count from 13 to 17 -- `rest_api.c`
+registers 15 of its own (10 REST endpoints + 5 static assets), plus
+`ota_server_register()` (1) and `ws_server_register()` (1), all onto the
+same shared `httpd_handle_t`. `rest_api_start()`'s `config.max_uri_handlers`
+was already explicitly bumped from `HTTPD_DEFAULT_CONFIG()`'s default of 8
+to 16 once before, for exactly this reason (see the comment history) --
+but 16 wasn't enough headroom, and 17 > 16 silently wasn't caught by the
+build. **The actual failure mode on real hardware: an immediate,
+permanent boot crash-loop.** `httpd_register_uri_handler()` fails with
+`ESP_ERR_HTTPD_HANDLERS_FULL` once the ceiling is hit; every registration
+call is wrapped in `ESP_ERROR_CHECK`, so the *last* one registered --
+`ws_server_register()`, called after `rest_api_start()` and
+`ota_server_register()` in `main.c` -- is the one that aborts. The device
+reboots roughly every 3 seconds forever, re-hitting the identical assert
+each time, `esp_ota_mark_app_valid_cancel_rollback()` never being reached
+(it's later in `main.c`, after this line) meaning the bootloader's OTA
+rollback safety net would eventually have kicked in on its own too, given
+enough failed-boot cycles -- caught first via a serial boot log instead of
+waiting for that. `POST /ota` is also a registered handler on this exact
+same server, so **OTA cannot recover from this failure mode** -- the crash
+happens within ~10-20ms of the server starting, before there's any
+practical window to push a whole new firmware image through; a USB
+reflash (`idf.py -p <port> flash`) was required. Fixed by raising
+`max_uri_handlers` to 24, with real headroom above the current count
+rather than the exact number, specifically so the next endpoint added
+doesn't silently repeat this. **Any future change adding a new
+`httpd_register_uri_handler()` call anywhere on this shared server should
+double check the total against this ceiling.**
+
+Also discovered while chasing this, but unrelated to `max_uri_handlers`
+itself -- see the next section.
+
+## A failed WiFi connect attempt left stale WiFi/netif state for the captive portal fallback
+
+Found on the very first boot after the `max_uri_handlers` fix above's OTA
+push: weak WiFi (rssi -77 on this network, see "The REST API server is
+single-threaded..." above for prior weak-signal history) caused the
+*initial* STA connect attempt to genuinely fail, and `main.c` fell back to
+`captive_portal_start()` per its designed failure path -- which then
+itself crashed, on `wifi_init_softap()`'s call to
+`esp_netif_create_default_wifi_sta()` (`assert failed: ... config or
+if_key is NULL or duplicate key`). Root cause: `wifi_setup.c`'s
+`wifi_sta_try_connect()` (which just failed) already called
+`esp_netif_create_default_wifi_sta()` earlier in the very same boot --
+`wifi_init_softap()` unconditionally calls it again, unaware a STA netif
+already exists from the failed connect attempt, and the duplicate
+registration aborts.
+
+**Fixed**: `wifi_sta_try_connect()`'s own doc comment already said it
+"leaves WiFi running in STA mode either way (caller decides what to do
+next on failure)" -- the missing half was that no caller ever actually did
+anything with that. Added `wifi_sta_teardown()` (`components/wifi_setup/`):
+`esp_wifi_stop()` + `esp_wifi_deinit()` + `esp_netif_destroy_default_wifi()`
+on the STA netif captured from `wifi_sta_try_connect()`'s own return value
+(previously discarded) -- the documented, symmetric counterpart to
+`esp_netif_create_default_wifi_sta()`, not a guess at undocumented
+behavior. Both `main.c`s now call it in the `have_creds && !connected`
+branch, right where `wifi_mark_attempt_failed()` already was, before
+falling through to `captive_portal_start()`.
+
+**Verified on real hardware, not just by reasoning about the fix**: forced
+a deterministic connect failure (`STA_CONNECT_TIMEOUT_MS` temporarily set
+to `1` for one test build/flash, reverted immediately after) and confirmed
+via serial log a clean teardown (`wifi:stop sw txq`, `wifi:Deinit lldesc
+rx mblock:10`, no assertion) followed by `captive_portal: SoftAP started`
+-- no crash. Separately, `flue-display` then hit this exact failure path
+*for real* (genuine rssi -89 on a later boot, not the artificial test) and
+recovered the same clean way, entering its own setup AP instead of
+crashing -- a second, independent, non-artificial confirmation.
+
+## A stale, gitignored `sdkconfig` turned a new Kconfig default into a permanent boot crash-loop
+
+`main.c`'s `configure_power_management()` (added by the "Enable automatic
+light sleep on both devices" commit) originally wrapped `esp_pm_configure()`
+in `ESP_ERROR_CHECK` -- fine as long as that call could never fail, which
+turned out not to be true. That same commit added `CONFIG_PM_ENABLE=y` to
+`sdkconfig.defaults`, but the actual `sdkconfig` (gitignored, locally
+generated, last regenerated before that commit existed) still had
+`# CONFIG_PM_ENABLE is not set` baked in from an earlier build --
+`sdkconfig.defaults` only seeds keys *missing* from `sdkconfig`, it never
+overrides a key that's already present, so the stale value won silently.
+With `CONFIG_PM_ENABLE` actually off, `esp_pm_configure()` returned
+`ESP_ERR_NOT_SUPPORTED` (confirmed directly against the installed ESP-IDF
+5.5.5 source -- `esp_pm/pm_impl.c`'s own `#ifndef CONFIG_PM_ENABLE`
+early-return) on every single boot, right after WiFi connected --
+`ESP_ERROR_CHECK` turned that into a hard `abort()`, rebooting forever
+before the REST/WS servers ever registered. The symptom that actually
+surfaced from this was confusing by itself: `GET /api/reading`/`/ws`
+intermittently showed `thermocouple_ok:false` with every field zeroed and
+`thermocouple_zone:"unknown"`, which looked like a sensor/I2C problem (the
+zone classifier can only read "unknown" if no read has ever succeeded since
+the last reset) but was actually just whichever request happened to land
+during the reboot window.
+
+Fixed two ways: deleting the stale `sdkconfig` and letting `idf.py build`
+regenerate it fresh from `sdkconfig.defaults` resolved this specific
+occurrence (verified via a clean serial boot log and 5+ minutes of
+uninterrupted sensor reads afterward), and `configure_power_management()`
+itself no longer uses `ESP_ERROR_CHECK` -- it logs a warning and continues
+without automatic light sleep on any future `esp_pm_configure()` failure,
+since that's a far better fallback than bricking the device over a
+recoverable power-management config problem. Any future addition to
+`sdkconfig.defaults` carries the same latent staleness risk on a machine
+with an already-generated `sdkconfig` sitting around -- seeding is one-way,
+not a sync, so this exact failure mode can recur for a *different* Kconfig
+option later even with this specific fix in place.
+
+## The 24h graph had three real gaps vs. the original design, only one of them a genuine logic bug
+
+Caught by comparing a live screenshot against the original design mockup
+(`design-import/Flue Monitor.dc.html`) side by side:
+
+- **Missing status pill.** The graph screen's topbar only ever had a
+  settings-gear button on the right; the design shows a colored-dot +
+  temp + rate pill there too (same info as the dashboard's own glow
+  circle, just compact). Added `.status-pill` next to the gear, reusing
+  `zoneColor()`/`rateLabel` that already existed for the dashboard.
+- **Missing in-band zone labels.** The bottom-of-screen Cold/Optimal/Hot
+  dot legend (`.graph-legend`) was the wrong shape of information -- the
+  design puts the actual threshold numbers (e.g. "Hot above 280°C")
+  directly on each colored band. Replaced the external legend with
+  in-band `<text>` labels drawn inside `graphSvg`'s own band-rendering
+  loop (skipped when a band's too thin to hold text legibly).
+- **A logged event could visually appear to be "in the future."** This
+  one **is not a timestamp bug** -- an event's `age_s` is never negative,
+  confirmed by fetching `/api/history` immediately after `POST
+  /api/event` on the real device (`events: [[0, "stove_off"]]`, never
+  negative). The real cause: temperature *samples* only land every ~4min
+  (`HISTORY_PUSH_EVERY_N`), but *events* are logged with second-level
+  precision -- so a just-logged event (age 0) legitimately has a smaller
+  age than the most recent temperature sample (age up to ~4min), landing
+  its marker to the *right* of the curve's last plotted point on the
+  x-axis. Visually indistinguishable from "in the future" even though the
+  underlying number is correct. Fixed by extending the plotted curve
+  itself with a synthetic age-0 point sourced from the already-live
+  `GET /api/reading` value (`dashboard.js`'s `graphSvg` getter builds
+  `plotSamples = [...samples, [0, reading.thermocouple_c]]` when the
+  reading is valid) -- the curve now visibly reaches "now" instead of
+  stopping ~4min short of it, and any recent event naturally lands on or
+  right at that endpoint instead of past it. Also clamped `xOf()`'s input
+  to `[0, maxAgeS]` as a defensive belt-and-suspenders measure. The
+  current-reading dot at the curve's end is now colored by the live zone
+  too (previously a fixed accent color), matching the design.
+
+## Local mock server for iterating on the web UI without real hardware
+
+`tools/mock_server.py` (stdlib-only Python) serves the real, unmodified
+`main/web_ui/` files with synthetic REST responses standing in for the
+device -- no ESP32, no flashing, no reboot needed for a CSS/layout/JS-only
+change. This exists because the three graph-screen bugs above were hard to
+iterate on against the real device: each fix attempt meant a full
+build/flash/reboot/reconnect cycle just to see a CSS tweak, and the
+"event in the future" bug specifically needed a *freshly logged* event
+(age near 0) to reproduce, which the real device's RAM-only event log
+loses on every reflash. The mock server's `POST /api/event` handler
+reproduces that exact edge case on demand (log an event through the real
+UI, it lands at true age 0 immediately) without touching hardware at all.
+Verified working end-to-end via a headless Playwright run (`npx playwright
+install chromium` -- no project dependency added, this is a one-off dev
+tool, not shipped code) that loaded the mock server, clicked into the
+graph view, logged a fresh event through the real "Log what you did" flow,
+and screenshotted before/after to confirm the marker landed on the curve's
+endpoint rather than past it.
+
+## Misc
+
+- **`idf.py monitor` exits with Ctrl+], not Ctrl+C.** Ctrl+C is intercepted
+  by the monitor for other purposes. Ctrl+T then Ctrl+H shows its full
+  shortcut menu.
+- **A background `idf.py monitor`/`esphome logs` session holds the serial
+  port open exclusively** — a concurrent `idf.py flash`/`ota_flash.sh` from
+  another shell will fail with "Resource temporarily unavailable" until it's
+  stopped.
+
+
+## Zone colours are saved settings
+
+`zone_cold_color`, `zone_optimal_color`, and `zone_hot_color` are eight-byte
+NUL-terminated `#RRGGBB` strings appended to `settings_t`. The prior NVS blob
+layout is its exact prefix: load it over default-initialized settings and
+accept the old prefix length as well as the new full size. This preserves
+thresholds, logging credentials, and pulse tuning rather than resetting
+them when the palette fields are introduced. Future layout changes must
+retain or explicitly migrate this prefix; do not silently reinterpret it.
+
+The settings page uses native colour pickers with the existing draft, Save,
+and Undo flow. Defaults match the physical ring's blue/amber/red. Saved
+colours drive the glow, status dot, and tinted graph bands. The LED firmware
+fetches them through the existing settings_changed notification and snapshots
+the palette under its rendering lock. Older sidecars omit these fields, so
+the ring retains its current palette; older API clients can omit colours
+without resetting them. Explicit invalid colours are rejected.
+
+Both settings POST and the display's HTTP response buffer allow 1024 bytes
+so the palette plus maximum-length logging URL/secret fit. Host checks cover
+legacy blob migration, persistence/validation, and app save/undo/reload. Both
+ESP-IDF builds pass. Chrome visual QA against the local mock server confirms
+the native pickers, Save/Undo, reload persistence, and graph palette, with no
+console warnings/errors. Both devices were subsequently updated on hardware; the monitor retained
+all previous settings and the display fetched settings and real readings.
+Physical colour appearance remains for the user to judge.
+
+
+## Breathing pulse precision and timing
+
+`flue-display/main/led_display.c` keeps colour interpolation and brightness
+in floating point until one final rounded conversion per 8-bit channel.
+The old path truncated brightness, interpolated colour, and scaled colour
+separately, causing a downward bias and coarse steps near the dim trough.
+This reduces avoidable quantization; it does not add hardware brightness
+resolution or prove physical flicker is eliminated. No dithering or brightness
+floor changes were introduced.
+
+The render loop uses an absolute 30ms FreeRTOS schedule and monotonic elapsed
+time for pulse phase, so LED transmission time is included in the frame
+budget instead of added to the sleep, and scheduling jitter does not stretch
+the pulse period. Every 30s it logs observed FPS, average/minimum/maximum
+frame interval, and refresh failure count. Read those measurements on hardware
+before attributing residual flicker to low frame rate.
+
+
+Hardware verification on 2026-10-04: boot logs identify display on
+`/dev/cu.usbserial-1140` (192.168.1.138) and monitor on
+`/dev/cu.usbserial-5C671828951` (192.168.1.137). Verify these anew before any
+future flash rather than treating this mapping as permanent. Display updated
+over USB after a failed WiFi join put its old firmware into setup mode;
+monitor updated over OTA. All prior monitor settings were compared before
+and after and retained, including logging credentials. Re-saving the unchanged
+settings produced settings_changed and a successful fetch on the display.
+
+With valid thermocouple readings arriving, three consecutive diagnostic
+samples measured 33.9–34.0 FPS, average intervals 29.38–29.49ms, minimum
+intervals 13.43–16.46ms, maximum intervals 40.76–45.20ms, zero refresh failures.
+There is scheduling jitter, but no sustained low frame rate in this test.
+Physical flicker improvement has not been judged visually. Initial mDNS
+queries and a subsequent HTTP/WS connection timed out; restarting the
+display after the monitor was running recovered resolution and subscription.
+That existing startup/network flakiness remains a separate issue.
+
+
+## Adjustable breathing shape
+
+`breathing_exponent` ranges from 0.3 to 3.0 and defaults to 1.0. Apply
+`pow(envelope, breathing_exponent)` to brightness and the UI halo only; colour
+interpolation continues to use the raw envelope and its separate exponent.
+The settings control uses 0.1 steps with rounding and existing Save/Undo.
+
+The float is appended after the palette fields. NVS loading accepts the current
+size, the pre-palette prefix, and the palette-only prefix over initialized
+defaults. Existing tuning, colours, and logging credentials are preserved.
+Older POST clients preserve the current shape when omitting it; the display
+defaults to 1.0 when an older monitor omits the field. Reject non-numeric,
+non-finite, and out-of-range values. Both firmware builds and host migration/
+validation checks pass. Chrome Save/Undo/reload checks pass without console
+warnings or errors.
+
+Both devices updated over OTA on 2026-10-04. All monitor settings were
+compared before/after and preserved. Display logs confirmed shape 1.0, a
+live change to 0.7, then restoration to 1.0, alongside real readings and
+33.9 FPS with zero refresh failures. After an OTA upload, allow startup to
+complete before opening idf monitor: it resets the board, and resetting a
+pending image before WiFi confirmation can trigger rollback. The first
+display attempt rolled back; retrying with startup time succeeded.
+
+
+## LED brightness limits
+
+`maximum_brightness` and `minimum_brightness` are appended uint32 fields,
+validated as integers with 0 <= minimum <= maximum <= 255. Defaults 20/255
+preserve the previous LED curve. Missing API fields retain saved values;
+older monitors give the display default limits. NVS also accepts the
+breathing-shape-era prefix ending before maximum_brightness. Limits are
+snapshotted under the rendering lock and interpolated with the shaped
+envelope, including the neutral no-data pulse. Colour transitions remain
+independent and the UI halo keeps its screen-specific treatment.
+
+Both firmware builds pass. Host checks cover migration of all previous
+layouts, persistence, equal/off/full bounds and reversed-limit rejection.
+Chrome confirms both steppers, Undo, Save and reload persistence.
+
+
+## Zone theme presets
+
+`ZONE_THEMES` in dashboard.js defines five palettes in `ZONE_ORDER`. The
+selector derives its name from the draft colours with case-insensitive
+matching, so manual edits and Undo automatically select Custom or a matching
+preset. `applyZoneTheme` only fills the three draft colour fields. No theme
+identifier is stored or sent to the API: saved colours remain the single
+source for the dashboard, graph and ring. Menu buttons show swatches, the
+selected state, and support Tab/Enter plus Escape and outside-click dismissal.
+
+The Fire preset uses amber #f29900, orange #f66d00 and red #ff0000 in
+cold/optimal/hot order. The matrix applies its colour gamma correction.
+
+
+## Settings delivery acknowledgement and HTTP session recovery
+
+A successful settings POST confirms NVS persistence, not display delivery.
+The response and settings GET include a boot-randomized uint32
+`settings_revision`; each successful POST advances it. The display sends
+`{"type":"settings_applied","revision":...}` over its WebSocket only after
+fetching and applying that revision. `GET /api/settings/status` returns the
+current revision and `display_applied`. The UI checks the exact submitted
+revision for up to 20 seconds, reports confirmed delivery only on matching
+acknowledgement, and otherwise shows a persistent alert while retaining the
+saved settings. This proves firmware application, not physical LED appearance.
+The display refreshes on reconnect, retries failures after five seconds and
+periodically refreshes every 30 seconds to recover missed notifications.
+
+The seven-slot HTTP server formerly used default `lru_purge_enable=false`
+and TCP keepalive disabled. Idle HTTP keepalive connections could fill all
+slots and prevent new settings fetches, independently of WebSocket leakage.
+LRU eviction now permits new requests, with streaming WS clients refreshed
+when requests arrive so idle HTTP sessions are preferred. TCP keepalive
+uses 30s idle / 10s interval / three retries. The close callback removes WS
+bookkeeping for every server session teardown and explicitly closes the fd.
+Queued broadcasts carry a client generation to reject reused descriptors.
+Diagnostics report peer address, port and HTTP/WS classification; the old
+count-only log cannot establish what occupied the original seven slots.
+
+Verification on hardware: unchanged settings were re-saved, applied and
+acknowledged by the display (minimum 0, maximum 45). Seven held HTTP
+connections did not block a new status request. Ten TCP WS disconnects
+without close frames were each removed by the close callback; the server
+returned to one WS connection. Both builds pass. Chrome verified the
+persistent missing-acknowledgement alert using the mock server with
+`MOCK_DISPLAY_APPLIED=false`. Host checks: `node tools/test_settings_sync.js`.
+Live socket check: `python3 tools/test_http_socket_recovery.py <monitor-ip>`.
+
+
+## Ten-second temperature sampling
+
+`SENSOR_READ_INTERVAL_MS` is now 10000. The continuously converting MCP9601
+is read and broadcast on an absolute FreeRTOS ten-second schedule. The UI
+already polls every five seconds; the LED display consumes each WS reading.
+Rate regression now keeps 16 samples instead of six, preserving the original
+150-second first-to-last span and using actual timestamps. History still
+pushes every four minutes (24 sampling ticks), keeping its 24-hour capacity.
+Socket diagnostics remain at 30-second intervals. Sheets logging still uses
+its configured deadband/heartbeat, not one log per sensor tick. Earlier
+30-second references in this file describe the previous configuration.
+
+## Compressed web assets and cache validation
+
+`tools/generate_web_assets.py` generates deterministic gzip payloads for
+HTML/CSS/JS and content-hash ETags for all static assets, including fonts.
+The main component's custom build dependency regenerates the header whenever
+an asset changes. Text assets are stored only as gzip. Clients that do not accept gzip
+(including `gzip;q=0`) receive a chunked identity response decoded using the
+ESP32 ROM inflater with a temporary 32 KiB dictionary plus inflater state. WOFF2 fonts are already compressed
+and are served unchanged. Compression takes place on the build machine.
+
+Static responses use `Cache-Control: no-cache`, which permits storage but
+requires validation, with `If-None-Match` returning an empty 304 when content
+is unchanged. Compressed and identity representations have separate ETags
+and `Vary: Accept-Encoding`. Changed assets get new tags, so an OTA cannot
+leave a browser using stale UI files. REST settings/reading responses do not
+use this static-asset handler.
+
+Built and flashed on 2026-10-08. `python3 tools/test_web_assets.py <monitor-ip>`
+verified every static payload against source, 304 responses, stale-tag
+recovery, identity fallback and gzip refusal. Chrome rendered the live UI.
+The four text assets shrank from 117534 to 37340 bytes. Same-firmware
+sequential direct-IP tests measured 0.29–0.36s compressed versus 0.72s
+identity on the then-current link; these are transfer timings, not full
+browser load times. Saved settings were preserved. Hostname resolution is
+unchanged by this update.
+
+
+## Settings acknowledgement follows setting ownership
+
+`DISPLAY_SETTING_KEYS` in dashboard.js lists colours, zone/rate thresholds,
+brightness and breathing controls consumed by the display. Save compares the
+submitted snapshot against the last saved settings before issuing the POST.
+Only changes to those keys wait for the matching display revision. Logging
+heartbeat, thermocouple logging deadband and Sheets URL/secret need only the
+monitor's successful settings POST; mixed saves still wait for the display.
+The save bar says Saving rather than checking display for monitor-only edits.
+`node tools/test_settings_sync.js` covers each monitor-only field plus mixed
+logging/colour changes and existing acknowledgement success/failure cases.
+
+## Live WiFi indicators for both devices
+
+The dashboard shows Monitor and Display signal bars, a strength label and
+RSSI in dBm. `GET /api/devices/wifi` returns the monitor's current AP RSSI and
+the display's latest `wifi_status` WS report; the UI polls every ten seconds.
+The display uses its existing WS connection, not an extra HTTP connection.
+The monitor invalidates the display value immediately when its reporting
+session closes, or after 35 seconds without a report. Offline means the
+display link/report is unavailable, not a measured RF signal of zero. Failed
+UI status requests clear the cards to Unavailable instead of retaining stale
+values. Strength labels use >= -60 Strong, >= -70 Good, >= -80 Fair,
+otherwise Weak; labels are a heuristic, not a throughput measurement.
+
+Local mock data is configurable with MOCK_MONITOR_RSSI, MOCK_DISPLAY_RSSI,
+MOCK_MONITOR_CONNECTED and MOCK_DISPLAY_CONNECTED. The approved prototype
+was visually checked in Chrome with weak/strong and offline states. Both
+firmware builds pass. `python3 tools/test_wifi_status.py` compiles the actual
+freshness and session-close functions to verify expiry, close and descriptor
+reuse invalidate old RSSI.
+
+Hardware updated on 2026-10-08: monitor over OTA, display over confirmed USB
+84:0d:8e:d2:a6:ec after its OTA request redirected to the setup portal.
+Live API and Chrome showed both connected, roughly monitor -81/display -69
+dBm. Saved settings matched the pre-flash snapshot and display acknowledgement
+was true. Chrome also confirmed a logging-heartbeat-only save immediately
+succeeded with the mock display acknowledgement disabled.
+
+
+## uPlot burn graph local preview
+
+The SVG history renderer is replaced by vendored uPlot 1.6.32 (MIT license
+in main/web_ui/vendor). burn-graph.js owns an unproxied chart in a child
+Alpine component; it destroys the chart and ResizeObserver when leaving
+the graph. It preserves zone bands/threshold labels and event markers, adds
+time/temperature axes, drag/wheel zoom and touch pinch/pan. Event captions
+are drawn beside their markers with collision spacing and leader lines;
+overcrowded captions reappear when zoomed. Double-click restores the full
+24h window. Preset/zoom/reset buttons, custom date inputs and event chips
+were removed after local review.
+Browser wall-clock time anchors the device's monotonic ages when history
+is fetched; clock labels are approximate and history remains four-minute
+samples for 24 hours. Zoom does not create finer sensor history.
+
+Local live preview: `python3 tools/ui_proxy.py http://192.168.1.137 8773`.
+The proxy serves local assets and forwards only GET /api requests; POSTs
+are rejected so preview settings/event actions cannot change the monitor.
+Synthetic burn preview: `python3 tools/mock_server.py 8774`. Both bind only
+to localhost. New graph assets are embedded/compressed with ETags for a
+future flash, but neither device was flashed for this preview.
+
+Preview verification: Chrome checked live history, sample-burn rendering,
+clustered inline event captions, removal of graph controls, gesture zoom,
+double-click reset and leaving/reopening the graph without a loading blank;
+no console errors. Host checks cover shared in-flight history requests,
+30s cache reuse, retained data on refresh failure and initial load failure. Touch
+gestures are implemented but have not been verified on a physical phone.
+The firmware builds with about 4% app-partition headroom; revisit asset
+storage/partition sizing before adding further substantial dependencies.
+
+History preloads after the initial dashboard requests and is reused for 30s.
+Overlapping loads share one request. Background refreshes preserve the old
+curve; failed refreshes retain it too. The history receipt time anchors its
+monotonic ages, so opening prefetched history later does not shift events.
+
+
+## Single-copy compressed assets
+
+Dashboard text files and captive-portal HTML/CSS/Alpine are now embedded only
+as gzip. The monitor reuses the shared portal's compressed CSS and Alpine;
+`generate_web_assets.py` asserts the dashboard CSS is byte-identical to the
+portal stylesheet. Fonts remain single-copy WOFF2. The shared
+`compressed_assets.c` uses ESP32 ROM miniz for streaming identity responses;
+normal gzip browser responses allocate no decompression buffer. Identity
+fallback allocates a 32 KiB dictionary plus inflater state on the heap,
+frees both after completion or send failure, and returns 503 on allocation
+failure. Representation-specific ETags, no-cache validation, and gzip refusal
+continue to work through the existing monitor response handler.
+
+2026-10-10 build: monitor image shrank from 0x1671b0 to 0x1375c0, saving
+195568 bytes (191 KiB); free OTA-slot space grew from 4% to 17%. Both monitor
+and display builds pass. `python3 tools/test_compressed_assets.py` checks
+build-generated payloads, tags, and sharing. Passing an upstream miniz v114
+source path also compiles the actual C fallback against its reference tinfl
+implementation and checks byte-exact multi-chunk decoding, gzip negotiation,
+disconnect handling and invalid headers. The existing
+`tools/test_web_assets.py` remains the on-device gzip/identity/cache check.
+These asset changes have not yet been flashed; ROM/runtime verification and
+captive portal browser verification remain for hardware deployment.
+
+
+## Experimental on-device PageKite dashboard
+
+The monitor runs PageKite directly (`main/pagekite_tunnel.c`) with verified
+ESP-TLS relay identity `frontends.b5p.us`, the existing CA bundle and an SNTP
+wait before certificate validation. It starts after the REST API when enabled
+in NVS settings. Settings → PageKite edits enabled/domain/shared secret;
+no build-time credentials or private include directory remain. First enable
+creates the tunnel task; after disable it waits without open relay/backend
+sockets. Settings changes allow one second for the save response, then clean
+up all sockets and reconnect with a fresh settings snapshot. Notifications
+interrupt backoff/disabled waits. The monitor resolves the pool, probes every
+returned IPv4 relay with TLS verification, chooses the lowest handshake
+latency, updates kite DNS via
+`https://up.pagekite.net/` using the PageKite SHA-1 signed update, then opens
+a fresh verified tunnel to the selected relay. TLS contexts are sequential to
+keep memory bounded. DNS update failures keep the tunnel closed and retry.
+
+Public `https://flumonitor-vanutsteen.pagekite.me/` supports the dashboard,
+settings edits and event logging. GET/POST /api/settings map to
+/api/tunnel/settings. GET strips Sheets secret/webhook URL and adds
+credentials_redacted; POST preserves omitted credentials and accepts explicit
+replacements. Placeholder text explains that unchanged fields retain saved
+values. GET /api/settings/status exposes the normal display acknowledgement
+flow. Dashboard authentication is implemented; see the "Dashboard
+authentication" section below for its routes, limitations, and USB recovery
+status. OTA and WiFi setup remain outside dashboard routing. The display
+retains its existing LAN WebSocket, which is not gated by the dashboard
+session.
+
+Eight streams, two local backend sockets and a 4 KiB receive buffer bound
+memory. Combined request/header buffers grow in 512-byte increments to at
+most 4 KiB only while collecting/queueing, and are freed after forwarding.
+POST bodies must be application/json with one explicit Content-Length below
+2048 bytes (the settings handler allocates its body on the heap). Fragmented
+bodies are collected before local forwarding; upgrades, duplicate lengths, pipelined and truncated requests are
+rejected. Each socket is half-closed for writing after its complete request:
+ESP-IDF HTTPD does not close just because Connection: close was requested.
+TLS failures close all backend sockets before 2–60 second reconnect retries.
+HTTP server max_uri_handlers is now 32, leaving room beyond the new POST route.
+
+2026-10-10 hardware: editable dashboard API, six-client concurrency and all
+eleven public asset gzip/identity/ETag checks passed. Public monitor-only and
+display-setting saves/restoration passed; stored credentials retained and the
+display acknowledged matching revisions. Event POST transport was tested with
+an invalid slug to avoid inserting fake burn data. Image 0x1395b0 leaves 16%
+app-slot space. A 9260-byte mixed-traffic heap minimum led to temporary request
+buffer allocation; final hardware checks were repeated after that improvement.
+Automatic relay selection and signed DNS updates are implemented in firmware,
+but have not yet been deployed or verified on hardware. Long-term soak, forced
+WiFi loss and visitor authentication remain unfinished. See tools/pagekite-prototype/README.md,
+tools/test_pagekite.py and tools/test_pagekite_dashboard.py. Temporary tunnel
+credentials are removed after tests; rebuilding no longer requires a secret.
+
+PageKite configuration is an appended settings_t tail. NVS migration accepts
+the earlier PageKite structure without custom_domain and seeds that new field
+empty; earlier settings prefixes remain supported. The primary pagekite.me
+name is still used for DDNS, while an optional custom CNAME hostname is
+registered as a second kite on the same tunnel. Both LAN and public GETs expose
+only pagekite_secret_set; POST preserves blank/omitted secrets and omitted
+PageKite fields. The legacy relay slot remains for blob migration but is not
+exposed or used. Strict type/length and domain validation reject protocol
+injection. Successful UI saves discard the submitted secret while retaining
+any newer edit. PageKite keys are monitor-only. Tests:
+`tools/test_pagekite_settings.py` executes actual settings/REST code with NVS
+shims and cJSON under ASan/UBSan; `tools/test_pagekite_configuration.py`
+reversibly verifies live configure/disable/re-enable/secret replacement.
+
+Final editable-firmware check: free heap 106548 bytes; minimum 28232 bytes; reconnects 0. Temporary settings changes were restored and both device links remained healthy.
+
+2026-10-10 configurable tunnel: first OTA image 0x139d70 passed hardware NVS
+migration (every preceding field retained), configure/blank-secret saves,
+remote disable acknowledgement, LAN re-enable and secret replacement/restore.
+Chrome mock settings save cleared the password field and dirty bar. A later
+probe unexpectedly showed uptime 16 seconds, followed by network loss at
+192.168.1.137; no USB serial port was available to determine reset cause.
+Compiler stack frames show Sheets task snapshot 816 bytes plus log_to_sheets
+784 bytes before HTTP/TLS calls. Prepared extra logging-task stack headroom
+(4096 → 6144) and a reset_reason in /probe; image 0x139f80 leaves 16% free.
+This additional image and reboot/persistence verification still need deployment
+once the monitor is reachable. Do not claim the low-uptime restart diagnosed.
+
+
+## Dashboard authentication
+
+The embedded monitor dashboard and its REST API use a password stored as a
+salted PBKDF2-HMAC-SHA-256 hash in the separate `dashboard_auth` NVS namespace.
+`GET /api/auth/status` exposes only whether initial setup is complete. The
+first password can be set only from the LAN address; the peer socket identifies
+IPv4/IPv6-mapped loopback tunnel requests, so forged Host headers cannot bypass setup
+protection. Socket lookup errors fail closed. Login creates one in-RAM, high-entropy
+cookie: a browser-session cookie by default (no Max-Age/Expires), or a
+persistent cookie with Keep me signed in (only one browser session is active at a time). Both modes end on monitor
+restart; no sessions are stored in NVS. Remembered cookies use a 400-day
+browser lifetime renewed during authenticated requests; browser cookie
+removal/expiry can still require sign-in. Five
+failed logins trigger a 30-second global lockout. Changing the password
+requires the current value and matching confirmation, then invalidates the
+session. Cookie-authenticated state-changing requests require an exact matching
+http(s) Origin; remote writes require HTTPS and remote cookies are Secure. Authentication covers the dashboard assets and REST
+endpoints; OTA retains its separate secret. The display's device WebSocket
+remains compatible and is not gated by dashboard sessions. Unauthenticated
+LAN GET /api/settings strips credentials for the display. Initial LAN
+commissioning POST /api/settings is allowed only before password enrollment
+and requires Origin. Omitted Sheets credentials always retain stored values.
+The tunnel forwards Cookie/Origin and accepts only configured Host names.
+The custom HTTP domain redirects to the primary HTTPS hostname. The old
+unauthenticated /probe diagnostic shortcut was removed.
+
+Important limitations: the local dashboard uses plain HTTP, so LAN observers
+can capture credentials and session cookies. There is not yet a USB-serial
+password recovery command; app-only flashing preserves the password and a full
+flash erase clears all NVS settings. Do not describe either as a safe recovery
+path.
+
+The local proxy in `tools/ui_proxy.py` remains a separate design/demo server;
+its `review` password does not authenticate the firmware.
+
+Auth checks: tools/test_dashboard_auth.py runs actual auth code with real
+PBKDF2 via CommonCrypto plus HTTP/NVS/clock shims under ASan/UBSan;
+tools/test_login_page.js executes the actual inline login script.
+Settings/tunnel tests also cover credential-free LAN reads, unauthorized
+writes, first-use commissioning, Host spoofing and Cookie/Origin forwarding.
+Crypto errors fail closed; cookies require exact names/64-character values.
+Firmware build 0x13cb80 leaves 16% application-slot space and was deployed
+by OTA. The first transfer temporarily served the setup portal and returned
+to previous firmware; the cause was not established. Final hardware checks
+confirmed LAN enrollment allowed, remote enrollment denied (403), remote
+reading/settings GET and settings POST denied without login (401), and
+/probe removed (404). The custom HTTP hostname redirects (303) to the
+primary HTTPS hostname. Existing settings were retained when correcting
+the primary/alias configuration. The owner must choose the first password
+locally; real-device authenticated login awaits that enrollment.
+
+The server can report IPv4 HTTP peers as IPv6-mapped addresses; auth locality
+handles both families. Only RFC1918/link-local IPv4 and IPv6 ULA/link-local
+clients can enroll locally, and loopback always counts as tunnel/remote.
+Hardware initially reported setup_local_only=true even over LAN until this
+mapped-address correction; the final image reports local enrollment correctly.
+
+2026-10-12 login fix: ESP-IDF's httpd_resp_set_hdr retains the value pointer
+until the response is sent; a stack-local Set-Cookie in dashboard_auth_login
+expired before auth_form_handler sent its JSON. The cookie buffer now has
+static lifetime (the single HTTP server task serializes handlers). The auth
+test shim now retains the pointer instead of copying it, and forces ASan
+stack-use-after-return detection: it fails on the previous implementation and
+passes with the fix. Login uses explicit DOM references, progress/success
+messages, catches network/non-JSON errors, and aborts after 20 seconds.
+Firmware 0x13d120 builds with 15% slot space remaining. Final OTA succeeded; LAN and HTTPS serve the new page and both report the
+existing password configured after reboot. Owner login must be verified with
+their own password, which was not reset or requested.
+
+2026-10-12 login design: warm dashboard palette, Caprasimo/Figtree, responsive full-height form and accessible password visibility toggle.
+Login fonts are public credential-free assets; dashboard data/assets remain
+session-protected. Initial enrollment and login keep progress/error feedback.
+No pretend remember-me or recovery controls were added. Actual inline page
+previewed in Chrome at localhost:8876; script regression checks and firmware
+build pass. The glow was removed at the owner’s request; image 0x13dc30 was flashed
+by OTA and verified after reboot: new login HTML without glow, all three
+login fonts available without a session, existing password still configured.
+
+2026-10-13 sessions: unchecked login expires at exactly 24 hours; Keep me
+signed in skips server expiry until restart. Logout/password change still
+revoke access, and a later login still replaces the single active session.
+Host tests cover the 24-hour boundary, long remembered uptime, restart,
+logout and password-change revocation; actual login script tests cover both
+checkbox payloads. Image 0x13df10 (15% slot free) built and flashed via OTA.
+After reboot the new checkbox/duration HTML and retained password were
+verified on the monitor. No owner password was requested or reset.
+
+2026-10-15 tunnel outage: both public names returned relay-generated 503
+(offline, FE); LAN auth status remained reachable. Local and public DNS
+resolvers agreed on 95.216.158.189, so no DNS mismatch was observed.
+Previously connected meant successful initial relay authentication only;
+there was no active probe, so a silently lost tunnel could remain connected
+in the UI indefinitely. Added a PING every 30 seconds and a 15-second matching
+PONG deadline; timeout goes through existing socket cleanup/reconnect.
+Only a matching PONG clears the pending probe. UI now says Relay connected
+and explicitly does not claim public availability is checked. Host routing/
+framing/queue tests cover heartbeat success, wrong PONG and exact timeout,
+and pass with ASan/UBSan. Initial live failure cause cannot be proven without
+relay/device logs; heartbeat is not an end-to-end public-hostname check.
+Final image 0x13e290 (15% slot free) deployed successfully by OTA. Both
+public URLs returned the login page in six checks spaced 15 seconds apart
+(across multiple probe cycles); the custom HTTP hostname redirects to the
+primary HTTPS hostname. Existing password configuration survived reboot.
+This is a short live availability check, not a long-term soak or proof of
+the original outage cause.
+
+Browser-session update: unchecked login now uses a standard session cookie
+without Max-Age/Expires, with no separate 24-hour server cutoff. The browser
+manages session lifetime (session restoration can preserve such cookies).
+Checked retains the persistent cookie until monitor restart. Both modes
+remain in RAM and are revoked by logout/password change/new login.
+Image 0x13e250 built and flashed; login copy and retained password
+configuration verified after reboot. Host auth tests verify omitted expiry
+attributes for unchecked login, persistent-cookie attributes for checked
+login, no 24-hour cutoff, missing-cookie rejection and restart revocation.
+
+2026-10-16 naming: user-facing product text is Flue Monitor/Flue Display;
+setup AP names are Flue Monitor Setup / Flue Display Setup, with existing
+setup passwords preserved. mDNS names are flue-monitor / flue-display;
+display monitor discovery matches the new monitor name. Monitor flashed by
+confirmed IP .137; new flue-monitor.local and login branding verified.
+Display OTA to confirmed .138 completed but its post-OTA /status reports
+failed Wi-Fi association and it serves the setup portal. Neither old nor
+new display mDNS name responds. A power cycle has been requested to retry
+stored credentials (pending-verify rollback may require another OTA). No
+serial device is available and no credentials were erased or replaced.
+Do not claim display discovery/settings acknowledgement verified.
+
+Owner renamed GitHub repo to LeonB/flue-monitor. Local origin now uses
+git@github.com:LeonB/flue-monitor.git and ls-remote succeeds. Checkout is
+/Users/leon/Workspaces/go/src/github.com/LeonB/flue-monitor, with flue-monitor/
+and flue-display/ subfolders; CMake projects and artifact names match.
+Both fresh builds pass at the new paths; old generated caches are preserved
+in /tmp/flue-monitor-rename-builds-20261016. Ignored main/secrets.h files
+are preserved and still ignored. Production display WS override is empty.
+Public PageKite/DNS names are unchanged; remaining inventory is in README.
+The Codex workspace is now open at the renamed checkout. No changes committed or pushed in this rename.
+
+Naming cleanup: setup AP passwords in source now use flue-monitor-setup /
+flue-display-setup. This supersedes the earlier password-preservation notes;
+these changes have not been flashed.

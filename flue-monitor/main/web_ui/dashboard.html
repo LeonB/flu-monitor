@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Flue Monitor</title>
+<!-- dashboard.css is byte-identical to ../../../components/captive_portal/styles.css
+     (both copies of the same design system, kept as separate embedded files
+     since ESP-IDF's EMBED_FILES collides on basename across components --
+     see CLAUDE.md's "EMBED_FILES collides on basename" section). The
+     Caprasimo/Figtree font files those tokens name are embedded and
+     self-served from here (below) rather than loaded from Google's CDN --
+     matching how alpinejs.min.js is already vendored, not CDN-loaded, and
+     meaning this page renders correctly with no outside internet access,
+     not just no build step. Kept out of the shared CSS file itself (rather
+     than @font-face rules living in dashboard.css/styles.css) since the
+     captive portal doesn't embed these font files and would otherwise 404
+     on them. -->
+<link rel="stylesheet" href="/dashboard.css">
+<link rel="stylesheet" href="/vendor/uplot.min.css">
+<style>
+  @font-face { font-family: 'Caprasimo'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/caprasimo-400.woff2') format('woff2'); }
+  @font-face { font-family: 'Figtree'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/figtree-400.woff2') format('woff2'); }
+  @font-face { font-family: 'Figtree'; font-style: normal; font-weight: 600; font-display: swap; src: url('/fonts/figtree-600.woff2') format('woff2'); }
+  @font-face { font-family: 'Figtree'; font-style: normal; font-weight: 700; font-display: swap; src: url('/fonts/figtree-700.woff2') format('woff2'); }
+  /* min-height: 100vh, then 100dvh right after to override it where
+     supported -- iOS Safari's 100vh is sized to the browser-chrome-
+     COLLAPSED viewport (taller than what's actually visible on load, with
+     the address bar showing), so a page sized to exactly 100vh already
+     extends below the visible fold before any content is added. 100dvh
+     tracks the real, currently-visible viewport instead, which is what was
+     pushing "Log what you did"/"Last 24 hours" off-screen on a tall phone. */
+  body { margin: 0; padding: 0; min-height: 100vh; min-height: 100dvh; box-sizing: border-box; overflow-x: hidden; }
+  .screen { max-width: 460px; margin: 0 auto; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; box-sizing: border-box; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px 0; }
+  .topbar h2 { margin: 0; }
+  .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent-2); display: inline-block; margin-right: 6px; }
+  .stale .live-dot { background: var(--color-neutral-500); }
+  .connection-strip { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 14px 16px 0; }
+  .connection-card { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border-radius: 18px; background: var(--color-surface); }
+  .connection-name { font-size: 13px; font-weight: 700; }
+  .connection-detail { display: flex; flex-wrap: wrap; gap: 3px 6px; margin-top: 2px; font-size: 12px; color: var(--color-neutral-700); }
+  .signal-bars { display: flex; align-items: flex-end; gap: 3px; width: 25px; height: 22px; flex-shrink: 0; color: var(--color-neutral-500); }
+  .signal-bars.good { color: #427656; }
+  .signal-bars.weak { color: #a06022; }
+  .signal-bars i { width: 4px; border-radius: 2px; background: currentColor; opacity: .18; }
+  .signal-bars i.lit { opacity: 1; }
+  .connection-detail .signal-label { font-weight: 600; }
+  .glow-wrap { flex: 1; display: grid; place-items: center; padding: 12px 24px; min-height: 220px; }
+  /* No CSS transition here, deliberately: dashboard.js's runGlowFrame()
+     already animates box-shadow/background-color smoothly itself, every
+     ~33ms via requestAnimationFrame. A CSS transition on top of that fights
+     it -- each frame's inline-style write restarts a new transition before
+     the previous one finishes, so the rendered color perpetually chases a
+     moving target and never reaches it, rendering as a washed-out,
+     near-transparent blend instead of the real color. */
+  .glow-outer { width: 280px; height: 280px; border-radius: 50%; display: grid; place-items: center; }
+  .glow-inner { width: 200px; height: 200px; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
+  .glow-temp { font-family: var(--font-heading); font-size: 68px; line-height: 1; }
+  .glow-rate { font-size: 14px; font-weight: 600; }
+  .zone-range { display: flex; justify-content: space-between; padding: 0 24px; font-size: 13px; color: var(--color-neutral-700); }
+  .actions { padding: 12px 16px; }
+  .footer-nav { display: flex; justify-content: center; gap: 24px; padding: 4px 16px 14px; }
+  .footer-nav button { background: none; border: none; font: inherit; color: var(--color-neutral-700); font-size: 14px; font-weight: 600; cursor: pointer; padding: 8px; }
+  .sheet-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 10; }
+  .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 11; background: var(--color-bg); border-radius: 28px 28px 0 0; padding: 12px 16px 24px; box-shadow: var(--shadow-lg); max-height: 80vh; overflow-y: auto; }
+  .sheet-handle { width: 40px; height: 5px; border-radius: 999px; background: var(--color-neutral-400); margin: 0 auto 14px; }
+  .event-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+  .event-btn { height: 64px; border-radius: 20px; background: var(--color-surface); font-size: 15px; font-weight: 600; border: none; cursor: pointer; font-family: inherit; color: var(--color-text); }
+  .event-btn:active { background: var(--color-accent-200); }
+  .toast { position: fixed; left: 16px; right: 16px; bottom: 24px; z-index: 20; background: var(--color-text); color: var(--color-bg); padding: 14px 18px; border-radius: 999px; font-size: 14px; font-weight: 600; text-align: center; box-shadow: var(--shadow-lg); }
+  .graph-screen { max-width: 460px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; min-height: 100vh; min-height: 100dvh; box-sizing: border-box; }
+  .graph-card { background: var(--color-surface); border-radius: 28px; padding: 14px 12px; }
+  .status-pill { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 16px; border-radius: 999px; background: var(--color-surface); font-size: 14px; }
+  .status-pill strong { font-family: var(--font-heading); font-size: 17px; font-weight: 400; }
+  .status-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+  .topbar-right { display: flex; align-items: center; gap: 8px; }
+  .burn-plot { width:100%; min-height:340px; }
+  .burn-plot .u-over { touch-action:none; }
+  .graph-readout { min-height:40px; padding:8px 4px 0; font-size:13px; }
+  .graph-help { font-size:12px; line-height:1.5; margin:0; }
+
+  .settings-screen { max-width: 460px; margin: 0 auto; padding: 16px 16px 110px; display: flex; flex-direction: column; gap: 18px; }
+  .field-group h6 { margin: 0 0 6px 12px; color: var(--color-neutral-700); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .field-list { padding: 4px; border-radius: 28px; background: var(--color-surface); display: flex; flex-direction: column; }
+  .field-row { display: flex; align-items: center; gap: 10px; padding: 10px 8px 10px 16px; }
+  .field-row + .field-row { border-top: 1px solid var(--color-divider); }
+  .field-row .field-label { flex: 1; font-size: 15px; font-weight: 600; }
+  .field-help { display: block; margin-top: 4px; font-size: 12px; font-weight: 400; line-height: 1.4; }
+  .stepper { flex-shrink: 0; display: flex; align-items: center; border-radius: 999px; background: var(--color-bg); }
+  .zone-theme { padding: 10px 16px 14px; }
+  .zone-theme-label { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+  .theme-select, .theme-option { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 10px 14px; border: none; font: inherit; font-size: 14px; font-weight: 600; color: var(--color-text); text-align: left; cursor: pointer; }
+  .theme-select { border: 1px solid var(--color-divider); border-radius: 18px; background: var(--color-bg); }
+  .theme-select.changed { outline: 2px solid var(--color-accent); }
+  .theme-swatches { display: inline-flex; gap: 4px; flex-shrink: 0; }
+  .theme-swatch { width: 18px; height: 18px; border-radius: 50%; border: 1px solid rgba(0,0,0,.15); }
+  .theme-name { flex: 1; }
+  .theme-options { margin-top: 6px; padding: 4px; border: 1px solid var(--color-divider); border-radius: 18px; background: var(--color-bg); }
+  .theme-option { background: none; border-radius: 14px; }
+  .theme-option:hover, .theme-option[aria-pressed="true"] { background: var(--color-surface); }
+  .zone-color-picker { width: 64px; height: 44px; padding: 4px; border: 1px solid var(--color-divider); border-radius: 12px; background: var(--color-bg); cursor: pointer; }
+  .zone-color-picker.changed { outline: 2px solid var(--color-accent); }
+  .stepper.changed { box-shadow: 0 0 0 2px var(--color-accent); }
+  .stepper button { width: 40px; height: 40px; border-radius: 50%; border: none; background: none; font-size: 18px; font-family: inherit; cursor: pointer; color: var(--color-text); }
+  .stepper .stepper-value { min-width: 68px; text-align: center; font-weight: 700; font-size: 14px; }
+  .text-field { padding: 10px 16px 14px; }
+  .text-field label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .pagekite-status { display: flex; gap: 10px; align-items: flex-start; margin: 0 4px 4px; padding: 13px 16px; border-radius: 20px; background: var(--color-surface); }
+  .pagekite-status-icon { width: 10px; height: 10px; margin-top: 5px; border-radius: 50%; flex: 0 0 auto; background: var(--color-neutral-500); }
+  .pagekite-status.connected .pagekite-status-icon { background: #427656; }
+  .pagekite-status.connecting .pagekite-status-icon, .pagekite-status.network_error .pagekite-status-icon { background: #b56a18; }
+  .pagekite-status.auth_error .pagekite-status-icon { background: #b54132; }
+  .pagekite-status-title { font-size: 14px; font-weight: 700; }
+  .pagekite-status-detail { margin-top: 3px; color: var(--color-neutral-700); font-size: 12px; line-height: 1.45; }
+  .save-bar { position: fixed; left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 15; max-width: 428px; margin: 0 auto; padding: 8px 8px 8px 20px; border-radius: 999px; background: var(--color-text); color: var(--color-bg); display: flex; align-items: center; gap: 10px; box-shadow: var(--shadow-lg); }
+  .save-bar span { flex: 1; font-size: 14px; font-weight: 600; }
+  .save-bar button { height: 44px; border-radius: 999px; border: none; font: inherit; font-weight: 600; cursor: pointer; padding: 0 18px; }
+  .btn-revert { background: none; color: var(--color-bg); }
+  .btn-save { background: var(--color-accent); color: var(--color-bg); font-size: 15px; }
+</style>
+</head>
+<body x-data="app()" x-init="init()">
+
+  <!-- ============ Dashboard ============ -->
+  <template x-if="view === 'dashboard'">
+    <div class="screen">
+      <div class="topbar">
+        <div :class="{ stale: isStale }" style="display:flex;align-items:center;font-size:13px;color:var(--color-neutral-700)">
+          <span class="live-dot"></span>
+          <span x-text="isStale ? 'No recent reading' : 'Live'"></span>
+        </div>
+        <button class="btn btn-secondary btn-icon" aria-label="Settings" @click="openSettings()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"></path></svg>
+        </button>
+      </div>
+
+      <div class="connection-strip" role="group" aria-label="Device WiFi signal strength">
+        <template x-for="device in WIFI_DEVICES" :key="device.key">
+          <div class="connection-card" :aria-label="device.label + ' WiFi: ' + wifiSignal(device.key).label + ', ' + wifiSignal(device.key).value">
+            <span class="signal-bars" :class="wifiSignal(device.key).tone" aria-hidden="true">
+              <template x-for="bar in [1, 2, 3, 4]" :key="bar">
+                <i :class="{ lit: bar <= wifiSignal(device.key).bars }" :style="'height:' + (bar * 5) + 'px'"></i>
+              </template>
+            </span>
+            <div>
+              <div class="connection-name" x-text="device.label"></div>
+              <div class="connection-detail">
+                <span class="signal-label" x-text="wifiSignal(device.key).label"></span>
+                <span x-text="wifiSignal(device.key).value"></span>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <div class="glow-wrap">
+        <div class="glow-outer" :style="glowOuterStyle">
+          <div class="glow-inner" :style="glowInnerStyle">
+            <template x-if="reading.thermocouple_ok">
+              <div class="glow-temp" x-text="Math.round(reading.thermocouple_c) + '°'"></div>
+            </template>
+            <template x-if="!reading.thermocouple_ok">
+              <div class="glow-temp" style="font-size:28px">No reading</div>
+            </template>
+            <div class="glow-rate" x-show="reading.thermocouple_ok" x-text="rateLabel"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="zone-range">
+        <span x-text="'Cold below ' + Math.round(settings.zone_cold_max_c) + '°C'"></span>
+        <span x-text="'Hot above ' + Math.round(settings.zone_optimal_max_c) + '°C'"></span>
+      </div>
+
+      <div class="actions">
+        <button class="btn btn-primary btn-block" style="height:60px;font-size:17px;gap:10px" @click="openSheet()">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
+          Log what you did
+        </button>
+      </div>
+
+      <div class="footer-nav">
+        <button @click="openGraph()">Last 24 hours →</button>
+      </div>
+    </div>
+  </template>
+
+  <!-- Event-log bottom sheet -->
+  <template x-if="sheetOpen">
+    <div>
+      <div class="sheet-backdrop" @click="sheetOpen = false"></div>
+      <div class="sheet">
+        <div class="sheet-handle"></div>
+        <h3 style="margin:0 0 2px">What just happened?</h3>
+        <p class="text-muted" style="margin:0;font-size:13px" x-show="reading.thermocouple_ok" x-text="'at ' + Math.round(reading.thermocouple_c) + '°C'"></p>
+        <div class="event-grid">
+          <template x-for="ev in events" :key="ev.slug">
+            <button class="event-btn" @click="logEvent(ev)" x-text="ev.label"></button>
+          </template>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <template x-if="toast">
+    <div class="toast" x-text="toast"></div>
+  </template>
+
+  <!-- ============ History graph ============ -->
+  <template x-if="view === 'graph'">
+    <div class="graph-screen" x-data="burnGraph(graphState)" x-effect="update(history, reading, settings, historyLoaded, events, historyReceivedMs)">
+      <div class="topbar" style="padding:0">
+        <button class="btn btn-secondary" style="height:44px;gap:4px;padding:0 16px 0 10px" @click="view = 'dashboard'">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg>
+          Now
+        </button>
+        <div class="topbar-right">
+          <div class="status-pill" x-show="reading.thermocouple_ok">
+            <span class="status-dot" :style="'background:' + currentZoneCss"></span>
+            <strong x-text="Math.round(reading.thermocouple_c) + '°'"></strong>
+            <span x-text="rateLabel"></span>
+          </div>
+        </div>
+      </div>
+      <h2 style="margin:0">Burn history</h2>
+      <div class="text-muted" x-text="visibleRange"></div>
+      <div class="graph-card">
+        <div x-show="!historyLoaded" class="text-muted" style="padding:20px;text-align:center">Loading&hellip;</div>
+        <div x-show="historyLoaded && history.samples.length === 0" class="text-muted" style="padding:20px;text-align:center"><span x-text="historyError || 'No history yet.'"></span></div>
+        <div x-show="historyLoaded && history.samples.length > 0" x-ref="plot" class="burn-plot"></div>
+        <div x-ref="tooltip" class="graph-readout">Move over the graph to inspect a reading</div>
+      </div>
+      <p class="text-muted graph-help">Drag or scroll to zoom; double-click to reset. On touch screens, pinch to zoom and drag to pan. History is sampled every 4 minutes; times use your browser's clock.</p>
+    </div>
+  </template>
+
+  <!-- ============ Settings ============ -->
+  <template x-if="view === 'settings'">
+    <div class="settings-screen">
+      <div class="topbar" style="padding:0">
+        <button class="btn btn-secondary" style="height:44px;gap:4px;padding:0 16px 0 10px" @click="closeSettings()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg>
+          Back
+        </button>
+      </div>
+      <h2 style="margin:0">Tuning</h2>
+
+      <div class="field-group">
+        <h6>The glow</h6>
+        <div class="field-list">
+          <div class="field-row">
+            <span class="field-label">Cold until<small class="field-help">At or below this temperature, the stove is in the cold zone.</small></span>
+            <div class="stepper" :class="{ changed: changed('zone_cold_max_c') }">
+              <button @click="step('zone_cold_max_c', -5)">−</button>
+              <span class="stepper-value" x-text="Math.round(draft.zone_cold_max_c) + ' °C'"></span>
+              <button @click="step('zone_cold_max_c', 5)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Optimal until<small class="field-help">Above the cold zone, temperatures up to this value are optimal. Higher is hot.</small></span>
+            <div class="stepper" :class="{ changed: changed('zone_optimal_max_c') }">
+              <button @click="step('zone_optimal_max_c', -5)">−</button>
+              <span class="stepper-value" x-text="Math.round(draft.zone_optimal_max_c) + ' °C'"></span>
+              <button @click="step('zone_optimal_max_c', 5)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Climbing fast<small class="field-help">A rise this fast reaches the fastest breathing cycle. Lower values speed it up sooner.</small></span>
+            <div class="stepper" :class="{ changed: changed('fast_rise_c_per_min') }">
+              <button @click="step('fast_rise_c_per_min', -1)">−</button>
+              <span class="stepper-value" x-text="Math.round(draft.fast_rise_c_per_min) + ' °/min'"></span>
+              <button @click="step('fast_rise_c_per_min', 1)">+</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <h6>The zone</h6>
+        <div class="field-list">
+          <div class="zone-theme" @click.outside="themeMenuOpen = false" @keydown.escape.stop="themeMenuOpen = false; $refs.themeButton.focus()">
+            <span class="zone-theme-label" id="zone-theme-label">Theme</span>
+            <button type="button" class="theme-select" x-ref="themeButton" @click="themeMenuOpen = !themeMenuOpen" :aria-expanded="themeMenuOpen" aria-controls="zone-theme-options" :aria-label="'Theme: ' + (zoneTheme ? zoneTheme.name : 'Custom')" :class="{ changed: ZONE_ORDER.some(zone => changed('zone_' + zone + '_color')) }">
+              <span class="theme-swatches" aria-hidden="true">
+                <template x-for="zone in ZONE_ORDER" :key="zone"><span class="theme-swatch" :style="'background-color:' + draft['zone_' + zone + '_color']"></span></template>
+              </span>
+              <span class="theme-name" x-text="zoneTheme ? zoneTheme.name : 'Custom'"></span>
+              <span aria-hidden="true">▾</span>
+            </button>
+            <div id="zone-theme-options" class="theme-options" x-show="themeMenuOpen" role="group" aria-labelledby="zone-theme-label">
+              <template x-for="theme in ZONE_THEMES" :key="theme.id">
+                <button type="button" class="theme-option" :aria-pressed="zoneTheme?.id === theme.id" @click="applyZoneTheme(theme.id); $refs.themeButton.focus()" :aria-label="theme.name">
+                  <span class="theme-swatches" aria-hidden="true"><template x-for="(color, index) in theme.colors" :key="index"><span class="theme-swatch" :style="'background-color:' + color"></span></template></span>
+                  <span class="theme-name" x-text="theme.name"></span>
+                  <span aria-hidden="true" x-show="zoneTheme?.id === theme.id">✓</span>
+                </button>
+              </template>
+            </div>
+            <small class="field-help">Choose a palette, then adjust any colour below. Your own combination appears as Custom. Close the colour picker before pressing Save.</small>
+          </div>
+          <div class="field-row">
+            <label class="field-label" for="zone-cold-color">Cold colour<small class="field-help">Colour for the cold zone on the LED ring, dashboard and graph.</small></label>
+            <input id="zone-cold-color" class="zone-color-picker" type="color" x-model="draft.zone_cold_color" :class="{ changed: changed('zone_cold_color') }">
+          </div>
+          <div class="field-row">
+            <label class="field-label" for="zone-optimal-color">Optimal colour<small class="field-help">Colour for the optimal zone on the LED ring, dashboard and graph.</small></label>
+            <input id="zone-optimal-color" class="zone-color-picker" type="color" x-model="draft.zone_optimal_color" :class="{ changed: changed('zone_optimal_color') }">
+          </div>
+          <div class="field-row">
+            <label class="field-label" for="zone-hot-color">Hot colour<small class="field-help">Colour for the hot zone on the LED ring, dashboard and graph.</small></label>
+            <input id="zone-hot-color" class="zone-color-picker" type="color" x-model="draft.zone_hot_color" :class="{ changed: changed('zone_hot_color') }">
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <h6>The logbook</h6>
+        <div class="field-list">
+          <div class="field-row">
+            <span class="field-label">Log on a change of<small class="field-help">Log to Google Sheets when temperature changes this much since the last logged reading.</small></span>
+            <div class="stepper" :class="{ changed: changed('thermocouple_deadband_c') }">
+              <button @click="step('thermocouple_deadband_c', -1)">−</button>
+              <span class="stepper-value" x-text="Math.round(draft.thermocouple_deadband_c) + ' °C'"></span>
+              <button @click="step('thermocouple_deadband_c', 1)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <span class="field-label">&hellip;or at least every<small class="field-help">Log to Google Sheets after this interval, even if temperature stays steady.</small></span>
+            <div class="stepper" :class="{ changed: changed('log_heartbeat_min') }">
+              <button @click="step('log_heartbeat_min', -5)">−</button>
+              <span class="stepper-value" x-text="Math.round(draft.log_heartbeat_min) + ' min'"></span>
+              <button @click="step('log_heartbeat_min', 5)">+</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <h6>The pulse</h6>
+        <div class="field-list">
+          <div class="field-row">
+            <span class="field-label">Idle breathing cycle<small class="field-help">Time for one full breath when temperature is steady. Higher values breathe more slowly.</small></span>
+            <div class="stepper" :class="{ changed: changed('idle_pulse_period_ms') }">
+              <button @click="stepPulsePeriod('idle_pulse_period_ms', -500)">−</button>
+              <span class="stepper-value" x-text="(draft.idle_pulse_period_ms / 1000).toFixed(1) + ' s'"></span>
+              <button @click="stepPulsePeriod('idle_pulse_period_ms', 500)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Fastest breathing cycle<small class="field-help">Shortest breath during rapid temperature changes. Lower values breathe faster.</small></span>
+            <div class="stepper" :class="{ changed: changed('fast_pulse_period_ms') }">
+              <button @click="stepPulsePeriod('fast_pulse_period_ms', -500)">−</button>
+              <span class="stepper-value" x-text="(draft.fast_pulse_period_ms / 1000).toFixed(1) + ' s'"></span>
+              <button @click="stepPulsePeriod('fast_pulse_period_ms', 500)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Minimum brightness<small class="field-help">LED ring · 0 is off, 255 is full</small></span>
+            <div class="stepper" :class="{ changed: changed('minimum_brightness') }">
+              <button aria-label="Decrease minimum brightness" @click="stepBounded('minimum_brightness', -5, 0, draft.maximum_brightness)">−</button>
+              <span class="stepper-value" x-text="draft.minimum_brightness"></span>
+              <button aria-label="Increase minimum brightness" @click="stepBounded('minimum_brightness', 5, 0, draft.maximum_brightness)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Maximum brightness<small class="field-help">LED ring · 0 is off, 255 is full</small></span>
+            <div class="stepper" :class="{ changed: changed('maximum_brightness') }">
+              <button aria-label="Decrease maximum brightness" @click="stepBounded('maximum_brightness', -5, draft.minimum_brightness, 255)">−</button>
+              <span class="stepper-value" x-text="draft.maximum_brightness"></span>
+              <button aria-label="Increase maximum brightness" @click="stepBounded('maximum_brightness', 5, draft.minimum_brightness, 255)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Breathing shape<small class="field-help">Lower: brighter longer · Higher: dimmer longer</small></span>
+            <div class="stepper" :class="{ changed: changed('breathing_exponent') }">
+              <button aria-label="Decrease breathing shape" @click="stepBreathingShape(-0.1)">−</button>
+              <span class="stepper-value" x-text="Number(draft.breathing_exponent).toFixed(1)"></span>
+              <button aria-label="Increase breathing shape" @click="stepBreathingShape(0.1)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Ignore rate changes below<small class="field-help">Treat smaller rises or falls as steady, keeping the idle pulse and one zone colour.</small></span>
+            <div class="stepper" :class="{ changed: changed('rate_deadband_c_per_min') }">
+              <button @click="stepBounded('rate_deadband_c_per_min', -0.5, 0, 20)">−</button>
+              <span class="stepper-value" x-text="Number(draft.rate_deadband_c_per_min).toFixed(1) + ' °/min'"></span>
+              <button @click="stepBounded('rate_deadband_c_per_min', 0.5, 0, 20)">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Color transition curve<small class="field-help">Higher values hold the zone colour longer, switching toward the neighbouring colour near the peak.</small></span>
+            <div class="stepper" :class="{ changed: changed('color_transition_exponent') }">
+              <button @click="stepBounded('color_transition_exponent', -0.5, 0.5, 12)">−</button>
+              <span class="stepper-value" x-text="Number(draft.color_transition_exponent).toFixed(1)"></span>
+              <button @click="stepBounded('color_transition_exponent', 0.5, 0.5, 12)">+</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <h6>Dashboard access</h6>
+        <div class="field-list">
+          <div class="text-field">
+            <label for="auth-current-password">Change dashboard password</label>
+            <small class="field-help" style="margin-bottom:8px">Protects this dashboard on your home network and through PageKite. Changing it signs out the current session and other browsers.</small>
+            <input id="auth-current-password" class="input" type="password" autocomplete="current-password" placeholder="Current password">
+          </div>
+          <div class="text-field" style="padding-top:0">
+            <input id="auth-new-password" class="input" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="New password (8–128 characters)">
+          </div>
+          <div class="text-field" style="padding-top:0">
+            <input id="auth-confirm-password" class="input" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="Confirm new password">
+          </div>
+          <div class="text-field" style="padding-top:0">
+            <button class="btn btn-primary" type="button" style="width:100%;height:46px" @click="updateDashboardPassword()" :disabled="authSaving" x-text="authSaving ? 'Updating…' : 'Update password'"></button>
+            <div x-text="authMessage" :role="authError ? 'alert' : 'status'" style="min-height:18px;margin-top:8px;color:var(--color-accent);font-size:12px"></div>
+          </div>
+          <div class="field-row" style="border-top:1px solid var(--color-divider);margin:0 8px;padding:14px 8px 10px">
+            <span class="field-label">Sign out<small class="field-help">End this browser session.</small></span>
+            <button class="btn btn-secondary" type="button" style="height:40px" @click="logout()">Sign out</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <h6>PageKite</h6>
+        <div class="pagekite-status" :class="pagekiteStatus.state || 'unknown'" x-show="draft.pagekite_enabled" x-cloak role="status" aria-live="polite">
+          <span class="pagekite-status-icon" aria-hidden="true"></span>
+          <div>
+            <div class="pagekite-status-title" x-text="pagekiteStatusTitle"></div>
+            <div class="pagekite-status-detail" x-text="pagekiteStatusDetail"></div>
+          </div>
+        </div>
+        <div class="field-list">
+          <div class="field-row">
+            <label class="field-label" for="pagekite-enabled">Remote access<small id="pagekite-enabled-help" class="field-help">Enable the tunnel to access this dashboard at your PageKite address. The monitor picks a nearby PageKite relay automatically. Disabling the tunnel keeps your configuration.</small></label>
+            <input id="pagekite-enabled" type="checkbox" aria-describedby="pagekite-enabled-help" x-model="draft.pagekite_enabled" :class="{ changed: changed('pagekite_enabled') }" style="width:24px;height:24px;accent-color:var(--color-accent)">
+          </div>
+          <div class="text-field">
+            <label for="pagekite-domain">Kite domain</label>
+            <small id="pagekite-domain-help" class="field-help" style="margin-bottom:8px">Your registered PageKite hostname, without https:// or a path. The monitor selects a nearby relay and updates PageKite routing automatically.</small>
+            <input id="pagekite-domain" aria-describedby="pagekite-domain-help" class="input" x-model="draft.pagekite_domain" maxlength="127" autocapitalize="none" spellcheck="false" placeholder="your-kite.pagekite.me">
+          </div>
+          <div class="text-field" style="padding-top:0">
+            <label for="pagekite-custom-domain">Custom domain (optional)</label>
+            <small id="pagekite-custom-domain-help" class="field-help" style="margin-bottom:8px">A custom hostname registered as a CNAME kite in your PageKite account. Point its DNS CNAME to the Kite domain above.</small>
+            <input id="pagekite-custom-domain" aria-describedby="pagekite-custom-domain-help" class="input" x-model="draft.pagekite_custom_domain" maxlength="127" autocapitalize="none" spellcheck="false" placeholder="fluemonitor.example.nl">
+          </div>
+          <div class="text-field" style="padding-top:0">
+            <label for="pagekite-secret">Shared secret</label>
+            <small id="pagekite-secret-help" class="field-help" style="margin-bottom:8px">The kite's shared secret from your PageKite account, rather than your account password. Stored on the monitor; leave blank to keep it.</small>
+            <input id="pagekite-secret" aria-describedby="pagekite-secret-help" class="input" type="password" x-model="draft.pagekite_secret" maxlength="127" autocomplete="new-password" :placeholder="settings.pagekite_secret_set ? 'Saved — enter a replacement to change it' : 'Enter your kite shared secret'">
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <h6>Google Sheets</h6>
+        <div class="field-list">
+          <div class="text-field">
+            <label for="sheets-webhook">Webhook URL</label>
+            <small id="sheets-webhook-help" class="field-help" style="margin-bottom:8px">Google Apps Script endpoint that writes logs to your sheet. Leave blank to disable Sheets logging.</small>
+            <input id="sheets-webhook" aria-describedby="sheets-webhook-help" class="input" x-model="draft.google_sheets_webhook_url" :placeholder="settings.credentials_redacted ? 'Leave unchanged to keep the saved URL' : 'https://script.google.com/macros/s/.../exec'">
+          </div>
+          <div class="text-field" style="padding-top:0">
+            <label for="sheets-secret">Secret</label>
+            <small id="sheets-secret-help" class="field-help" style="margin-bottom:8px">Must match the shared secret configured in your Apps Script so it accepts log entries.</small>
+            <input id="sheets-secret" aria-describedby="sheets-secret-help" class="input" x-model="draft.google_sheets_secret" :placeholder="settings.credentials_redacted ? 'Leave unchanged to keep the saved secret' : 'shared secret'">
+          </div>
+        </div>
+      </div>
+
+      <div x-show="displaySyncError" role="alert" style="position:fixed;left:16px;right:16px;bottom:16px;max-width:428px;margin:auto;padding:16px;background:var(--color-bg);border:2px solid var(--color-accent);border-radius:24px;box-shadow:var(--shadow-lg);z-index:20">
+        <span x-text="displaySyncError"></span>
+        <button type="button" @click="displaySyncError = ''" style="display:block;margin-top:8px;background:transparent;border:0;text-decoration:underline;font:inherit;cursor:pointer" aria-label="Dismiss display delivery warning">Dismiss</button>
+      </div>
+
+    </div>
+  </template>
+
+  <!-- Keep the fixed save bar mounted across dirty/clean transitions on iOS. -->
+  <div class="save-bar" style="display:none" x-show="view === 'settings' && (changeCount > 0 || saving)">
+    <span x-text="saving ? (savingDisplaySettings ? 'Saving and checking display…' : 'Saving…') : changeCount + (changeCount === 1 ? ' change' : ' changes')"></span>
+    <button class="btn-revert" @click="revertDraft()">Undo</button>
+    <button class="btn-save" :disabled="saving" @click="saveSettings()" x-text="saving ? 'Saving…' : 'Save'"></button>
+  </div>
+
+
+<!-- dashboard.js must load (and define app() on window) before alpinejs.min.js
+     runs: Alpine auto-starts synchronously at the end of its own script
+     (scanning the DOM and evaluating x-data="app()" immediately), which
+     happens before a later deferred script gets a chance to execute even
+     though defer preserves document order for *starting* each script.
+     Loading the data-definition script first is Alpine's own documented
+     fix for this. -->
+<script src="/vendor/uplot.min.js" defer></script>
+<script src="/burn-graph.js" defer></script>
+<script src="/dashboard.js" defer></script>
+<script src="/alpinejs.min.js" defer></script>
+</body>
+</html>

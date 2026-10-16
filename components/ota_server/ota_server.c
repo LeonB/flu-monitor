@@ -17,7 +17,7 @@ static const char *s_secret;
 
 // Reads the "secret" query param off the request URL and compares it
 // against s_secret. This is the only auth here -- a shared secret over
-// plain HTTP on the home LAN, the same trust level flu-monitor's own
+// plain HTTP on the home LAN, the same trust level flue-monitor's own
 // Google Sheets webhook secret uses, not an encrypted channel like
 // ESPHome's own OTA. Acceptable for a single-home network; wouldn't be if
 // this were ever exposed beyond it.

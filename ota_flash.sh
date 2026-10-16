@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Shared implementation behind flu-monitor/ota_flash.sh and
-# flu-display/ota_flash.sh (both thin wrappers calling this with their own
+# Shared implementation behind flue-monitor/ota_flash.sh and
+# flue-display/ota_flash.sh (both thin wrappers calling this with their own
 # project directory) -- pushes build/<project-name>.bin to a running device
 # over WiFi via its OTA endpoint. Requires <project-dir>/main/secrets.h
 # (copy main/secrets.h.example and fill in a real OTA_SECRET first -- see
@@ -16,7 +16,7 @@ fi
 PROJECT_DIR="$1"
 HOST="$2"
 # idf.py names the .elf/.bin after the project()'s own name (project.cmake),
-# which for both flu-monitor/ and flu-display/ matches their directory name.
+# which for both flue-monitor/ and flue-display/ matches their directory name.
 PROJECT_NAME="$(basename "$(cd "$PROJECT_DIR" && pwd)")"
 
 SECRET_FILE="$PROJECT_DIR/main/secrets.h"
